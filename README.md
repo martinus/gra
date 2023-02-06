@@ -63,7 +63,7 @@ in the database.
 Usually there is no need to call that command, unless you add repositories without
 the `clone` command. The repositories are then sorted and stored into `~/.config/grm.db.json`.
 
-## root - shows repository root, currently '/home/martinus/git'
+## root - shows repository root
 
 Prints the root path used by grm. The path is configured in the global
 `~/.gitconfig`. If not configured, the default is `~/git`. Set the
