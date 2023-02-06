@@ -66,11 +66,11 @@ the `clone` command. The repositories are then sorted and stored into `~/.config
 ## root - shows repository root, currently '/home/martinus/git'
 
 Prints the root path used by grm. The path is configured in the global
-`~/.gitconfig`. If not configured, the default is `~/.grm`. Set the
+`~/.gitconfig`. If not configured, the default is `~/git`. Set the
 configuration with e.g.
 
 ```sh
-git config --global grm.root ~/git
+git config --global grm.root ~/develop
 ```
 
 This root folder is used as the base for all commands.
