@@ -56,7 +56,12 @@ alias cdg = 'cd $(grm ls|fzf)'
 
 ## updatedb - crawls the grm root to update the list of repositories
 
-TODO
+Walks through the whole directory tree in the root path to find all
+directories that contain a `.git` folder. These are then set as the repositories
+in the database.
+
+Usually there is no need to call that command, unless you add repositories without
+the `clone` command. The repositories are then sorted and stored into `~/.config/grm.db.json`.
 
 ## root - shows repository root, currently '/home/martinus/git'
 
