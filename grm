@@ -5,9 +5,9 @@ grm - Git Repository Manager
 
 The repository manager helps organize and manage git repositories. It creates directories
 based on the clone URL in a specified root directory, and has tools for batch processing.
-grm's root location can be configured in your ~/.gitconfig, e.g. like so:
+grm's root location (default: ~/git) can be configured in your ~/.gitconfig, e.g. like so:
 
-    git config --global grm.root ~/git
+    git config --global grm.root ~/develop
 
 A convenient alias to quickly move around the different repositories for your ~/.bashrc
 This requires the fuzzy searcher 'fzf'.
@@ -273,7 +273,7 @@ class GitRepoManager:
 
 if __name__ == '__main__':
     db_file_name = '~/.config/grm.db.json'
-    fallback_root = '~/.grm'
+    fallback_root = '~/git'
 
     root = fetch_root(fallback_root)
 

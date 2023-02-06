@@ -82,3 +82,11 @@ https://marketplace.visualstudio.com/items?itemName=alefragnani.project-manager
 
 This adds each repository to the project manager, with the netlocation as tag,
 and last two subdirectories as a name. Existing configuration is kept as-is.
+
+
+# Alternatives
+
+* [ghq](https://github.com/x-motemen/ghq) was the main inspiration for `grm`. grm is much simpler,
+  a single python file, git only, and integrates easily with VSCode.
+* [rhq](https://github.com/siketyan/ghr) is another ghq clone, written in Rust, but it currently
+  did not work with non github URLs.
