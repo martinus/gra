@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
 """
-grm - Git Repository Manager
+gra - Git Repo Admin
 
-The repository manager helps organize and manage git repositories. It creates directories
-based on the clone URL in a specified root directory, and has tools for batch processing.
-grm's root location (default: ~/git) can be configured in your ~/.gitconfig, e.g. like so:
+The repository administrator helps organize and manage git repositories. It creates
+directories based on the clone URL in a specified root directory, and has tools for
+batch processing. gra's root location (default: ~/git) can be configured in your
+~/.gitconfig, e.g. like so:
 
-    git config --global grm.root ~/develop
+    git config --global gra.root ~/develop
 
 A convenient alias to quickly move around the different repositories for your ~/.bashrc
 This requires the fuzzy searcher 'fzf'.
 
-    alias cdg='cd $(grm ls|fzf)'
+    alias cdg='cd $(gra ls|fzf)'
 """
 
 __version_info__ = ('0', '0', '1')
@@ -61,7 +62,7 @@ def fetch_root(fallback_root):
     path = fallback_root  # fallback if not configured
     try:
         path = subprocess.check_output(
-            ["git", "config", "--get", "grm.root"], encoding='utf-8').strip()
+            ["git", "config", "--get", "gra.root"], encoding='utf-8').strip()
     except subprocess.CalledProcessError:
         # no config, use default
         pass
@@ -70,7 +71,7 @@ def fetch_root(fallback_root):
     return os.path.expandvars(os.path.expanduser(path))
 
 
-class GitRepoManager:
+class GitRepoAdmin:
     def __init__(self, args, db_file_name, root):
         self._args = args
         self._db_file_name = os.path.expandvars(
@@ -153,11 +154,11 @@ class GitRepoManager:
         Log.info(f"running '{' '.join(self._args.exec)}' in each repository")
         repos = self._db_repositories()
 
-        # replace all occurances of {{GRM_ROOT}}
-        exec = self._replace(self._args.exec, '{{GRM_ROOT}}', self._root_path)
+        # replace all occurances of {{GRA_ROOT}}
+        exec = self._replace(self._args.exec, '{{GRA_ROOT}}', self._root_path)
         for idx, repo in enumerate(repos):
             Log.header(f'{idx + 1}/{len(repos)} {repo}')
-            final_exec = self._replace(exec, '{{GRM_REPO}}', repo)
+            final_exec = self._replace(exec, '{{GRA_REPO}}', repo)
             subprocess.run(final_exec, cwd=repo)
 
     def _ls(self):
@@ -253,7 +254,7 @@ class GitRepoManager:
                 projects_file.write(json.dumps(projects, indent='\t'))
 
             Log.ok(
-                f"wrote {len(projects)} projects ({len(projects_to_add)} from grm) into '{fn}'")
+                f"wrote {len(projects)} projects ({len(projects_to_add)} from gra) into '{fn}'")
 
     def process(self):
         match args.cmd:
@@ -272,7 +273,7 @@ class GitRepoManager:
 
 
 if __name__ == '__main__':
-    db_file_name = '~/.config/grm.db.json'
+    db_file_name = '~/.config/gra.db.json'
     fallback_root = '~/git'
 
     root = fetch_root(fallback_root)
@@ -293,9 +294,9 @@ if __name__ == '__main__':
                                          formatter_class=argparse.RawTextHelpFormatter,
                                          help=f'clone one or more remote repository',
                                          description=f'''
-Clones one or more repository into the grm root directory '{root}'. The
+Clones one or more repository into the gra root directory '{root}'. The
 repository directory is created based on the URL and it is registered into
-grm's database.
+gra's database.
 ''')
     parser_clone.add_argument('url', nargs='+',
                               help='one or more git repository URLs to clone')
@@ -308,17 +309,17 @@ grm's database.
 Runs the given command with all arguments for each repository. The working directory of each command
 is its repository, and the commands can use these strings which are automatically replaced:
 
-{{{{GRM_ROOT}}}}: Replaced by grm root directory '{root}'.
-{{{{GRM_REPO}}}}: Replaced by the full path of each repository.
+{{{{GRA_ROOT}}}}: Replaced by gra root directory '{root}'.
+{{{{GRA_REPO}}}}: Replaced by the full path of each repository.
 
 Here are examples that you can try. Show short git status of each repository:
 
-    grm each git status -sb
+    gra each git status -sb
 
-Show disk usage of each repository. I use {{{{GRM_REPO}}}} so `du` shows the path, and the argument -q
-to hide grm's status output:
+Show disk usage of each repository. I use {{{{GRA_REPO}}}} so `du` shows the path, and the argument -q
+to hide gra's status output:
 
-    grm -q each du -h -d0 {{{{GRM_REPO}}}}
+    gra -q each du -h -d0 {{{{GRA_REPO}}}}
 ''')
     parser_each.add_argument('exec', nargs=argparse.REMAINDER,
                              help='the command')
@@ -333,7 +334,7 @@ but if you add/remove repositories without the script, run `updatedb` to
 update the index. This command can be helpful with e.g. fzf. Here is a handy
 alias to quickly change directory into one of the repositories:
 
-    alias cdg = 'cd $(grm ls|fzf)'
+    alias cdg = 'cd $(gra ls|fzf)'
 ''')
     parser_ls.add_argument('path', default=root, nargs='?',
                            help=f'directory walked to find all repositories (default: \'{root}\')')
@@ -341,7 +342,7 @@ alias to quickly change directory into one of the repositories:
     # updatedb
     parser_updatedb = subparsers.add_parser('updatedb',
                                             formatter_class=argparse.RawTextHelpFormatter,
-                                            help=f'crawls the grm root to update the list of repositories',
+                                            help=f'crawls the gra root to update the list of repositories',
                                             description=f'''
 Walks through the whole directory tree in the root path '{root}' to find all
 directories that contain a '.git' folder. These are then set as the repositories
@@ -356,11 +357,11 @@ Usually there is no need to call that command, unless you add repositories witho
                                         formatter_class=argparse.RawTextHelpFormatter,
                                         help=f'shows repository root, currently \'{root}\'',
                                         description=f'''
-Prints the root path used by grm. The path is configured in the global
+Prints the root path used by gra. The path is configured in the global
 ~/.gitconfig. If not configured, the default is '{fallback_root}'. Set the
 configuration with e.g.
 
-    git config --global grm.root ~/git
+    git config --global gra.root ~/git
 
 This root folder is used as the base for all commands.
 ''')
@@ -384,5 +385,5 @@ and last two subdirectories as a name. Existing configuration is kept as-is.
     args = parser.parse_args()
     Log.SHOW_LOG = not args.quiet
 
-    grm = GitRepoManager(args, db_file_name, root)
-    grm.process()
+    gra = GitRepoAdmin(args, db_file_name, root)
+    gra.process()
