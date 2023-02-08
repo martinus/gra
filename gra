@@ -346,19 +346,6 @@ alias to quickly change directory into one of the repositories:
     parser_ls.add_argument('path', default=root, nargs='?',
                            help=f'directory walked to find all repositories (default: \'{root}\')')
 
-    # updatedb
-    parser_updatedb = subparsers.add_parser('updatedb',
-                                            formatter_class=argparse.RawTextHelpFormatter,
-                                            help=f'crawls the gra root to update the list of repositories',
-                                            description=f'''
-Walks through the whole directory tree in the root path '{root}' to find all
-directories that contain a '.git' folder. These are then set as the repositories
-in the database.
-
-Usually there is no need to call that command, unless you add repositories without the
-'clone' command. The repositories are then sorted and stored into '{db_file_name}'.
-''')
-
     # root
     parser_root = subparsers.add_parser('root',
                                         formatter_class=argparse.RawTextHelpFormatter,
@@ -384,6 +371,19 @@ or ~/.zshrc or whatever shell you use:
     eval "$(gra shell)"
 
 This currenly adds aliase 'cdg' which makes use of 'fzf'.
+''')
+
+    # updatedb
+    parser_updatedb = subparsers.add_parser('updatedb',
+                                            formatter_class=argparse.RawTextHelpFormatter,
+                                            help=f'crawls the gra root to update the list of repositories',
+                                            description=f'''
+Walks through the whole directory tree in the root path '{root}' to find all
+directories that contain a '.git' folder. These are then set as the repositories
+in the database.
+
+Usually there is no need to call that command, unless you add repositories without the
+'clone' command. The repositories are then sorted and stored into '{db_file_name}'.
 ''')
 
     # vscode
