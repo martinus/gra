@@ -85,7 +85,7 @@ class GitRepoAdmin:
         """
         parsed_url = urllib.parse.urlparse(url)
         target_path = os.path.join(
-            self._root_path, parsed_url.netloc) + parsed_url.path
+            self._root_path, parsed_url.hostname) + parsed_url.path
         target_path = target_path.removesuffix('.git')
         return target_path
 
@@ -222,10 +222,10 @@ alias cdg='cd $(gra ls|fzf)'
         for repo in self._db_repositories():
             relative_path = os.path.relpath(repo, self._root_path)
             path_components = relative_path.split(os.sep)
-            netloc = path_components[0]
+            hostname = path_components[0]
             name = os.sep.join(path_components[-2:])
 
-            tags = [netloc]
+            tags = [hostname]
             if more_tag:
                 tags.append(more_tag)
 
@@ -362,9 +362,9 @@ This root folder is used as the base for all commands.
 
     # shell
     parser_shell = subparsers.add_parser('shell',
-                                        formatter_class=argparse.RawTextHelpFormatter,
-                                        help='write shell script to extend gra features',
-                                        description=f'''
+                                         formatter_class=argparse.RawTextHelpFormatter,
+                                         help='write shell script to extend gra features',
+                                         description=f'''
 Prints shell script and aliases to help with gra usages. Add this line to your ~/.bashrc
 or ~/.zshrc or whatever shell you use:
 
@@ -394,7 +394,7 @@ Usually there is no need to call that command, unless you add repositories witho
 Requires Visual Studio Code with the Project Manager extension, available here:
 https://marketplace.visualstudio.com/items?itemName=alefragnani.project-manager
 
-This adds each repository to the project manager, with the netlocation as tag,
+This adds each repository to the project manager, with the hostname as tag,
 and last two subdirectories as a name. Existing configuration is kept as-is.
 ''')
     parser_vscode_projectmanager.add_argument('-i', '--insiders', action='store_true',
