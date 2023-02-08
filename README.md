@@ -88,5 +88,8 @@ and last two subdirectories as a name. Existing configuration is kept as-is.
 
 * [ghq](https://github.com/x-motemen/ghq) was the main inspiration for `gra`. gra is much simpler,
   a single python file, git only, and integrates easily with VSCode.
-* [rhq](https://github.com/siketyan/ghr) is another ghq clone, written in Rust, but it currently
-  did not work with non github URLs.
+* [ghr](https://github.com/siketyan/ghr) is another ghq clone, written in Rust, but it currently
+  did not work with non github URLs. I like the bash integration.
+* [rhq](https://github.com/ubnt-intrepid/rhq) Another one in rust
+* [projj](https://github.com/popomore/projj)
+* 
