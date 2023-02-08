@@ -10,10 +10,9 @@ batch processing. gra's root location (default: ~/git) can be configured in your
 
     git config --global gra.root ~/develop
 
-A convenient alias to quickly move around the different repositories for your ~/.bashrc
-This requires the fuzzy searcher 'fzf'.
+gra provides shell helpers. Add this to your ~/.bashrc or similar:
 
-    alias cdg='cd $(gra ls|fzf)'
+    eval "$(gra shell)"
 """
 
 __version_info__ = ('0', '0', '1')
@@ -338,10 +337,7 @@ to hide gra's status output:
                                       description=f'''
 Simply list all repositories. The list is updated automatically on each clone,
 but if you add/remove repositories without the script, run `updatedb` to
-update the index. This command can be helpful with e.g. fzf. Here is a handy
-alias to quickly change directory into one of the repositories:
-
-    alias cdg = 'cd $(gra ls|fzf)'
+update the index.
 ''')
     parser_ls.add_argument('path', default=root, nargs='?',
                            help=f'directory walked to find all repositories (default: \'{root}\')')

@@ -8,12 +8,10 @@ gra's root location can be configured in your `~/.gitconfig`, e.g. like so:
 git config --global gra.root ~/git
 ```
 
-A convenient alias to quickly move around the different repositories for your `~/.bashrc`
-This requires the fuzzy searcher `fzf`.
-
+`gra` provides shell helpers. Add this to your `~/.bashrc` or similar:
 
 ```sh
-alias cdg='cd $(gra ls|fzf)'
+eval "$(gra shell)"
 ```
 
 ## clone - clone one or more remote repository
