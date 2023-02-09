@@ -47,6 +47,11 @@ class Log:
             print(f'{Log.BLUE}{str}{Log.ENDC}')
 
     @staticmethod
+    def warn(str):
+        if Log.SHOW_LOG:
+            print(f'{Log.YELLOW}{str}{Log.ENDC}')
+
+    @staticmethod
     def error(str):
         if Log.SHOW_LOG:
             print(f'{Log.RED}{str}{Log.ENDC}')
@@ -195,8 +200,9 @@ class GitRepoAdmin:
         # sort it case insensitive
         repos.sort(key=str.lower)
 
-        # write json
-        with open(os.path.expanduser(self._db_file_name), 'w') as db_file:
+        # write json (create directory if not existing)
+        os.makedirs(os.path.dirname(self._db_file_name), exist_ok=True)
+        with open(self._db_file_name, 'w') as db_file:
             data = {"repositories": repos}
             db_file.write(json.dumps(data, indent='\t'))
 
@@ -220,6 +226,13 @@ class GitRepoAdmin:
         # all clear, ask if the user is really sure
         origin_url = subprocess.check_output(
             ["git", "config", "--get", "remote.origin.url"], encoding='utf-8', cwd=p).strip()
+
+        # show git status
+        git_status = subprocess.check_output(
+            ["git", "status", "--porcelain"], encoding='utf-8', cwd=p).strip()
+        if git_status:
+            Log.warn(
+                f"WARNING: repository has modifications:\n{git_status}")
 
         yes_no = input(
             f"{Log.BLUE}remove directory '{p}', origin '{origin_url}'{Log.ENDC} [y/n]? ")
@@ -247,7 +260,7 @@ class GitRepoAdmin:
             # could not remove, most likely due to directory not empty. That's ok.
             pass
 
-        # TODO update database
+        # update database
         self._db_modify(lambda repos: repos.remove(p))
         Log.ok(f"removed '{p}'")
 
@@ -342,7 +355,7 @@ alias grarm='gra rm $(gra ls|fzf)'
 
 
 if __name__ == '__main__':
-    db_file_name = '~/.config/gra.db.json'
+    db_file_name = '~/.local/share/gra/db.json'
     fallback_root = '~/git'
 
     root = fetch_root(fallback_root)
@@ -422,7 +435,7 @@ This root folder is used as the base for all commands.
                                       formatter_class=argparse.RawTextHelpFormatter,
                                       help=f'removes a local repository',
                                       description=f'''
-TODO
+Removes 
 ''')
     parser_rm.add_argument('path',
                            help=f'repository to remove')

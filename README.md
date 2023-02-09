@@ -54,7 +54,8 @@ directories that contain a `.git` folder. These are then set as the repositories
 in the database.
 
 Usually there is no need to call that command, unless you add repositories without
-the `clone` command. The repositories are then sorted and stored into `~/.config/gra.db.json`.
+the `clone` command. The repositories are then sorted and stored into
+`~/.local/share/gra/db.json`.
 
 ## root - shows repository root
 
