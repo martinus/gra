@@ -20,6 +20,8 @@ __version__ = '.'.join(__version_info__)
 
 import argparse
 import os
+import pathlib
+import shutil
 import subprocess
 import json
 import urllib.parse
@@ -43,6 +45,11 @@ class Log:
     def info(str):
         if Log.SHOW_LOG:
             print(f'{Log.BLUE}{str}{Log.ENDC}')
+
+    @staticmethod
+    def error(str):
+        if Log.SHOW_LOG:
+            print(f'{Log.RED}{str}{Log.ENDC}')
 
     @staticmethod
     def ok(str):
@@ -191,6 +198,54 @@ class GitRepoAdmin:
         Log.ok(
             f"found {len(repos)} repositories in '{self._root_path}', updated '{self._db_file_name}'")
 
+    def _rm(self):
+        p = os.path.abspath(os.path.expandvars(
+            os.path.expanduser(self._args.path)))
+        if not os.path.exists(p):
+            Log.error(f"ERROR: directory '{p}' does not exist!")
+            exit(1)
+        if not os.path.exists(os.path.join(p, '.git')):
+            Log.error(f"ERROR: directory '{p}' is not a git repository!")
+            exit(1)
+        if not p.startswith(self._root_path):
+            Log.error(
+                f"ERROR: directory '{p} is not inside the root '{self._root_path}'!")
+            exit(1)
+
+        # all clear, ask if the user is really sure
+        origin_url = subprocess.check_output(
+            ["git", "config", "--get", "remote.origin.url"], encoding='utf-8', cwd=p).strip()
+
+        yes_no = input(
+            f"{Log.BLUE}remove directory '{p}', origin '{origin_url}'{Log.ENDC} [y/n]? ")
+        if yes_no == 'n':
+            # no error, all ok; just don't remove it.
+            return
+
+        if yes_no != 'y':
+            Log.error(f"ERROR: not removing, got '{yes_no}' instead of [y/n]")
+            exit(1)
+
+        # oh my god, we should really remove it!
+        shutil.rmtree(p)
+
+        # remove empty directories until we reach the root
+        # TODO
+        root = pathlib.Path(self._root_path)
+        path = pathlib.Path(p)
+
+        path = path.parent
+        try:
+            while (root in path.parents):
+                path.rmdir()
+                path = path.parent
+        except OSError:
+            # could not remove, most likely due to directory not empty. That's ok.
+            pass
+
+        # TODO update database
+        Log.ok(f"removed '{p}'")
+
     def _shell(self):
         print(f'''
 alias gracd='cd $(gra ls|fzf)'
@@ -265,18 +320,20 @@ alias grarm='gra rm $(gra ls|fzf)'
         match args.cmd:
             case 'clone':
                 self._clone()
+            case 'each':
+                self._each()
             case 'ls':
                 self._ls()
             case 'root':
                 print(self._root_path)
-            case 'each':
-                self._each()
+            case 'rm':
+                self._rm()
+            case 'shell':
+                self._shell()
             case 'updatedb':
                 self._db_update()
             case 'vscode':
                 self._vscode_projectmanager()
-            case 'shell':
-                self._shell()
 
 
 if __name__ == '__main__':
@@ -340,8 +397,6 @@ Simply list all repositories. The list is updated automatically on each clone,
 but if you add/remove repositories without the script, run `updatedb` to
 update the index.
 ''')
-    parser_ls.add_argument('path', default=root, nargs='?',
-                           help=f'directory walked to find all repositories (default: \'{root}\')')
 
     # root
     parser_root = subparsers.add_parser('root',
@@ -356,6 +411,16 @@ configuration with e.g.
 
 This root folder is used as the base for all commands.
 ''')
+
+    # rm
+    parser_rm = subparsers.add_parser('rm',
+                                      formatter_class=argparse.RawTextHelpFormatter,
+                                      help=f'removes a local repository',
+                                      description=f'''
+TODO
+''')
+    parser_rm.add_argument('path',
+                           help=f'repository to remove')
 
     # shell
     parser_shell = subparsers.add_parser('shell',
