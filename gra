@@ -92,9 +92,15 @@ class GitRepoAdmin:
 
     @contextlib.contextmanager
     def _open_db(self, mode='r'):
-        os.makedirs(os.path.dirname(self._db_file_name), exist_ok=True)
+        fn = self._db_file_name
+        if not os.path.isfile(fn):
+            # db does not exist, create an empty one
+            os.makedirs(os.path.dirname(fn), exist_ok=True)
+            with open(fn, "w") as out:
+                data = {"repositories": []}
+                out.write(json.dumps(data, indent='\t'))
         try:
-            fn = open(self._db_file_name, mode)
+            fn = open(fn, mode)
             yield fn
         finally:
             fn.close()
