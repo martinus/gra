@@ -108,17 +108,22 @@ class GitRepoAdmin:
                     repos.append(repo)
         return repos
 
-    def _db_add_path(self, path_to_add):
+    def _db_modify(self, fn_modify):
         """
-        Adds a single repository to the database. Also keeps the list sorted.
+        Loads the database, lets a function modify the repositories, then
+        uniqe & sorts & saves them again.
         """
         with open(self._db_file_name, "r+") as db_file:
             # read
             data = json.load(db_file)
             repos = data['repositories']
-            # add path
-            repos.append(path_to_add)
+
+            # modify repos
+            fn_modify(repos)
+            repos = list(set(repos))
             repos.sort(key=str.lower)
+            data['repositories'] = repos
+
             # write
             db_file.seek(0)
             db_file.truncate(0)
@@ -145,7 +150,7 @@ class GitRepoAdmin:
                             "--remote-submodules",
                             url,
                             path])
-            self._db_add_path(path)
+            self._db_modify(lambda repos: repos.append(path))
 
     def _replace(self, haystack, needle, replacement):
         ary = []
@@ -230,7 +235,6 @@ class GitRepoAdmin:
         shutil.rmtree(p)
 
         # remove empty directories until we reach the root
-        # TODO
         root = pathlib.Path(self._root_path)
         path = pathlib.Path(p)
 
@@ -244,6 +248,7 @@ class GitRepoAdmin:
             pass
 
         # TODO update database
+        self._db_modify(lambda repos: repos.remove(p))
         Log.ok(f"removed '{p}'")
 
     def _shell(self):
