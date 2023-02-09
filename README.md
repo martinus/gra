@@ -45,12 +45,7 @@ gra -q each du -h -d0 {{GRA_REPO}}
 
 Simply list all repositories. The list is updated automatically on each clone,
 but if you add/remove repositories without the script, run `updatedb` to
-update the index. This command can be helpful with e.g. fzf. Here is a handy
-alias to quickly change directory into one of the repositories:
-
-```sh
-alias cdg = 'cd $(gra ls|fzf)'
-```
+update the index.
 
 ## updatedb - crawls the gra root to update the list of repositories
 

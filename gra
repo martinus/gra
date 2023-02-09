@@ -193,7 +193,8 @@ class GitRepoAdmin:
 
     def _shell(self):
         print(f'''
-alias cdg='cd $(gra ls|fzf)'
+alias gracd='cd $(gra ls|fzf)'
+alias grarm='gra rm $(gra ls|fzf)'
 ''')
 
     def _vscode_projectmanager(self):
@@ -366,7 +367,7 @@ or ~/.zshrc or whatever shell you use:
 
     eval "$(gra shell)"
 
-This currenly adds aliase 'cdg' which makes use of 'fzf'.
+This currenly adds aliase 'gracd' which makes use of 'fzf'.
 ''')
 
     # updatedb
