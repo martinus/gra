@@ -67,7 +67,12 @@ configuration with e.g.
 git config --global gra.root ~/develop
 ```
 
-This root folder is used as the base for all commands.
+## rm - removes a local repository
+
+Removes a local git repository. This removes all empty parent directores (not including
+the root) as well.
+
+You have to confirm with 'y' before actual removal takes place.
 
 ## vscode - generate list of projects for VSCode Project Manager
 
@@ -86,4 +91,3 @@ and last two subdirectories as a name. Existing configuration is kept as-is.
   did not work with non github URLs. I like the bash integration.
 * [rhq](https://github.com/ubnt-intrepid/rhq) Another one in rust
 * [projj](https://github.com/popomore/projj)
-* 

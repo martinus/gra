@@ -19,6 +19,7 @@ __version_info__ = ('0', '0', '1')
 __version__ = '.'.join(__version_info__)
 
 import argparse
+import contextlib
 import os
 import pathlib
 import shutil
@@ -89,6 +90,15 @@ class GitRepoAdmin:
             os.path.expanduser(db_file_name))
         self._root_path = os.path.expandvars(os.path.expanduser(root))
 
+    @contextlib.contextmanager
+    def _open_db(self, mode='r'):
+        os.makedirs(os.path.dirname(self._db_file_name), exist_ok=True)
+        try:
+            fn = open(self._db_file_name, mode)
+            yield fn
+        finally:
+            fn.close()
+
     def _url_to_path(self, url):
         """
         Converts an URL, e.g. "https://github.com/martinus/nanobench.git"
@@ -106,7 +116,7 @@ class GitRepoAdmin:
         if the directory actually exists.
         """
         repos = []
-        with open(self._db_file_name) as f:
+        with self._open_db() as f:
             data = json.load(f)
             for repo in data['repositories']:
                 if os.path.exists(repo):
@@ -118,7 +128,7 @@ class GitRepoAdmin:
         Loads the database, lets a function modify the repositories, then
         uniqe & sorts & saves them again.
         """
-        with open(self._db_file_name, "r+") as db_file:
+        with self._open_db("r+") as db_file:
             # read
             data = json.load(db_file)
             repos = data['repositories']
@@ -201,8 +211,7 @@ class GitRepoAdmin:
         repos.sort(key=str.lower)
 
         # write json (create directory if not existing)
-        os.makedirs(os.path.dirname(self._db_file_name), exist_ok=True)
-        with open(self._db_file_name, 'w') as db_file:
+        with self._open_db('w') as db_file:
             data = {"repositories": repos}
             db_file.write(json.dumps(data, indent='\t'))
 
@@ -435,7 +444,10 @@ This root folder is used as the base for all commands.
                                       formatter_class=argparse.RawTextHelpFormatter,
                                       help=f'removes a local repository',
                                       description=f'''
-Removes 
+Removes a local git repository. This removes all empty parent directores (not including
+the root) as well.
+
+You have to confirm with 'y' before actual removal takes place.
 ''')
     parser_rm.add_argument('path',
                            help=f'repository to remove')
