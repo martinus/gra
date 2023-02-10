@@ -48,6 +48,10 @@ class Log:
     SHOW_LOG = True
 
     @staticmethod
+    def enable(yesno):
+        Log.SHOW_LOG = yesno
+
+    @staticmethod
     def info(str):
         if Log.SHOW_LOG:
             print(f'{Log.BLUE}{str}{Log.ENDC}')
@@ -507,7 +511,7 @@ and last two subdirectories as a name. Existing configuration is kept as-is.
 
     # do it
     args = parser.parse_args()
-    Log.SHOW_LOG = not args.quiet
+    Log.enable(not args.quiet)
 
     gra = GitRepoAdmin(args, db_file_name, root)
     gra.process()
