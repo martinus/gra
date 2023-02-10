@@ -13,6 +13,11 @@ batch processing. gra's root location (default: ~/git) can be configured in your
 gra provides shell helpers. Add this to your ~/.bashrc or similar:
 
     eval "$(gra shell)"
+
+This adds two aliases that make use of fzf, the fuzzy searcher:
+
+  * gracd: quickly change directory into any of the repositories
+  * grarm: remove one of the repositories
 """
 
 __version_info__ = ('0', '0', '1')
