@@ -101,6 +101,10 @@ class GitRepoAdmin:
 
     @contextlib.contextmanager
     def _open_db(self, mode='r'):
+        """
+        Opens the database file, and makes sure an empty database is created
+        when the file does not exist
+        """
         fn = self._db_file_name
         if not os.path.isfile(fn):
             # db does not exist, create an empty one
