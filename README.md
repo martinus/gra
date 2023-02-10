@@ -1,8 +1,24 @@
 # gra - Git Repo Admin
 
-The repository administrator helps organize and manage git repositories. It creates directories
-based on the clone URL in a specified root directory, and has tools for batch processing.
-gra's root location can be configured in your `~/.gitconfig`, e.g. like so:
+The repository administrator helps organize and manage git repositories. It structures
+repositories under gra's root location (default: `~/git`) like this: 
+
+```
+~/git
+├── github.com
+│   ├── abseil
+│   │   └── abseil-cpp
+│   ├── martinus
+│   │   ├── gra
+│   │   ├── nanobench
+│   │   └── unordered_dense
+└── sourceware.org
+    └── git
+        └── glibc
+```
+
+gra has several convenience tools, and can be configured in your
+`~/.gitconfig`, e.g. like so:
 
 ```sh
 git config --global gra.root ~/git
