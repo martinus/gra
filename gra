@@ -307,7 +307,7 @@ class GitRepoAdmin:
 
     def _shell(self):
         print(f'''
-alias gracd='cd $(gra ls|fzf)'
+alias gracd='builtin cd -- $(gra ls|fzf)'
 alias grarm='gra rm $(gra ls|fzf)'
 ''')
 
