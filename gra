@@ -306,9 +306,21 @@ class GitRepoAdmin:
         Log.ok(f"removed '{p}'")
 
     def _shell(self):
-        print(f'''
-alias gracd='builtin cd -- $(gra ls|fzf)'
-alias grarm='gra rm $(gra ls|fzf)'
+        print('''
+__GRA=$(which gra | head -n 1)
+gra()  {
+    if [ "$#" -eq 1 ]; then
+        if [ "$1" = "cd" ]; then
+            builtin cd -- $($__GRA ls|fzf)
+            return
+        fi
+        if [ "$1" = "rm" ]; then
+            $__GRA rm $($__GRA ls|fzf)
+            return
+        fi
+    fi
+    $__GRA $@
+}
 ''')
 
     def _vscode_projectmanager(self):
