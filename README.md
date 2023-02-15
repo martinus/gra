@@ -32,8 +32,8 @@ eval "$(gra shell)"
 
 This adds two aliases that make use of [fzf](https://github.com/junegunn/fzf), the fuzzy searcher:
 
-* `gracd`: quickly change directory into any of the repositories
-* `grarm`: remove one of the repositories
+* `gra cd`: quickly change directory into any of the repositories
+* `gra rm`: remove one of the repositories
 
 ## clone - clone one or more remote repository
 

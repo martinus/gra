@@ -29,8 +29,8 @@ gra provides shell helpers. Add this to your ~/.bashrc or similar:
 
 This adds two aliases that make use of fzf, the fuzzy searcher:
 
-  * gracd: quickly change directory into any of the repositories
-  * grarm: remove one of the repositories
+  * gra cd: quickly change directory into any of the repositories
+  * gra rm: remove one of the repositories
 """
 
 __version_info__ = ('0', '1', '0')
@@ -506,7 +506,7 @@ or ~/.zshrc or whatever shell you use:
 
     eval "$(gra shell)"
 
-This currenly adds aliase 'gracd' which makes use of 'fzf'.
+This currenly adds aliase 'gra cd' and `gra rm` which makes use of 'fzf'.
 ''')
 
     # updatedb
