@@ -92,11 +92,11 @@ class Log:
             print(f'{Log.BOLD}{Log.CYAN}{str.ljust(100, c)}{Log.ENDC}')
 
 
-def fetch_root(fallback_root):
+def fetch_root(fallback_root, run_env):
     path = fallback_root  # fallback if not configured
     try:
         path = subprocess.check_output(
-            ["git", "config", "--get", "gra.root"], encoding='utf-8').strip()
+            ["git", "config", "--get", "gra.root"], encoding='utf-8', env=run_env).strip()
     except subprocess.CalledProcessError:
         # no config, use default
         pass
@@ -106,11 +106,13 @@ def fetch_root(fallback_root):
 
 
 class GitRepoAdmin:
-    def __init__(self, args, db_file_name, root):
+    def __init__(self, args, db_file_name, root, run_env):
         self._args = args
         self._db_file_name = os.path.expandvars(
             os.path.expanduser(db_file_name))
         self._root_path = os.path.expandvars(os.path.expanduser(root))
+        # prepare environment variable for git, so it can ask for password etc.
+        self._run_env = run_env
 
     @contextlib.contextmanager
     def _open_db(self, mode='r'):
@@ -196,7 +198,8 @@ class GitRepoAdmin:
                             "--recurse-submodules",
                             "--remote-submodules",
                             url,
-                            path])
+                            path],
+                           env=self._run_env)
             self._db_modify(lambda repos: repos.append(path))
 
     def _replace(self, haystack, needle, replacement):
@@ -217,7 +220,7 @@ class GitRepoAdmin:
         for idx, repo in enumerate(repos):
             Log.header(f'{idx + 1}/{len(repos)} {repo}')
             final_exec = self._replace(exec, '{{GRA_REPO}}', repo)
-            subprocess.run(final_exec, cwd=repo)
+            subprocess.run(final_exec, cwd=repo, env=self._run_env)
 
     def _ls(self):
         """
@@ -266,11 +269,11 @@ class GitRepoAdmin:
 
         # all clear, ask if the user is really sure
         origin_url = subprocess.check_output(
-            ["git", "config", "--get", "remote.origin.url"], encoding='utf-8', cwd=p).strip()
+            ["git", "config", "--get", "remote.origin.url"], encoding='utf-8', cwd=p, env=self._run_env).strip()
 
         # show git status
         git_status = subprocess.check_output(
-            ["git", "status", "--porcelain"], encoding='utf-8', cwd=p).strip()
+            ["git", "status", "--porcelain"], encoding='utf-8', cwd=p, env=self._run_env).strip()
         if git_status:
             Log.warn(
                 f"WARNING: repository has modifications:\n{git_status}")
@@ -411,7 +414,9 @@ if __name__ == '__main__':
     db_file_name = '~/.local/share/gra/db.json'
     fallback_root = '~/git'
 
-    root = fetch_root(fallback_root)
+    run_env = os.environ.copy()
+    run_env["GIT_ASK_YESNO"] = "1"
+    root = fetch_root(fallback_root, run_env)
 
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -542,5 +547,5 @@ and last two subdirectories as a name. Existing configuration is kept as-is.
     args = parser.parse_args()
     Log.enable(not args.quiet)
 
-    gra = GitRepoAdmin(args, db_file_name, root)
+    gra = GitRepoAdmin(args, db_file_name, root, run_env)
     gra.process()
