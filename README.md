@@ -6,22 +6,29 @@ repositories under gra's root location (default: `~/git`) like this:
 ```
 ~/git
 ├── github.com
-│   ├── abseil
-│   │   └── abseil-cpp
 │   ├── martinus
 │   │   ├── gra
-│   │   ├── nanobench
 │   │   └── unordered_dense
 └── sourceware.org
     └── git
         └── glibc
 ```
 
-gra has several convenience tools, and can be configured in your
-`~/.gitconfig`, e.g. like so:
+`gra` is configured in your `~/.gitconfig`. Most importantly, set your `gra.root`
+e.g. like so:
 
 ```sh
-git config --global gra.root ~/git
+git config --global gra.root ~/develop
+```
+
+It is possible to add `pre` and `post` commands that can be automatically executed. Here is
+a full sample configuration:
+
+```ini
+[gra]
+    root = ~/develop
+    post-clone = "git maintenance register"
+    pre-rm = "git maintenance unregister"
 ```
 
 `gra` provides shell helpers. Add this to your `~/.bashrc` or similar:
