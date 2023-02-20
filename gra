@@ -33,7 +33,7 @@ This adds two aliases that make use of fzf, the fuzzy searcher:
   * gra rm: remove one of the repositories
 """
 
-__version_info__ = ('0', '1', '1')
+__version_info__ = ('0', '2', '0')
 __version__ = '.'.join(__version_info__)
 
 import argparse
@@ -92,17 +92,13 @@ class Log:
             print(f'{Log.BOLD}{Log.CYAN}{str.ljust(100, c)}{Log.ENDC}')
 
 
-def fetch_root(fallback_root, run_env):
-    path = fallback_root  # fallback if not configured
+def fetch_git_config(name, run_env):
     try:
-        path = subprocess.check_output(
-            ["git", "config", "--get", "gra.root"], encoding='utf-8', env=run_env).strip()
+        return subprocess.check_output(
+            ["git", "config", "--get", name], encoding='utf-8', env=run_env).strip()
     except subprocess.CalledProcessError:
         # no config, use default
-        pass
-
-    # make sure both e.g. ~/git and $HOME/git works
-    return os.path.expandvars(os.path.expanduser(path))
+        return None
 
 
 class GitRepoAdmin:
@@ -178,6 +174,11 @@ class GitRepoAdmin:
             db_file.truncate(0)
             db_file.write(json.dumps(data, indent='\t'))
 
+    def _run_pre_post_command(self, name, path):
+        if cmd := fetch_git_config(name, self._run_env):
+            Log.info(f"Running '{name}' command '{cmd}'")
+            subprocess.run(cmd, shell=True, env=self._run_env, cwd=path)
+
     # commands ############################
 
     def _clone(self):
@@ -192,6 +193,8 @@ class GitRepoAdmin:
                 # just continue, git only allows cloning into an empty directory anyways
                 pass
 
+            self._run_pre_post_command("gra.pre-clone", path)
+
             Log.info(f"{idx+1}/{len(self._args.url)} Cloning '{url}")
             subprocess.run(["git",
                             "clone",
@@ -201,6 +204,7 @@ class GitRepoAdmin:
                             path],
                            env=self._run_env)
             self._db_modify(lambda repos: repos.append(path))
+            self._run_pre_post_command("gra.post-clone", path)
 
     def _replace(self, haystack, needle, replacement):
         ary = []
@@ -288,7 +292,8 @@ class GitRepoAdmin:
             Log.error(f"ERROR: not removing, got '{yes_no}' instead of [y/n]")
             exit(1)
 
-        # oh my god, we should really remove it!
+        # oh my god, we should really remove it! But first, run a pre-rm inside the repository
+        self._run_pre_post_command("gra.pre-rm", p)
         shutil.rmtree(p)
 
         # remove empty directories until we reach the root
@@ -416,7 +421,10 @@ if __name__ == '__main__':
 
     run_env = os.environ.copy()
     run_env["GIT_ASK_YESNO"] = "1"
-    root = fetch_root(fallback_root, run_env)
+
+    # Get the root, and make sure both e.g. ~/git and $HOME/git works
+    root = fetch_git_config("gra.root", run_env) or fallback_root
+    root = os.path.expandvars(os.path.expanduser(root))
 
     parser = argparse.ArgumentParser(
         description=__doc__,
