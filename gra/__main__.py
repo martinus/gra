@@ -39,8 +39,6 @@ This adds two aliases that make use of fzf, the fuzzy searcher:
   * gra rm: remove one of the repositories
 """
 
-__version_info__ = ('0', '2', '0')
-__version__ = '.'.join(__version_info__)
 
 import argparse
 import contextlib
@@ -421,7 +419,7 @@ gra()  {
                 self._vscode_projectmanager()
 
 
-if __name__ == '__main__':
+def main():
     db_file_name = '~/.local/share/gra/db.json'
     fallback_root = '~/git'
 

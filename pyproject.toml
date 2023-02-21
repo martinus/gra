@@ -1,0 +1,27 @@
+[project]
+name = "gra"
+dynamic = ["version"]
+license = {text = "MIT"}
+authors = [
+    { name = "Martin Leitner-Ankerl", email = "martin.ankerl@gmail.com" },
+]
+description = "Git Repo Admin - administrate local git clones"
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Linux",
+]
+
+[project.scripts]
+gra = "gra.__main__:main"
+
+[tool.setuptools]
+packages = ["gra"]
+
+[project.urls]
+"Homepage" = "https://github.com/martinus/gra"
+"Bug Tracker" = "https://github.com/martinus/gra/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "gra.__version__"}
