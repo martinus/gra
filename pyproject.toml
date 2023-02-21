@@ -1,6 +1,6 @@
 [project]
 name = "gra"
-dynamic = ["version"]
+version = "1.0.0"
 license = {text = "MIT"}
 authors = [
     { name = "Martin Leitner-Ankerl", email = "martin.ankerl@gmail.com" },
@@ -13,15 +13,9 @@ classifiers = [
     "Operating System :: Linux",
 ]
 
-[project.scripts]
-gra = "gra.__main__:main"
-
-[tool.setuptools]
-packages = ["gra"]
-
 [project.urls]
 "Homepage" = "https://github.com/martinus/gra"
 "Bug Tracker" = "https://github.com/martinus/gra/issues"
 
-[tool.setuptools.dynamic]
-version = {attr = "gra.__version__"}
+[project.scripts]
+gra = "gra.__main__:main"

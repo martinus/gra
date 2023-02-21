@@ -39,15 +39,17 @@ This adds two aliases that make use of fzf, the fuzzy searcher:
   * gra rm: remove one of the repositories
 """
 
-
-import argparse
-import contextlib
-import os
-import pathlib
-import shutil
-import subprocess
-import json
 import urllib.parse
+import json
+import subprocess
+import shutil
+import pathlib
+import os
+import contextlib
+import argparse
+import importlib.metadata
+
+__version__ = importlib.metadata.version("gra")
 
 
 class Log:
@@ -432,6 +434,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         description=__doc__,
+        prog="gra",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-q', '--quiet', action='store_true',
                         help='do not print any status information')
@@ -561,3 +564,7 @@ and last two subdirectories as a name. Existing configuration is kept as-is.
 
     gra = GitRepoAdmin(args, db_file_name, root, run_env)
     gra.process()
+
+
+if __name__ == '__main__':
+    main()
