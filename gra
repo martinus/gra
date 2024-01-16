@@ -39,30 +39,30 @@ This adds two aliases that make use of fzf, the fuzzy searcher:
   * gra rm: remove one of the repositories
 """
 
-__version_info__ = ('0', '2', '0')
-__version__ = '.'.join(__version_info__)
+__version_info__ = ("0", "2", "1")
+__version__ = ".".join(__version_info__)
 
 import argparse
 import contextlib
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import json
-import urllib.parse
 
 
 class Log:
-    BLUE = '\x1b[38;5;4m'
-    CYAN = '\x1b[38;5;38m'
-    GREEN = '\x1b[38;5;2m'
-    YELLOW = '\x1b[38;5;3m'
-    RED = '\x1b[38;5;1m'
-    WHITE = '\x1b[38;5;7m'
-    MAGENTA = '\x1b[38;5;5m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+    BLUE = "\x1b[38;5;4m"
+    CYAN = "\x1b[38;5;38m"
+    GREEN = "\x1b[38;5;2m"
+    YELLOW = "\x1b[38;5;3m"
+    RED = "\x1b[38;5;1m"
+    WHITE = "\x1b[38;5;7m"
+    MAGENTA = "\x1b[38;5;5m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
 
     SHOW_LOG = True
 
@@ -73,35 +73,36 @@ class Log:
     @staticmethod
     def info(str):
         if Log.SHOW_LOG:
-            print(f'{Log.BLUE}{str}{Log.ENDC}')
+            print(f"{Log.BLUE}{str}{Log.ENDC}")
 
     @staticmethod
     def warn(str):
         if Log.SHOW_LOG:
-            print(f'{Log.YELLOW}{str}{Log.ENDC}')
+            print(f"{Log.YELLOW}{str}{Log.ENDC}")
 
     @staticmethod
     def error(str):
         if Log.SHOW_LOG:
-            print(f'{Log.RED}{str}{Log.ENDC}')
+            print(f"{Log.RED}{str}{Log.ENDC}")
 
     @staticmethod
     def ok(str):
         if Log.SHOW_LOG:
-            print(f'{Log.GREEN}{str}{Log.ENDC}')
+            print(f"{Log.GREEN}{str}{Log.ENDC}")
 
     @staticmethod
     def header(str):
         if Log.SHOW_LOG:
-            c = '─'
-            str = f'{c*2} {str} '
-            print(f'{Log.BOLD}{Log.CYAN}{str.ljust(100, c)}{Log.ENDC}')
+            c = "─"
+            str = f"{c*2} {str} "
+            print(f"{Log.BOLD}{Log.CYAN}{str.ljust(100, c)}{Log.ENDC}")
 
 
 def fetch_git_config(name, run_env):
     try:
         return subprocess.check_output(
-            ["git", "config", "--get", name], encoding='utf-8', env=run_env).strip()
+            ["git", "config", "--get", name], encoding="utf-8", env=run_env
+        ).strip()
     except subprocess.CalledProcessError:
         # no config, use default
         return None
@@ -110,14 +111,13 @@ def fetch_git_config(name, run_env):
 class GitRepoAdmin:
     def __init__(self, args, db_file_name, root, run_env):
         self._args = args
-        self._db_file_name = os.path.expandvars(
-            os.path.expanduser(db_file_name))
+        self._db_file_name = os.path.expandvars(os.path.expanduser(db_file_name))
         self._root_path = os.path.expandvars(os.path.expanduser(root))
         # prepare environment variable for git, so it can ask for password etc.
         self._run_env = run_env
 
     @contextlib.contextmanager
-    def _open_db(self, mode='r'):
+    def _open_db(self, mode="r"):
         """
         Opens the database file, and makes sure an empty database is created
         when the file does not exist
@@ -128,7 +128,7 @@ class GitRepoAdmin:
             os.makedirs(os.path.dirname(fn), exist_ok=True)
             with open(fn, "w") as out:
                 data = {"repositories": []}
-                out.write(json.dumps(data, indent='\t'))
+                out.write(json.dumps(data, indent="\t"))
         try:
             fn = open(fn, mode)
             yield fn
@@ -137,14 +137,21 @@ class GitRepoAdmin:
 
     def _url_to_path(self, url):
         """
-        Converts an URL, e.g. "https://github.com/martinus/nanobench.git"
+        Converts an URL into an absolute directory. E.g:
+        * https://github.com/martinus/nanobench.git -> github.com/martinus/nanobench
+        * ssh://git@bitbucket.lab.dynatrace.org/one/agent.git -> bitbucket.lab.dynatrace.org/one/agent.git
+        * git@github.com:martinus/dotfiles.git -> github.com/martinus/dotfiles.git
+
         into an absolute directory
         """
-        parsed_url = urllib.parse.urlparse(url)
-        target_path = os.path.join(
-            self._root_path, parsed_url.hostname) + parsed_url.path
-        target_path = target_path.removesuffix('.git')
-        return target_path
+        path = None
+        for r in [r"https\://(.*)", r"(?:ssh\://)?git\@(.*)"]:
+            m = re.compile(r).match(url)
+            if m:
+                parsed_url = m.group(1).removesuffix(".git").replace(":", "/")
+                target_path = os.path.join(self._root_path, parsed_url)
+                return target_path
+        raise f"cannot parse URL '{url}'"
 
     def _db_repositories(self):
         """
@@ -154,7 +161,7 @@ class GitRepoAdmin:
         repos = []
         with self._open_db() as f:
             data = json.load(f)
-            for repo in data['repositories']:
+            for repo in data["repositories"]:
                 if os.path.exists(repo):
                     repos.append(repo)
         return repos
@@ -167,18 +174,18 @@ class GitRepoAdmin:
         with self._open_db("r+") as db_file:
             # read
             data = json.load(db_file)
-            repos = data['repositories']
+            repos = data["repositories"]
 
             # modify repos
             fn_modify(repos)
             repos = list(set(repos))
             repos.sort(key=str.lower)
-            data['repositories'] = repos
+            data["repositories"] = repos
 
             # write
             db_file.seek(0)
             db_file.truncate(0)
-            db_file.write(json.dumps(data, indent='\t'))
+            db_file.write(json.dumps(data, indent="\t"))
 
     def _run_pre_post_command(self, name, path):
         if cmd := fetch_git_config(name, self._run_env):
@@ -202,13 +209,17 @@ class GitRepoAdmin:
             self._run_pre_post_command("gra.pre-clone", path)
 
             Log.info(f"{idx+1}/{len(self._args.url)} Cloning '{url}")
-            subprocess.run(["git",
-                            "clone",
-                            "--recurse-submodules",
-                            "--remote-submodules",
-                            url,
-                            path],
-                           env=self._run_env)
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--recurse-submodules",
+                    "--remote-submodules",
+                    url,
+                    path,
+                ],
+                env=self._run_env,
+            )
             self._db_modify(lambda repos: repos.append(path))
             self._run_pre_post_command("gra.post-clone", path)
 
@@ -226,10 +237,10 @@ class GitRepoAdmin:
         repos = self._db_repositories()
 
         # replace all occurances of {{GRA_ROOT}}
-        exec = self._replace(self._args.exec, '{{GRA_ROOT}}', self._root_path)
+        exec = self._replace(self._args.exec, "{{GRA_ROOT}}", self._root_path)
         for idx, repo in enumerate(repos):
-            Log.header(f'{idx + 1}/{len(repos)} {repo}')
-            final_exec = self._replace(exec, '{{GRA_REPO}}', repo)
+            Log.header(f"{idx + 1}/{len(repos)} {repo}")
+            final_exec = self._replace(exec, "{{GRA_REPO}}", repo)
             subprocess.run(final_exec, cwd=repo, env=self._run_env)
 
     def _ls(self):
@@ -247,7 +258,7 @@ class GitRepoAdmin:
         # collect all repositories
         repos = []
         for root, dirs, _ in os.walk(self._root_path):
-            if '.git' in dirs:
+            if ".git" in dirs:
                 Log.info(f"found '{root}'")
                 repos.append(root)
                 dirs.clear()
@@ -256,45 +267,51 @@ class GitRepoAdmin:
         repos.sort(key=str.lower)
 
         # write json (create directory if not existing)
-        with self._open_db('w') as db_file:
+        with self._open_db("w") as db_file:
             data = {"repositories": repos}
-            db_file.write(json.dumps(data, indent='\t'))
+            db_file.write(json.dumps(data, indent="\t"))
 
         Log.ok(
-            f"found {len(repos)} repositories in '{self._root_path}', updated '{self._db_file_name}'")
+            f"found {len(repos)} repositories in '{self._root_path}', updated '{self._db_file_name}'"
+        )
 
     def _rm(self):
-        p = os.path.abspath(os.path.expandvars(
-            os.path.expanduser(self._args.path)))
+        p = os.path.abspath(os.path.expandvars(os.path.expanduser(self._args.path)))
         if not os.path.exists(p):
             Log.error(f"ERROR: directory '{p}' does not exist!")
             exit(1)
-        if not os.path.exists(os.path.join(p, '.git')):
+        if not os.path.exists(os.path.join(p, ".git")):
             Log.error(f"ERROR: directory '{p}' is not a git repository!")
             exit(1)
         if not p.startswith(self._root_path):
             Log.error(
-                f"ERROR: directory '{p} is not inside the root '{self._root_path}'!")
+                f"ERROR: directory '{p} is not inside the root '{self._root_path}'!"
+            )
             exit(1)
 
         # all clear, ask if the user is really sure
         origin_url = subprocess.check_output(
-            ["git", "config", "--get", "remote.origin.url"], encoding='utf-8', cwd=p, env=self._run_env).strip()
+            ["git", "config", "--get", "remote.origin.url"],
+            encoding="utf-8",
+            cwd=p,
+            env=self._run_env,
+        ).strip()
 
         # show git status
         git_status = subprocess.check_output(
-            ["git", "status", "--porcelain"], encoding='utf-8', cwd=p, env=self._run_env).strip()
+            ["git", "status", "--porcelain"], encoding="utf-8", cwd=p, env=self._run_env
+        ).strip()
         if git_status:
-            Log.warn(
-                f"WARNING: repository has modifications:\n{git_status}")
+            Log.warn(f"WARNING: repository has modifications:\n{git_status}")
 
         yes_no = input(
-            f"{Log.BLUE}remove directory '{p}', origin '{origin_url}'{Log.ENDC} [y/n]? ")
-        if yes_no == 'n':
+            f"{Log.BLUE}remove directory '{p}', origin '{origin_url}'{Log.ENDC} [y/n]? "
+        )
+        if yes_no == "n":
             # no error, all ok; just don't remove it.
             return
 
-        if yes_no != 'y':
+        if yes_no != "y":
             Log.error(f"ERROR: not removing, got '{yes_no}' instead of [y/n]")
             exit(1)
 
@@ -308,7 +325,7 @@ class GitRepoAdmin:
 
         path = path.parent
         try:
-            while (root in path.parents):
+            while root in path.parents:
                 path.rmdir()
                 path = path.parent
         except OSError:
@@ -320,7 +337,8 @@ class GitRepoAdmin:
         Log.ok(f"removed '{p}'")
 
     def _shell(self):
-        print('''
+        print(
+            """
 __GRA=$(which gra | head -n 1)
 gra()  {
     if [ "$#" -eq 1 ]; then
@@ -335,7 +353,8 @@ gra()  {
     fi
     $__GRA $@
 }
-''')
+"""
+        )
 
     def _vscode_projectmanager(self):
         """
@@ -370,60 +389,67 @@ gra()  {
                 tags.append(more_tag)
 
             root_paths.add(repo)
-            projects_to_add.append({
-                "name": f'{name}{name_postfix}',
-                "rootPath": f'{repo_prefix}{repo}',
-                "paths": [],
-                "tags": tags,
-                "enabled": True,
-            })
+            projects_to_add.append(
+                {
+                    "name": f"{name}{name_postfix}",
+                    "rootPath": f"{repo_prefix}{repo}",
+                    "paths": [],
+                    "tags": tags,
+                    "enabled": True,
+                }
+            )
 
         if self._args.remote:
             # remote specified, print the names
-            print(json.dumps(projects_to_add, indent='\t'))
+            print(json.dumps(projects_to_add, indent="\t"))
         else:
             # no remote specified, update local file
             fn = os.path.expanduser(
-                f'~/.config/{app_name}/User/globalStorage/alefragnani.project-manager/projects.json')
+                f"~/.config/{app_name}/User/globalStorage/alefragnani.project-manager/projects.json"
+            )
             with open(fn, "r+") as projects_file:
                 projects_loaded = json.load(projects_file)
 
                 # remove all projects from the loaded ones that will be added, then add them
-                projects = list(filter(
-                    lambda proj: not proj["rootPath"] in root_paths, projects_loaded))
+                projects = list(
+                    filter(
+                        lambda proj: not proj["rootPath"] in root_paths, projects_loaded
+                    )
+                )
                 projects += projects_to_add
 
                 # update the config file
                 projects_file.seek(0)
                 projects_file.truncate(0)
-                projects_file.write(json.dumps(projects, indent='\t'))
+                projects_file.write(json.dumps(projects, indent="\t"))
 
             Log.ok(
-                f"wrote {len(projects)} projects ({len(projects_to_add)} from gra) into '{fn}'")
+                f"wrote {len(projects)} projects ({len(projects_to_add)} from gra) into '{fn}'"
+            )
 
     def process(self):
         match args.cmd:
-            case 'clone':
+            case "clone":
                 self._clone()
-            case 'each':
+            case "each":
                 self._each()
-            case 'ls':
+            case "ls":
                 self._ls()
-            case 'root':
+            case "root":
                 print(self._root_path)
-            case 'rm':
+            case "rm":
                 self._rm()
-            case 'shell':
+            case "shell":
                 self._shell()
-            case 'updatedb':
+            case "updatedb":
                 self._db_update()
-            case 'vscode':
+            case "vscode":
                 self._vscode_projectmanager()
 
 
-if __name__ == '__main__':
-    db_file_name = '~/.local/share/gra/db.json'
-    fallback_root = '~/git'
+if __name__ == "__main__":
+    db_file_name = "~/.local/share/gra/db.json"
+    fallback_root = "~/git"
 
     run_env = os.environ.copy()
     run_env["GIT_ASK_YESNO"] = "1"
@@ -433,33 +459,38 @@ if __name__ == '__main__':
     root = os.path.expandvars(os.path.expanduser(root))
 
     parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('-q', '--quiet', action='store_true',
-                        help='do not print any status information')
-    parser.add_argument('-v', '--version', action='version',
-                        version='%(prog)s ' + __version__)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="do not print any status information"
+    )
+    parser.add_argument(
+        "-v", "--version", action="version", version="%(prog)s " + __version__
+    )
 
-    subparsers = parser.add_subparsers(
-        required=True, dest='cmd', title='commands')
+    subparsers = parser.add_subparsers(required=True, dest="cmd", title="commands")
 
     # clone
-    parser_clone = subparsers.add_parser('clone',
-                                         formatter_class=argparse.RawTextHelpFormatter,
-                                         help=f'clone one or more remote repository',
-                                         description=f'''
+    parser_clone = subparsers.add_parser(
+        "clone",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help=f"clone one or more remote repository",
+        description=f"""
 Clones one or more repository into the gra root directory '{root}'. The
 repository directory is created based on the URL and it is registered into
 gra's database.
-''')
-    parser_clone.add_argument('url', nargs='+',
-                              help='one or more git repository URLs to clone')
+""",
+    )
+    parser_clone.add_argument(
+        "url", nargs="+", help="one or more git repository URLs to clone"
+    )
 
     # each
-    parser_each = subparsers.add_parser('each',
-                                        formatter_class=argparse.RawTextHelpFormatter,
-                                        help='run a command in the working directory of each repository',
-                                        description=f'''
+    parser_each = subparsers.add_parser(
+        "each",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="run a command in the working directory of each repository",
+        description=f"""
 Runs the given command with all arguments for each repository. The working directory of each command
 is its repository, and the commands can use these strings which are automatically replaced:
 
@@ -474,25 +505,28 @@ Show disk usage of each repository. I use {{{{GRA_REPO}}}} so `du` shows the pat
 to hide gra's status output:
 
     gra -q each du -h -d0 {{{{GRA_REPO}}}}
-''')
-    parser_each.add_argument('exec', nargs=argparse.REMAINDER,
-                             help='the command')
+""",
+    )
+    parser_each.add_argument("exec", nargs=argparse.REMAINDER, help="the command")
 
     # ls
-    parser_ls = subparsers.add_parser('ls',
-                                      formatter_class=argparse.RawTextHelpFormatter,
-                                      help=f'list all repositories',
-                                      description=f'''
+    parser_ls = subparsers.add_parser(
+        "ls",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help=f"list all repositories",
+        description=f"""
 Simply list all repositories. The list is updated automatically on each clone,
 but if you add/remove repositories without the script, run `updatedb` to
 update the index.
-''')
+""",
+    )
 
     # root
-    parser_root = subparsers.add_parser('root',
-                                        formatter_class=argparse.RawTextHelpFormatter,
-                                        help=f'shows repository root, currently \'{root}\'',
-                                        description=f'''
+    parser_root = subparsers.add_parser(
+        "root",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help=f"shows repository root, currently '{root}'",
+        description=f"""
 Prints the root path used by gra. The path is configured in the global
 ~/.gitconfig. If not configured, the default is '{fallback_root}'. Set the
 configuration with e.g.
@@ -500,62 +534,72 @@ configuration with e.g.
     git config --global gra.root ~/git
 
 This root folder is used as the base for all commands.
-''')
+""",
+    )
 
     # rm
-    parser_rm = subparsers.add_parser('rm',
-                                      formatter_class=argparse.RawTextHelpFormatter,
-                                      help=f'removes a local repository',
-                                      description=f'''
+    parser_rm = subparsers.add_parser(
+        "rm",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help=f"removes a local repository",
+        description=f"""
 Removes a local git repository. This removes all empty parent directores (not including
 the root) as well.
 
 You have to confirm with 'y' before actual removal takes place.
-''')
-    parser_rm.add_argument('path',
-                           help=f'repository to remove')
+""",
+    )
+    parser_rm.add_argument("path", help=f"repository to remove")
 
     # shell
-    parser_shell = subparsers.add_parser('shell',
-                                         formatter_class=argparse.RawTextHelpFormatter,
-                                         help='write shell script to extend gra features',
-                                         description=f'''
+    parser_shell = subparsers.add_parser(
+        "shell",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="write shell script to extend gra features",
+        description=f"""
 Prints shell script and aliases to help with gra usages. Add this line to your ~/.bashrc
 or ~/.zshrc or whatever shell you use:
 
     eval "$(gra shell)"
 
 This currenly adds aliase 'gra cd' and `gra rm` which makes use of 'fzf'.
-''')
+""",
+    )
 
     # updatedb
-    parser_updatedb = subparsers.add_parser('updatedb',
-                                            formatter_class=argparse.RawTextHelpFormatter,
-                                            help=f'crawls the gra root to update the list of repositories',
-                                            description=f'''
+    parser_updatedb = subparsers.add_parser(
+        "updatedb",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help=f"crawls the gra root to update the list of repositories",
+        description=f"""
 Walks through the whole directory tree in the root path '{root}' to find all
 directories that contain a '.git' folder. These are then set as the repositories
 in the database.
 
 Usually there is no need to call that command, unless you add repositories without the
 'clone' command. The repositories are then sorted and stored into '{db_file_name}'.
-''')
+""",
+    )
 
     # vscode
-    parser_vscode_projectmanager = subparsers.add_parser('vscode',
-                                                         formatter_class=argparse.RawTextHelpFormatter,
-                                                         help='generate list of projects for VSCode Project Manager',
-                                                         description=f'''
+    parser_vscode_projectmanager = subparsers.add_parser(
+        "vscode",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="generate list of projects for VSCode Project Manager",
+        description=f"""
 Requires Visual Studio Code with the Project Manager extension, available here:
 https://marketplace.visualstudio.com/items?itemName=alefragnani.project-manager
 
 This adds each repository to the project manager, with the hostname as tag,
 and last two subdirectories as a name. Existing configuration is kept as-is.
-''')
-    parser_vscode_projectmanager.add_argument('-i', '--insiders', action='store_true',
-                                              help='generate for VSCode Insiders')
-    parser_vscode_projectmanager.add_argument('-r', '--remote',
-                                              help='print for remote hosts')
+""",
+    )
+    parser_vscode_projectmanager.add_argument(
+        "-i", "--insiders", action="store_true", help="generate for VSCode Insiders"
+    )
+    parser_vscode_projectmanager.add_argument(
+        "-r", "--remote", help="print for remote hosts"
+    )
 
     # do it
     args = parser.parse_args()
