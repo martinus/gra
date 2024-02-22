@@ -39,7 +39,7 @@ This adds two aliases that make use of fzf, the fuzzy searcher:
   * gra rm: remove one of the repositories
 """
 
-__version_info__ = ("0", "2", "1")
+__version_info__ = ("0", "3", "0")
 __version__ = ".".join(__version_info__)
 
 import argparse
@@ -50,6 +50,8 @@ import re
 import shutil
 import subprocess
 import json
+from typing import IO, Any, Callable
+from collections.abc import Generator
 
 
 class Log:
@@ -67,38 +69,38 @@ class Log:
     SHOW_LOG = True
 
     @staticmethod
-    def enable(yesno):
+    def enable(yesno: bool) -> None:
         Log.SHOW_LOG = yesno
 
     @staticmethod
-    def info(str):
+    def info(str: str) -> None:
         if Log.SHOW_LOG:
             print(f"{Log.BLUE}{str}{Log.ENDC}")
 
     @staticmethod
-    def warn(str):
+    def warn(str: str) -> None:
         if Log.SHOW_LOG:
             print(f"{Log.YELLOW}{str}{Log.ENDC}")
 
     @staticmethod
-    def error(str):
+    def error(str: str) -> None:
         if Log.SHOW_LOG:
             print(f"{Log.RED}{str}{Log.ENDC}")
 
     @staticmethod
-    def ok(str):
+    def ok(str: str) -> None:
         if Log.SHOW_LOG:
             print(f"{Log.GREEN}{str}{Log.ENDC}")
 
     @staticmethod
-    def header(str):
+    def header(str: str) -> None:
         if Log.SHOW_LOG:
             c = "─"
             str = f"{c*2} {str} "
             print(f"{Log.BOLD}{Log.CYAN}{str.ljust(100, c)}{Log.ENDC}")
 
 
-def fetch_git_config(name, run_env):
+def fetch_git_config(name: str, run_env: dict[str, str]) -> str | None:
     try:
         return subprocess.check_output(
             ["git", "config", "--get", name], encoding="utf-8", env=run_env
@@ -109,7 +111,13 @@ def fetch_git_config(name, run_env):
 
 
 class GitRepoAdmin:
-    def __init__(self, args, db_file_name, root, run_env):
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        db_file_name: str,
+        root: str,
+        run_env: dict[str, str],
+    ):
         self._args = args
         self._db_file_name = os.path.expandvars(os.path.expanduser(db_file_name))
         self._root_path = os.path.expandvars(os.path.expanduser(root))
@@ -117,7 +125,7 @@ class GitRepoAdmin:
         self._run_env = run_env
 
     @contextlib.contextmanager
-    def _open_db(self, mode="r"):
+    def _open_db(self, mode: str = "r") -> Generator[IO[Any], None, None]:
         """
         Opens the database file, and makes sure an empty database is created
         when the file does not exist
@@ -127,15 +135,15 @@ class GitRepoAdmin:
             # db does not exist, create an empty one
             os.makedirs(os.path.dirname(fn), exist_ok=True)
             with open(fn, "w") as out:
-                data = {"repositories": []}
+                data: dict[str, list] = {"repositories": []}
                 out.write(json.dumps(data, indent="\t"))
         try:
-            fn = open(fn, mode)
-            yield fn
+            file = open(fn, mode)
+            yield file
         finally:
-            fn.close()
+            file.close()
 
-    def _url_to_path(self, url):
+    def _url_to_path(self, url: str) -> str:
         """
         Converts an URL into an absolute directory. E.g:
         * https://github.com/martinus/nanobench.git -> github.com/martinus/nanobench
@@ -151,14 +159,14 @@ class GitRepoAdmin:
                 parsed_url = m.group(1).removesuffix(".git").replace(":", "/")
                 target_path = os.path.join(self._root_path, parsed_url)
                 return target_path
-        raise f"cannot parse URL '{url}'"
+        raise SyntaxError(f"cannot parse URL '{url}'")
 
-    def _db_repositories(self):
+    def _db_repositories(self) -> list[str]:
         """
         Goes through all the repositories in the database, and yields the path
         if the directory actually exists.
         """
-        repos = []
+        repos: list[str] = []
         with self._open_db() as f:
             data = json.load(f)
             for repo in data["repositories"]:
@@ -166,7 +174,7 @@ class GitRepoAdmin:
                     repos.append(repo)
         return repos
 
-    def _db_modify(self, fn_modify):
+    def _db_modify(self, fn_modify: Callable[[list[str]], None]) -> None:
         """
         Loads the database, lets a function modify the repositories, then
         uniqe & sorts & saves them again.
@@ -187,14 +195,14 @@ class GitRepoAdmin:
             db_file.truncate(0)
             db_file.write(json.dumps(data, indent="\t"))
 
-    def _run_pre_post_command(self, name, path):
+    def _run_pre_post_command(self, name: str, path: str) -> None:
         if cmd := fetch_git_config(name, self._run_env):
             Log.info(f"Running '{name}' command '{cmd}'")
             subprocess.run(cmd, shell=True, env=self._run_env, cwd=path)
 
     # commands ############################
 
-    def _clone(self):
+    def _clone(self) -> None:
         """
         Clones one or more URLs and upates the database after each update.
         """
@@ -223,13 +231,13 @@ class GitRepoAdmin:
             self._db_modify(lambda repos: repos.append(path))
             self._run_pre_post_command("gra.post-clone", path)
 
-    def _replace(self, haystack, needle, replacement):
+    def _replace(self, haystack: list[str], needle: str, replacement: str) -> list[str]:
         ary = []
         for s in haystack:
             ary.append(s.replace(needle, replacement))
         return ary
 
-    def _each(self):
+    def _each(self) -> None:
         """
         Executes a command in each of the repositories paths
         """
@@ -243,14 +251,14 @@ class GitRepoAdmin:
             final_exec = self._replace(exec, "{{GRA_REPO}}", repo)
             subprocess.run(final_exec, cwd=repo, env=self._run_env)
 
-    def _ls(self):
+    def _ls(self) -> None:
         """
         Just print each repository, useful with e.g. xargs or fzf.
         """
         for repo in self._db_repositories():
             print(repo)
 
-    def _db_update(self):
+    def _db_update(self) -> None:
         """
         Walks throgh the whole directory tree in the root to find all directories
         that contain a .git. These are then set as the repositories in the database
@@ -275,7 +283,7 @@ class GitRepoAdmin:
             f"found {len(repos)} repositories in '{self._root_path}', updated '{self._db_file_name}'"
         )
 
-    def _rm(self):
+    def _rm(self) -> None:
         p = os.path.abspath(os.path.expandvars(os.path.expanduser(self._args.path)))
         if not os.path.exists(p):
             Log.error(f"ERROR: directory '{p}' does not exist!")
@@ -336,18 +344,18 @@ class GitRepoAdmin:
         self._db_modify(lambda repos: repos.remove(p))
         Log.ok(f"removed '{p}'")
 
-    def _shell(self):
+    def _shell(self) -> None:
         print(
             """
 __GRA=$(which gra | head -n 1)
 gra()  {
     if [ "$#" -eq 1 ]; then
         if [ "$1" = "cd" ]; then
-            builtin cd -- $($__GRA ls|fzf)
+            builtin cd -- $($__GRA ls|fzf --keep-right --border=sharp --height=45% --info=inline --layout=reverse --tabstop=1 --exit-0 --select-1 --preview="ls -Cp --color=always --group-directories-first {}" --preview-window=down,30%,sharp)
             return
         fi
         if [ "$1" = "rm" ]; then
-            $__GRA rm $($__GRA ls|fzf)
+            $__GRA rm $($__GRA ls|fzf --keep-right --border=sharp --height=45% --info=inline --layout=reverse --tabstop=1 --exit-0 --select-1 --preview="ls -Cp --color=always --group-directories-first {}" --preview-window=down,30%,sharp)
             return
         fi
     fi
@@ -356,7 +364,7 @@ gra()  {
 """
         )
 
-    def _vscode_projectmanager(self):
+    def _vscode_projectmanager(self) -> None:
         """
         Generates content for VSCode Project Manager
         """
@@ -427,7 +435,7 @@ gra()  {
                 f"wrote {len(projects)} projects ({len(projects_to_add)} from gra) into '{fn}'"
             )
 
-    def process(self):
+    def process(self) -> None:
         match args.cmd:
             case "clone":
                 self._clone()
@@ -448,10 +456,10 @@ gra()  {
 
 
 if __name__ == "__main__":
-    db_file_name = "~/.local/share/gra/db.json"
-    fallback_root = "~/git"
+    db_file_name: str = "~/.local/share/gra/db.json"
+    fallback_root: str = "~/git"
 
-    run_env = os.environ.copy()
+    run_env: dict[str, str] = os.environ.copy()
     run_env["GIT_ASK_YESNO"] = "1"
 
     # Get the root, and make sure both e.g. ~/git and $HOME/git works
@@ -602,7 +610,7 @@ and last two subdirectories as a name. Existing configuration is kept as-is.
     )
 
     # do it
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
     Log.enable(not args.quiet)
 
     gra = GitRepoAdmin(args, db_file_name, root, run_env)
