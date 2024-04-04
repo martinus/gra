@@ -149,11 +149,16 @@ class GitRepoAdmin:
         * https://github.com/martinus/nanobench.git -> github.com/martinus/nanobench
         * ssh://git@bitbucket.lab.dynatrace.org/one/agent.git -> bitbucket.lab.dynatrace.org/one/agent.git
         * git@github.com:martinus/dotfiles.git -> github.com/martinus/dotfiles.git
+        * git://git.openssl.org/openssl.git -> git.openssl.org/openssl.git
 
         into an absolute directory
         """
         path = None
-        for r in [r"https\://(.*)", r"(?:ssh\://)?git\@(.*)"]:
+        for r in [
+            r"https\://(.*)",
+            r"(?:ssh\://)?git\@(.*)",
+            r"git://(.*)",
+        ]:
             m = re.compile(r).match(url)
             if m:
                 parsed_url = m.group(1).removesuffix(".git").replace(":", "/")
