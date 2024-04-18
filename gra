@@ -100,7 +100,7 @@ class Log:
             print(f"{Log.BOLD}{Log.CYAN}{str.ljust(100, c)}{Log.ENDC}")
 
 
-def fetch_git_config(name: str, run_env: dict[str, str]) -> str | None:
+def fetch_git_config(name: str, run_env: dict[str, str]):
     try:
         return subprocess.check_output(
             ["git", "config", "--get", name], encoding="utf-8", env=run_env
@@ -441,23 +441,22 @@ gra()  {
             )
 
     def process(self) -> None:
-        match args.cmd:
-            case "clone":
-                self._clone()
-            case "each":
-                self._each()
-            case "ls":
-                self._ls()
-            case "root":
-                print(self._root_path)
-            case "rm":
-                self._rm()
-            case "shell":
-                self._shell()
-            case "updatedb":
-                self._db_update()
-            case "vscode":
-                self._vscode_projectmanager()
+        if "clone" == args.cmd:
+            self._clone()
+        elif "each" == args.cmd:
+            self._each()
+        elif "ls" == args.cmd:
+            self._ls()
+        elif "root" == args.cmd:
+            print(self._root_path)
+        elif "rm" == args.cmd:
+            self._rm()
+        elif "shell" == args.cmd:
+            self._shell()
+        elif "updatedb" == args.cmd:
+            self._db_update()
+        elif "vscode" == args.cmd:
+            self._vscode_projectmanager()
 
 
 if __name__ == "__main__":
