@@ -21,6 +21,20 @@ e.g. like so:
 git config --global gra.root ~/develop
 ```
 
+# Installation
+
+1. Use `gra` itself to clone `gra`, so it's in the proper directory.
+   ```sh
+   python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" clone git@github.com:martinus/gra.git
+   ```
+
+2. Create a symlink in your path, e.g. like so:
+   ```sh
+   ln -s ~/git/github.com/martinus/gra/gra ~/.local/bin/
+   ```
+
+# Configuration
+
 It is possible to add `pre` and `post` commands that can be automatically executed. Here is
 a full sample configuration:
 
