@@ -221,16 +221,14 @@ class GitRepoAdmin:
 
             self._run_pre_post_command("gra.pre-clone", path)
 
+            cmd = ["git", "clone"]
+            if not self._args.no_submodules:
+                cmd += ["--recurse-submodules", "--remote-submodules"]
+            cmd += [url, path]
+
             Log.info(f"{idx+1}/{len(self._args.url)} Cloning '{url}")
             subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--recurse-submodules",
-                    "--remote-submodules",
-                    url,
-                    path,
-                ],
+                cmd,
                 env=self._run_env,
             )
             self._db_modify(lambda repos: repos.append(path))
@@ -492,6 +490,9 @@ Clones one or more repository into the gra root directory '{root}'. The
 repository directory is created based on the URL and it is registered into
 gra's database.
 """,
+    )
+    parser_clone.add_argument(
+        "--no-submodules", action="store_true", help="Skip fetching of submodules"
     )
     parser_clone.add_argument(
         "url", nargs="+", help="one or more git repository URLs to clone"
