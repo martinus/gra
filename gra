@@ -33,12 +33,13 @@ a sample configuration:
 __version__ = "0.4.0"
 
 import argparse
+import json
 import os
-import pathlib
 import re
 import shutil
 import subprocess
-import json
+import sys
+from pathlib import Path
 from typing import Callable
 
 # ANSI color codes
@@ -52,6 +53,11 @@ BLUE, CYAN, GREEN, YELLOW, RED = (
 BOLD, ENDC = "\033[1m", "\033[0m"
 
 _quiet = False
+
+
+def _expand_path(path: str) -> Path:
+    """Expand ~ and environment variables in path."""
+    return Path(os.path.expandvars(os.path.expanduser(path)))
 
 
 def log(msg: str, color: str = BLUE) -> None:
@@ -76,44 +82,40 @@ def git_config(name: str) -> str | None:
 class GitRepoAdmin:
     def __init__(self, args: argparse.Namespace, db_file: str, root: str):
         self._args = args
-        self._db_file = os.path.expandvars(os.path.expanduser(db_file))
-        self._root = os.path.expandvars(os.path.expanduser(root))
+        self._db_file: Path = _expand_path(db_file)
+        self._root: Path = _expand_path(root)
 
-    def _load_db(self) -> list[str]:
+    def _load_db(self) -> list[Path]:
         """Load repositories from database, creating empty db if needed."""
-        if not os.path.isfile(self._db_file):
-            os.makedirs(os.path.dirname(self._db_file), exist_ok=True)
-            pathlib.Path(self._db_file).write_text(
-                json.dumps({"repositories": []}, indent="\t")
-            )
-        return json.loads(pathlib.Path(self._db_file).read_text())["repositories"]
+        if not self._db_file.is_file():
+            self._db_file.parent.mkdir(parents=True, exist_ok=True)
+            self._db_file.write_text(json.dumps({"repositories": []}, indent="\t"))
+        return [Path(r) for r in json.loads(self._db_file.read_text())["repositories"]]
 
-    def _save_db(self, repos: list[str]) -> None:
+    def _save_db(self, repos: list[Path]) -> None:
         """Save repositories to database, sorted and unique."""
-        repos = sorted(set(repos), key=str.lower)
-        pathlib.Path(self._db_file).write_text(
-            json.dumps({"repositories": repos}, indent="\t")
-        )
+        unique = sorted({str(r) for r in repos}, key=str.lower)
+        self._db_file.write_text(json.dumps({"repositories": unique}, indent="\t"))
 
-    def _existing_repos(self) -> list[str]:
+    def _existing_repos(self) -> list[Path]:
         """Return repositories that actually exist on disk."""
-        return [r for r in self._load_db() if os.path.exists(r)]
+        return [r for r in self._load_db() if r.exists()]
 
-    def _modify_db(self, fn: Callable[[list[str]], None]) -> None:
+    def _modify_db(self, fn: Callable[[list[Path]], None]) -> None:
         """Load db, apply modification function, save."""
         repos = self._load_db()
         fn(repos)
         self._save_db(repos)
 
-    def _url_to_path(self, url: str) -> str:
+    def _url_to_path(self, url: str) -> Path:
         """Convert a git URL to a local path under the root directory."""
         for pattern in [r"https\://(.*)", r"(?:ssh\://)?git\@(.*)", r"git://(.*)"]:
             if m := re.match(pattern, url):
                 parsed = m.group(1).removesuffix(".git").replace(":", "/")
-                return os.path.join(self._root, parsed)
-        raise SyntaxError(f"cannot parse URL '{url}'")
+                return self._root / parsed
+        raise ValueError(f"cannot parse URL '{url}'")
 
-    def _run_hook(self, name: str, path: str) -> None:
+    def _run_hook(self, name: str, path: Path) -> None:
         if cmd := git_config(name):
             log(f"Running '{name}' command '{cmd}'")
             subprocess.run(cmd, shell=True, cwd=path)
@@ -121,17 +123,17 @@ class GitRepoAdmin:
     def _clone(self) -> None:
         for idx, url in enumerate(self._args.url):
             path = self._url_to_path(url)
-            os.makedirs(path, exist_ok=True)
+            path.mkdir(parents=True, exist_ok=True)
             self._run_hook("gra.pre-clone", path)
 
-            cmd = ["git", "clone"]
+            cmd: list[str | Path] = ["git", "clone"]
             if not self._args.no_submodules:
                 cmd += ["--recurse-submodules", "--remote-submodules"]
             cmd += [url, path]
 
-            log(f"{idx + 1}/{len(self._args.url)} Cloning '{url}")
+            log(f"{idx + 1}/{len(self._args.url)} Cloning '{url}'")
             subprocess.run(cmd)
-            self._modify_db(lambda repos: repos.append(path))
+            self._modify_db(lambda repos, p=path: repos.append(p))
             self._run_hook("gra.post-clone", path)
 
     def _each(self) -> None:
@@ -140,7 +142,9 @@ class GitRepoAdmin:
         for idx, repo in enumerate(repos):
             log_header(f"{idx + 1}/{len(repos)} {repo}")
             cmd = [
-                s.replace("{{GRA_ROOT}}", self._root).replace("{{GRA_REPO}}", repo)
+                s.replace("{{GRA_ROOT}}", str(self._root)).replace(
+                    "{{GRA_REPO}}", str(repo)
+                )
                 for s in self._args.exec
             ]
             subprocess.run(cmd, cwd=repo)
@@ -150,11 +154,11 @@ class GitRepoAdmin:
             print(repo)
 
     def _updatedb(self) -> None:
-        repos = []
+        repos: list[Path] = []
         for root, dirs, _ in os.walk(self._root):
             if ".git" in dirs:
                 log(f"found '{root}'")
-                repos.append(root)
+                repos.append(Path(root))
                 dirs.clear()
         self._save_db(repos)
         log(
@@ -163,17 +167,17 @@ class GitRepoAdmin:
         )
 
     def _rm(self) -> None:
-        p = os.path.abspath(os.path.expandvars(os.path.expanduser(self._args.path)))
+        p = _expand_path(self._args.path).resolve()
 
-        if not os.path.exists(p):
+        if not p.exists():
             log(f"ERROR: directory '{p}' does not exist!", RED)
-            exit(1)
-        if not os.path.exists(os.path.join(p, ".git")):
+            sys.exit(1)
+        if not (p / ".git").exists():
             log(f"ERROR: directory '{p}' is not a git repository!", RED)
-            exit(1)
-        if not p.startswith(self._root):
+            sys.exit(1)
+        if self._root not in p.parents and p != self._root:
             log(f"ERROR: directory '{p}' is not inside the root '{self._root}'!", RED)
-            exit(1)
+            sys.exit(1)
 
         origin_url = subprocess.check_output(
             ["git", "config", "--get", "remote.origin.url"], encoding="utf-8", cwd=p
@@ -192,18 +196,17 @@ class GitRepoAdmin:
             return
         if yes_no != "y":
             log(f"ERROR: not removing, got '{yes_no}' instead of [y/n]", RED)
-            exit(1)
+            sys.exit(1)
 
         self._run_hook("gra.pre-rm", p)
         shutil.rmtree(p)
 
         # Remove empty parent directories up to root
-        path = pathlib.Path(p).parent
-        root = pathlib.Path(self._root)
+        parent = p.parent
         try:
-            while root in path.parents:
-                path.rmdir()
-                path = path.parent
+            while self._root in parent.parents:
+                parent.rmdir()
+                parent = parent.parent
         except OSError:
             pass
 
@@ -211,12 +214,12 @@ class GitRepoAdmin:
         log(f"removed '{p}'", GREEN)
 
     def run(self) -> None:
-        commands = {
+        commands: dict[str, Callable[[], None]] = {
             "clone": self._clone,
             "each": self._each,
             "ls": self._ls,
-            "root": lambda: print(self._root),
             "rm": self._rm,
+            "root": lambda: print(self._root),
             "updatedb": self._updatedb,
         }
         commands[self._args.cmd]()
@@ -228,9 +231,7 @@ if __name__ == "__main__":
 
     os.environ["GIT_ASK_YESNO"] = "1"
 
-    root = os.path.expandvars(
-        os.path.expanduser(git_config("gra.root") or FALLBACK_ROOT)
-    )
+    root = _expand_path(git_config("gra.root") or FALLBACK_ROOT)
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
