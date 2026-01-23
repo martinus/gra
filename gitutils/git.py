@@ -5,21 +5,42 @@ from typing import Callable
 
 
 class Git:
+    """Wrapper for git operations with pluggable command execution."""
     def __init__(
         self,
         repo_url: str,
         local_dir: Path,
         *,
         runner: Callable[..., None] | None = None,
-    ):
+    ) -> None:
+        """Initialize a Git repository wrapper.
+
+        Args:
+            repo_url: The remote repository URL.
+            local_dir: The local directory path for the repository.
+            runner: Optional callable to execute commands. Defaults to subprocess.run with check=True.
+        """
         self._repo_url = repo_url
         self._local_dir = local_dir
         self._runner = runner or partial(subprocess.run, check=True)
 
     def _git_run(self, cmd: list[str | Path]) -> None:
+        """Execute a git command in the repository.
+
+        Args:
+            cmd: Git command arguments (without 'git' prefix).
+        """
         self._runner(["git", "-C", self._local_dir, *cmd])
 
     def clone(self, with_submodules: bool) -> None:
+        """Clone the repository from the remote.
+
+        Args:
+            with_submodules: If True, recursively clone submodules.
+
+        Raises:
+            FileExistsError: If the target directory already exists.
+        """
         # prepare target directory
         if self._local_dir.exists():
             raise FileExistsError(
@@ -34,20 +55,25 @@ class Git:
         self._runner(["git", "clone", *options, self._repo_url, self._local_dir])
 
     def _git_fetch(self) -> None:
-        # Adding --prune is highly recommended. it deletes the local "ghost"
-        # branches that have been deleted on the server, keeping your git branch -a
-        # output clean.
+        """Fetch all remote branches with pruning of deleted remote branches."""
         self._git_run(["fetch", "--all", "--prune"])
 
     def _git_fast_forward(self) -> None:
+        """Merge the current branch with fast-forward only."""
         self._git_run(["merge", "--ff-only"])
 
     def update(self) -> None:
+        """Fetch updates and merge with the current branch."""
         self._git_fetch()
         self._git_fast_forward()
 
     def switch_and_update(self, branch_tag_name: str, *, is_tag: bool = False) -> None:
-        """Switches to a different branch/tag and updates to match the remote"""
+        """Switch to a branch or tag and update to match the remote.
+
+        Args:
+            branch_tag_name: The name of the branch or tag to switch to.
+            is_tag: If True, detach HEAD at the tag; otherwise switch to the branch.
+        """
         options = ["--detach"] if is_tag else []
         self._git_fetch()
         self._git_run(["switch", *options, branch_tag_name])
