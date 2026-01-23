@@ -327,4 +327,4 @@ Usually there is no need to call that command, unless you add repositories witho
     args = parser.parse_args()
     _quiet = args.quiet
 
-    GitRepoAdmin(args, DB_FILE, root).run()
+    GitRepoAdmin(args, DB_FILE, str(root)).run()
