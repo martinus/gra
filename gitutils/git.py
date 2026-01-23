@@ -6,7 +6,11 @@ from typing import Callable
 
 class Git:
     def __init__(
-        self, repo_url: str, local_dir: Path, runner: Callable[..., None] | None = None
+        self,
+        repo_url: str,
+        local_dir: Path,
+        *,
+        runner: Callable[..., None] | None = None,
     ):
         self._repo_url = repo_url
         self._local_dir = local_dir
