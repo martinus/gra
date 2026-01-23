@@ -94,6 +94,7 @@ class Git:
             branch_tag_name: The name of the branch or tag to switch to.
             is_tag: If True, detach HEAD at the tag; otherwise switch to the branch.
         """
+        # TODO if tag exists we don't need to do an update
         options = ["--detach"] if is_tag else []
         self._git_fetch()
         self._git_run(["switch", *options, branch_tag_name])
