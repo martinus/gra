@@ -1,7 +1,21 @@
+import os
 import subprocess
-from functools import partial
+from functools import partial, wraps
 from pathlib import Path
+import time
 from typing import Callable
+
+
+def debug_timer(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        before = time.perf_counter()
+        result = func(*args, **kwargs)
+        after = time.perf_counter()
+        print(f"{after - before:.4f}s | {func.__name__}")
+        return result
+
+    return wrapper
 
 
 class Git:
@@ -22,6 +36,10 @@ class Git:
         self._local_dir = local_dir
         self._runner = runner or partial(subprocess.run, check=True)
 
+    @property
+    def dir(self):
+        return self._local_dir
+
     def _git_run(self, cmd: list[str | Path]) -> None:
         """Execute a git command in the repository.
 
@@ -30,6 +48,7 @@ class Git:
         """
         self._runner(["git", "-C", self._local_dir, *cmd])
 
+    @debug_timer
     def clone(self, repo_url: str, *, with_submodules: bool) -> None:
         """Clone the repository from the remote.
 
@@ -53,10 +72,12 @@ class Git:
         )
         self._runner(["git", "clone", *options, repo_url, self._local_dir])
 
+    @debug_timer
     def _git_fetch(self) -> None:
         """Fetch all remote branches with pruning of deleted remote branches."""
-        self._git_run(["fetch", "--all", "--prune"])
+        self._git_run(["fetch", "--all", "--prune", "--tags"])
 
+    @debug_timer
     def _git_fast_forward(self) -> None:
         """Merge the current branch with fast-forward only."""
         self._git_run(["merge", "--ff-only"])
@@ -76,14 +97,35 @@ class Git:
         options = ["--detach"] if is_tag else []
         self._git_fetch()
         self._git_run(["switch", *options, branch_tag_name])
-        self._git_fast_forward()
+        if not is_tag:
+            self._git_fast_forward()
+
+    def run(self, cmd: list[str]) -> subprocess.CompletedProcess[bytes] | None:
+        """Runs any command inside the repo_dir"""
+        return self._runner(cmd, cwd=self._local_dir, check=True)
 
 
 if __name__ == "__main__":
     repo = "git@github.com:AFLplusplus/AFLplusplus.git"
-    dir = (Path(__file__).resolve().parent / "build" / "AFLplusolus")
-    print(dir)
-    git = Git(dir)
-    if not dir.is_dir():
+    repo_dir = Path(__file__).resolve().parent.parent / "build" / "AFLplusolus"
+    git = Git(repo_dir)
+    if not repo_dir.is_dir():
         git.clone(repo, with_submodules=False)
-    git.update()
+    git.switch_and_update("v4.35c", is_tag=True)
+    # git.switch_and_update("stable")
+    # build
+    git.run(
+        [
+            "make",
+            "PERFORMANCE=1",
+            f"-j{os.cpu_count()}",
+            "afl-fuzz",
+            "afl-showmap",
+            "afl-tmin",
+            "afl-gotcpu",
+            "afl-analyze",
+            "afl-cmin",
+        ]
+    )
+    git.run(["make", "PERFORMANCE=1", "-C", "utils/libdislocator"])
+    git.run(["make", "PERFORMANCE=1", "-C", "utils/libtokencap"])
