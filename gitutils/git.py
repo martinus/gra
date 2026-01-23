@@ -16,7 +16,6 @@ class Git:
         """Initialize a Git repository wrapper.
 
         Args:
-            repo_url: The remote repository URL.
             local_dir: The local directory path for the repository.
             runner: Optional callable to execute commands. Defaults to subprocess.run with check=True.
         """
@@ -35,6 +34,7 @@ class Git:
         """Clone the repository from the remote.
 
         Args:
+            repo_url: The remote repository URL.
             with_submodules: If True, recursively clone submodules.
 
         Raises:
