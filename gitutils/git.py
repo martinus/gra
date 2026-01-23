@@ -12,10 +12,10 @@ class Git:
         self._local_dir = local_dir
         self._runner = runner or partial(subprocess.run, check=True)
 
-    def _git_run(self, cmd: list[str]):
-        self._runner(["git", "-C", self._local_dir, *cmd], check=True)
+    def _git_run(self, cmd: list[str | Path]) -> None:
+        self._runner(["git", "-C", self._local_dir, *cmd])
 
-    def clone(self, with_submodules: bool):
+    def clone(self, with_submodules: bool) -> None:
         # prepare target directory
         if self._local_dir.exists():
             raise FileExistsError(
@@ -27,24 +27,22 @@ class Git:
         options = (
             ["--recurse-submodules", "--remote-submodules"] if with_submodules else []
         )
-        self._runner(
-            ["git", "clone", *options, self._repo_url, self._local_dir], check=True
-        )
+        self._runner(["git", "clone", *options, self._repo_url, self._local_dir])
 
-    def _git_fetch(self):
+    def _git_fetch(self) -> None:
         # Adding --prune is highly recommended. it deletes the local "ghost"
         # branches that have been deleted on the server, keeping your git branch -a
         # output clean.
         self._git_run(["fetch", "--all", "--prune"])
 
-    def _git_fast_forward(self):
+    def _git_fast_forward(self) -> None:
         self._git_run(["merge", "--ff-only"])
 
-    def update(self):
+    def update(self) -> None:
         self._git_fetch()
         self._git_fast_forward()
 
-    def switch_and_update(self, branch_tag_name: str, is_tag: bool = False):
+    def switch_and_update(self, branch_tag_name: str, *, is_tag: bool = False) -> None:
         """Switches to a different branch/tag and updates to match the remote"""
         options = ["--detach"] if is_tag else []
         self._git_fetch()

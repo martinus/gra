@@ -11,10 +11,9 @@ class FakeRunner:
     """Captures subprocess calls for assertion."""
 
     def __init__(self) -> None:
-        self.calls: list[list[str]] = []
+        self.calls: list[list[str | Path]] = []
 
-    def __call__(self, args: list[str], *, check: bool) -> None:
-        assert check is True, "Git commands should always use check=True"
+    def __call__(self, args: list[str | Path]) -> None:
         self.calls.append(args)
 
 
