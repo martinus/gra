@@ -6,9 +6,9 @@ from typing import Callable
 
 class Git:
     """Wrapper for git operations with pluggable command execution."""
+
     def __init__(
         self,
-        repo_url: str,
         local_dir: Path,
         *,
         runner: Callable[..., None] | None = None,
@@ -20,7 +20,6 @@ class Git:
             local_dir: The local directory path for the repository.
             runner: Optional callable to execute commands. Defaults to subprocess.run with check=True.
         """
-        self._repo_url = repo_url
         self._local_dir = local_dir
         self._runner = runner or partial(subprocess.run, check=True)
 
@@ -32,7 +31,7 @@ class Git:
         """
         self._runner(["git", "-C", self._local_dir, *cmd])
 
-    def clone(self, with_submodules: bool) -> None:
+    def clone(self, repo_url: str, *, with_submodules: bool) -> None:
         """Clone the repository from the remote.
 
         Args:
@@ -44,7 +43,7 @@ class Git:
         # prepare target directory
         if self._local_dir.exists():
             raise FileExistsError(
-                f"Cannot clone {self._repo_url} because {self._local_dir} already exists"
+                f"Cannot clone {repo_url} because {self._local_dir} already exists"
             )
         self._local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,7 +51,7 @@ class Git:
         options = (
             ["--recurse-submodules", "--remote-submodules"] if with_submodules else []
         )
-        self._runner(["git", "clone", *options, self._repo_url, self._local_dir])
+        self._runner(["git", "clone", *options, repo_url, self._local_dir])
 
     def _git_fetch(self) -> None:
         """Fetch all remote branches with pruning of deleted remote branches."""

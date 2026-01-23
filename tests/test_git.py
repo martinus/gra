@@ -29,9 +29,9 @@ def test_clone_creates_directory_and_runs_git(
     tmp_path: Path, runner: FakeRunner
 ) -> None:
     repo_dir = tmp_path / "org" / "repo"
-    git = Git("https://example.com/repo.git", repo_dir, runner=runner)
+    git = Git(repo_dir, runner=runner)
 
-    git.clone(with_submodules=False)
+    git.clone("https://example.com/repo.git", with_submodules=False)
 
     assert repo_dir.exists()
     assert runner.calls == [
@@ -41,9 +41,9 @@ def test_clone_creates_directory_and_runs_git(
 
 def test_clone_with_submodules_adds_flags(tmp_path: Path, runner: FakeRunner) -> None:
     repo_dir = tmp_path / "repo"
-    git = Git("https://example.com/repo.git", repo_dir, runner=runner)
+    git = Git(repo_dir, runner=runner)
 
-    git.clone(with_submodules=True)
+    git.clone("https://example.com/repo.git", with_submodules=True)
 
     assert runner.calls == [
         [
@@ -60,10 +60,10 @@ def test_clone_with_submodules_adds_flags(tmp_path: Path, runner: FakeRunner) ->
 def test_clone_raises_if_directory_exists(tmp_path: Path, runner: FakeRunner) -> None:
     repo_dir = tmp_path / "existing"
     repo_dir.mkdir()
-    git = Git("https://example.com/repo.git", repo_dir, runner=runner)
+    git = Git(repo_dir, runner=runner)
 
     with pytest.raises(FileExistsError, match="already exists"):
-        git.clone(with_submodules=False)
+        git.clone("https://example.com/repo.git", with_submodules=False)
 
     assert runner.calls == []
 
@@ -74,7 +74,7 @@ def test_clone_raises_if_directory_exists(tmp_path: Path, runner: FakeRunner) ->
 def test_update_fetches_then_merges(tmp_path: Path, runner: FakeRunner) -> None:
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    git = Git("https://example.com/repo.git", repo_dir, runner=runner)
+    git = Git(repo_dir, runner=runner)
 
     git.update()
 
@@ -90,7 +90,7 @@ def test_update_fetches_then_merges(tmp_path: Path, runner: FakeRunner) -> None:
 def test_switch_and_update_for_branch(tmp_path: Path, runner: FakeRunner) -> None:
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    git = Git("https://example.com/repo.git", repo_dir, runner=runner)
+    git = Git(repo_dir, runner=runner)
 
     git.switch_and_update("feature-branch", is_tag=False)
 
@@ -104,7 +104,7 @@ def test_switch_and_update_for_branch(tmp_path: Path, runner: FakeRunner) -> Non
 def test_switch_and_update_detaches_for_tag(tmp_path: Path, runner: FakeRunner) -> None:
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    git = Git("https://example.com/repo.git", repo_dir, runner=runner)
+    git = Git(repo_dir, runner=runner)
 
     git.switch_and_update("v1.2.3", is_tag=True)
 
@@ -120,6 +120,6 @@ def test_switch_and_update_detaches_for_tag(tmp_path: Path, runner: FakeRunner) 
 
 def test_default_runner_uses_subprocess() -> None:
     """Verify that Git uses subprocess.run when no runner is injected."""
-    git = Git("https://example.com/repo.git", Path("/tmp/repo"))
+    git = Git(Path("/tmp/repo"))
     # Check that _runner is a partial wrapping subprocess.run
     assert git._runner.func == subprocess.run
