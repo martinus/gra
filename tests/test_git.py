@@ -1,8 +1,9 @@
 """Tests for the Git class."""
 
 import subprocess
-import pytest
 from pathlib import Path
+
+import pytest
 
 from gitutils.git import Git
 
