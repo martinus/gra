@@ -13,7 +13,7 @@ class Git:
         self._runner = runner or partial(subprocess.run, check=True)
 
     def _git_run(self, cmd: list[str]):
-        self._runner(["git", "-C", str(self._local_dir), *cmd], check=True)
+        self._runner(["git", "-C", self._local_dir, *cmd], check=True)
 
     def clone(self, with_submodules: bool):
         # prepare target directory
@@ -28,7 +28,7 @@ class Git:
             ["--recurse-submodules", "--remote-submodules"] if with_submodules else []
         )
         self._runner(
-            ["git", "clone", *options, self._repo_url, str(self._local_dir)], check=True
+            ["git", "clone", *options, self._repo_url, self._local_dir], check=True
         )
 
     def _git_fetch(self):

@@ -36,7 +36,7 @@ def test_clone_creates_directory_and_runs_git(
 
     assert repo_dir.exists()
     assert runner.calls == [
-        ["git", "clone", "https://example.com/repo.git", str(repo_dir)],
+        ["git", "clone", "https://example.com/repo.git", repo_dir],
     ]
 
 
@@ -53,7 +53,7 @@ def test_clone_with_submodules_adds_flags(tmp_path: Path, runner: FakeRunner) ->
             "--recurse-submodules",
             "--remote-submodules",
             "https://example.com/repo.git",
-            str(repo_dir),
+            repo_dir,
         ],
     ]
 
@@ -80,8 +80,8 @@ def test_update_fetches_then_merges(tmp_path: Path, runner: FakeRunner) -> None:
     git.update()
 
     assert runner.calls == [
-        ["git", "-C", str(repo_dir), "fetch", "--all", "--prune"],
-        ["git", "-C", str(repo_dir), "merge", "--ff-only"],
+        ["git", "-C", repo_dir, "fetch", "--all", "--prune"],
+        ["git", "-C", repo_dir, "merge", "--ff-only"],
     ]
 
 
@@ -96,9 +96,9 @@ def test_switch_and_update_for_branch(tmp_path: Path, runner: FakeRunner) -> Non
     git.switch_and_update("feature-branch", is_tag=False)
 
     assert runner.calls == [
-        ["git", "-C", str(repo_dir), "fetch", "--all", "--prune"],
-        ["git", "-C", str(repo_dir), "switch", "feature-branch"],
-        ["git", "-C", str(repo_dir), "merge", "--ff-only"],
+        ["git", "-C", repo_dir, "fetch", "--all", "--prune"],
+        ["git", "-C", repo_dir, "switch", "feature-branch"],
+        ["git", "-C", repo_dir, "merge", "--ff-only"],
     ]
 
 
@@ -110,9 +110,9 @@ def test_switch_and_update_detaches_for_tag(tmp_path: Path, runner: FakeRunner) 
     git.switch_and_update("v1.2.3", is_tag=True)
 
     assert runner.calls == [
-        ["git", "-C", str(repo_dir), "fetch", "--all", "--prune"],
-        ["git", "-C", str(repo_dir), "switch", "--detach", "v1.2.3"],
-        ["git", "-C", str(repo_dir), "merge", "--ff-only"],
+        ["git", "-C", repo_dir, "fetch", "--all", "--prune"],
+        ["git", "-C", repo_dir, "switch", "--detach", "v1.2.3"],
+        ["git", "-C", repo_dir, "merge", "--ff-only"],
     ]
 
 
