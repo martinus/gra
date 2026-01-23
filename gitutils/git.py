@@ -77,3 +77,13 @@ class Git:
         self._git_fetch()
         self._git_run(["switch", *options, branch_tag_name])
         self._git_fast_forward()
+
+
+if __name__ == "__main__":
+    repo = "git@github.com:AFLplusplus/AFLplusplus.git"
+    dir = (Path(__file__).resolve().parent / "build" / "AFLplusolus")
+    print(dir)
+    git = Git(dir)
+    if not dir.is_dir():
+        git.clone(repo, with_submodules=False)
+    git.update()
