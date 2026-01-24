@@ -37,13 +37,18 @@ class Git:
         """Path where the local git repository is"""
         return self._local_dir
 
-    def _git_run(self, cmd: list[str | Path]) -> subprocess.CompletedProcess | None:
+    def _git_run(
+        self, cmd: list[str | Path], *, capture_output=False
+    ) -> subprocess.CompletedProcess | None:
         """Execute a git command in the repository.
 
         Args:
             cmd: Git command arguments (without 'git' prefix).
+            capture_output: If True, capture stdout and stderr instead of printing them.
         """
-        return self._runner(["git", "-C", self._local_dir, *cmd])
+        return self._runner(
+            ["git", "-C", self._local_dir, *cmd], capture_output=capture_output
+        )
 
     def clone(self, repo_url: str, *, with_submodules: bool) -> None:
         """Clone the repository from the remote.
@@ -89,8 +94,10 @@ class Git:
             is_tag: If True, detach HEAD at the tag; otherwise switch to the branch.
         """
         if is_tag:
-            result = self._git_run(["tag", "--list", branch_tag_name])
-            if result is None or 0 == len(result.stdout):
+            result = self._git_run(
+                ["tag", "--list", branch_tag_name], capture_output=True
+            )
+            if result is None or result.stdout is None or 0 == len(result.stdout):
                 # if tag does not exist locally we need to update. Otherwise we assume
                 # that tags don't change so just use the existing one, its faster to not fetch
                 self._git_fetch()
