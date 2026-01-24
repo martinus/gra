@@ -80,7 +80,7 @@ def test_update_fetches_then_merges(tmp_path: Path, runner: FakeRunner) -> None:
     git.update()
 
     assert runner.calls == [
-        ["git", "-C", repo_dir, "fetch", "--all", "--prune"],
+        ["git", "-C", repo_dir, "fetch", "--all", "--prune", "--tags"],
         ["git", "-C", repo_dir, "merge", "--ff-only"],
     ]
 
@@ -93,10 +93,10 @@ def test_switch_and_update_for_branch(tmp_path: Path, runner: FakeRunner) -> Non
     repo_dir.mkdir()
     git = Git(repo_dir, runner=runner)
 
-    git.switch_and_update("feature-branch", is_tag=False)
+    git.switch_and_update("feature-branch")
 
     assert runner.calls == [
-        ["git", "-C", repo_dir, "fetch", "--all", "--prune"],
+        ["git", "-C", repo_dir, "fetch", "--all", "--prune", "--tags"],
         ["git", "-C", repo_dir, "switch", "feature-branch"],
         ["git", "-C", repo_dir, "merge", "--ff-only"],
     ]
@@ -110,9 +110,9 @@ def test_switch_and_update_detaches_for_tag(tmp_path: Path, runner: FakeRunner) 
     git.switch_and_update("v1.2.3", is_tag=True)
 
     assert runner.calls == [
-        ["git", "-C", repo_dir, "fetch", "--all", "--prune"],
+        ["git", "-C", repo_dir, "tag", "--list", "v1.2.3"],
+        ["git", "-C", repo_dir, "fetch", "--all", "--prune", "--tags"],
         ["git", "-C", repo_dir, "switch", "--detach", "v1.2.3"],
-        ["git", "-C", repo_dir, "merge", "--ff-only"],
     ]
 
 

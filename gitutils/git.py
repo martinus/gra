@@ -1,21 +1,16 @@
+"""Git repository wrapper module.
+
+This module provides a Git class for performing common git operations
+with a clean, Pythonic interface. It wraps git commands and provides
+methods for cloning, updating, switching branches/tags, and running
+custom commands within a repository.
+"""
+
 import os
 import subprocess
-from functools import partial, wraps
+from functools import partial
 from pathlib import Path
-import time
 from typing import Callable
-
-
-def debug_timer(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        before = time.perf_counter()
-        result = func(*args, **kwargs)
-        after = time.perf_counter()
-        print(f"{after - before:.4f}s | {func.__name__}")
-        return result
-
-    return wrapper
 
 
 class Git:
@@ -31,24 +26,25 @@ class Git:
 
         Args:
             local_dir: The local directory path for the repository.
-            runner: Optional callable to execute commands. Defaults to subprocess.run with check=True.
+            runner: Optional callable to execute commands. Defaults
+                    to subprocess.run with check=True.
         """
         self._local_dir = local_dir
         self._runner = runner or partial(subprocess.run, check=True)
 
     @property
-    def dir(self):
+    def local_dir(self):
+        """Path where the local git repository is"""
         return self._local_dir
 
-    def _git_run(self, cmd: list[str | Path]) -> None:
+    def _git_run(self, cmd: list[str | Path]) -> subprocess.CompletedProcess | None:
         """Execute a git command in the repository.
 
         Args:
             cmd: Git command arguments (without 'git' prefix).
         """
-        self._runner(["git", "-C", self._local_dir, *cmd])
+        return self._runner(["git", "-C", self._local_dir, *cmd])
 
-    @debug_timer
     def clone(self, repo_url: str, *, with_submodules: bool) -> None:
         """Clone the repository from the remote.
 
@@ -72,12 +68,10 @@ class Git:
         )
         self._runner(["git", "clone", *options, repo_url, self._local_dir])
 
-    @debug_timer
     def _git_fetch(self) -> None:
         """Fetch all remote branches with pruning of deleted remote branches."""
         self._git_run(["fetch", "--all", "--prune", "--tags"])
 
-    @debug_timer
     def _git_fast_forward(self) -> None:
         """Merge the current branch with fast-forward only."""
         self._git_run(["merge", "--ff-only"])
@@ -94,24 +88,30 @@ class Git:
             branch_tag_name: The name of the branch or tag to switch to.
             is_tag: If True, detach HEAD at the tag; otherwise switch to the branch.
         """
-        # TODO if tag exists we don't need to do an update
-        options = ["--detach"] if is_tag else []
-        self._git_fetch()
-        self._git_run(["switch", *options, branch_tag_name])
-        if not is_tag:
+        if is_tag:
+            result = self._git_run(["tag", "--list", branch_tag_name])
+            if result is None or 0 == len(result.stdout):
+                # if tag does not exist locally we need to update. Otherwise we assume
+                # that tags don't change so just use the existing one, its faster to not fetch
+                self._git_fetch()
+            self._git_run(["switch", "--detach", branch_tag_name])
+        else:
+            # got a branch
+            self._git_fetch()
+            self._git_run(["switch", branch_tag_name])
             self._git_fast_forward()
 
-    def run(self, cmd: list[str]) -> subprocess.CompletedProcess[bytes] | None:
+    def run(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
         """Runs any command inside the repo_dir"""
         return self._runner(cmd, cwd=self._local_dir, check=True)
 
 
 if __name__ == "__main__":
-    repo = "git@github.com:AFLplusplus/AFLplusplus.git"
+    REPO = "git@github.com:AFLplusplus/AFLplusplus.git"
     repo_dir = Path(__file__).resolve().parent.parent / "build" / "AFLplusolus"
     git = Git(repo_dir)
     if not repo_dir.is_dir():
-        git.clone(repo, with_submodules=False)
+        git.clone(REPO, with_submodules=False)
     git.switch_and_update("v4.35c", is_tag=True)
     # git.switch_and_update("stable")
     # build
