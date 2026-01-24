@@ -30,25 +30,23 @@ class Git:
                     to subprocess.run with check=True.
         """
         self._local_dir = local_dir
-        self._runner = runner or partial(subprocess.run, check=True)
+        self._runner = runner or partial(subprocess.run, check=True, text=True)
 
     @property
-    def local_dir(self):
+    def local_dir(self) -> Path:
         """Path where the local git repository is"""
         return self._local_dir
 
     def _git_run(
-        self, cmd: list[str | Path], *, capture_output=False
-    ) -> subprocess.CompletedProcess | None:
+        self, cmd: list[str | Path], *, capture_output: bool = False
+    ) -> subprocess.CompletedProcess[str] | None:
         """Execute a git command in the repository.
 
         Args:
             cmd: Git command arguments (without 'git' prefix).
             capture_output: If True, capture stdout and stderr instead of printing them.
         """
-        return self._runner(
-            ["git", "-C", self._local_dir, *cmd], capture_output=capture_output
-        )
+        return self._runner(["git", "-C", self._local_dir, *cmd], capture_output=capture_output)
 
     def clone(self, repo_url: str, *, with_submodules: bool) -> None:
         """Clone the repository from the remote.
@@ -68,9 +66,7 @@ class Git:
         self._local_dir.mkdir(parents=True, exist_ok=True)
 
         # execute cmd
-        options = (
-            ["--recurse-submodules", "--remote-submodules"] if with_submodules else []
-        )
+        options = ["--recurse-submodules", "--remote-submodules"] if with_submodules else []
         self._runner(["git", "clone", *options, repo_url, self._local_dir])
 
     def _git_fetch(self) -> None:
@@ -94,9 +90,7 @@ class Git:
             is_tag: If True, detach HEAD at the tag; otherwise switch to the branch.
         """
         if is_tag:
-            result = self._git_run(
-                ["tag", "--list", branch_tag_name], capture_output=True
-            )
+            result = self._git_run(["tag", "--list", branch_tag_name], capture_output=True)
             if result is None or result.stdout is None or 0 == len(result.stdout):
                 # if tag does not exist locally we need to update. Otherwise we assume
                 # that tags don't change so just use the existing one, its faster to not fetch
@@ -108,9 +102,9 @@ class Git:
             self._git_run(["switch", branch_tag_name])
             self._git_fast_forward()
 
-    def run(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+    def run(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
         """Runs any command inside the repo_dir"""
-        return self._runner(cmd, cwd=self._local_dir, check=True)
+        return self._runner(cmd, cwd=self._local_dir, check=True, text=True)
 
 
 if __name__ == "__main__":
