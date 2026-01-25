@@ -109,12 +109,12 @@ class Git:
 
 if __name__ == "__main__":
     REPO = "git@github.com:AFLplusplus/AFLplusplus.git"
-    repo_dir = Path(__file__).resolve().parent.parent / "build" / "AFLplusolus"
+    repo_dir = Path(__file__).resolve().parent.parent / "build" / "AFLplusplus"
     git = Git(repo_dir)
     if not repo_dir.is_dir():
         git.clone(REPO, with_submodules=False)
-    git.switch_and_update("v4.35c", is_tag=True)
-    # git.switch_and_update("stable")
+    # git.switch_and_update("v4.35c", is_tag=True)
+    git.switch_and_update("stable")
     # build
     git.run(
         [
