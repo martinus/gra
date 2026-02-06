@@ -61,16 +61,19 @@ def _expand_path(path: str) -> Path:
 
 
 def log(msg: str, color: str = BLUE) -> None:
+    """Print a message to stdout if not in quiet mode."""
     if not _quiet:
         print(f"{color}{msg}{ENDC}")
 
 
 def log_header(msg: str) -> None:
+    """Print a header message to stdout if not in quiet mode."""
     if not _quiet:
         print(f"{BOLD}{CYAN}── {msg} {'─' * (95 - len(msg))}{ENDC}")
 
 
 def git_config(name: str) -> str | None:
+    """Get a git configuration value."""
     try:
         return subprocess.check_output(
             ["git", "config", "--get", name], encoding="utf-8"
@@ -81,6 +84,7 @@ def git_config(name: str) -> str | None:
 
 class GitRepoAdmin:
     def __init__(self, args: argparse.Namespace, db_file: str, root: str):
+        """Initialize the GitRepoAdmin with arguments, database file, and root directory."""
         self._args = args
         self._db_file: Path = _expand_path(db_file)
         self._root: Path = _expand_path(root)
@@ -116,11 +120,13 @@ class GitRepoAdmin:
         raise ValueError(f"cannot parse URL '{url}'")
 
     def _run_hook(self, name: str, path: Path) -> None:
+        """Run a configured git hook command if it exists."""
         if cmd := git_config(name):
             log(f"Running '{name}' command '{cmd}'")
             subprocess.run(cmd, shell=True, cwd=path)
 
     def _clone(self) -> None:
+        """Clone repositories specified in arguments."""
         for idx, url in enumerate(self._args.url):
             path = self._url_to_path(url)
             path.mkdir(parents=True, exist_ok=True)
@@ -137,6 +143,7 @@ class GitRepoAdmin:
             self._run_hook("gra.post-clone", path)
 
     def _each(self) -> None:
+        """Run a command in each repository."""
         repos = self._existing_repos()
         log(f"running '{' '.join(self._args.exec)}' in each repository")
         for idx, repo in enumerate(repos):
@@ -150,10 +157,12 @@ class GitRepoAdmin:
             subprocess.run(cmd, cwd=repo)
 
     def _ls(self) -> None:
+        """List all known repositories."""
         for repo in self._existing_repos():
             print(repo)
 
     def _updatedb(self) -> None:
+        """Update the database by finding all repositories in the root directory."""
         repos: list[Path] = []
         for root, dirs, _ in os.walk(self._root):
             if ".git" in dirs:
@@ -167,6 +176,7 @@ class GitRepoAdmin:
         )
 
     def _rm(self) -> None:
+        """Remove a repository from disk and the database."""
         p = _expand_path(self._args.path).resolve()
 
         if not p.exists():
@@ -214,6 +224,7 @@ class GitRepoAdmin:
         log(f"removed '{p}'", GREEN)
 
     def run(self) -> None:
+        """Execute the command specified in arguments."""
         commands: dict[str, Callable[[], None]] = {
             "clone": self._clone,
             "each": self._each,
