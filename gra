@@ -40,19 +40,31 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
-# ANSI color codes
-BLUE, CYAN, GREEN, YELLOW, RED = (
-    "\x1b[38;5;4m",
-    "\x1b[38;5;38m",
-    "\x1b[38;5;2m",
-    "\x1b[38;5;3m",
-    "\x1b[38;5;1m",
-)
-BOLD, ENDC = "\033[1m", "\033[0m"
 
 _quiet = False
+_use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+if _use_color:
+    # ANSI color codes
+    BLUE, CYAN, GREEN, YELLOW, RED = (
+        "\x1b[38;5;4m",
+        "\x1b[38;5;38m",
+        "\x1b[38;5;2m",
+        "\x1b[38;5;3m",
+        "\x1b[38;5;1m",
+    )
+    BOLD, ENDC = "\033[1m", "\033[0m"
+else:
+    # ANSI color codes
+    BLUE, CYAN, GREEN, YELLOW, RED = (
+        "",
+        "",
+        "",
+        "",
+        "",
+    )
+    BOLD, ENDC = "", ""
 
 
 def _expand_path(path: str) -> Path:
@@ -113,7 +125,7 @@ class GitRepoAdmin:
 
     def _url_to_path(self, url: str) -> Path:
         """Convert a git URL to a local path under the root directory."""
-        for pattern in [r"https\://(.*)", r"(?:ssh\://)?git\@(.*)", r"git://(.*)"]:
+        for pattern in [r"https://(.*)", r"(?:ssh://)?git\@(.*)", r"git://(.*)"]:
             if m := re.match(pattern, url):
                 parsed = m.group(1).removesuffix(".git").replace(":", "/")
                 return self._root / parsed
@@ -127,7 +139,7 @@ class GitRepoAdmin:
 
     def _clone(self) -> None:
         """Clone repositories specified in arguments."""
-        for idx, url in enumerate(self._args.url):
+        for num, url in enumerate(self._args.url, 1):
             path = self._url_to_path(url)
             path.mkdir(parents=True, exist_ok=True)
             self._run_hook("gra.pre-clone", path)
@@ -137,8 +149,8 @@ class GitRepoAdmin:
                 cmd += ["--recurse-submodules", "--remote-submodules"]
             cmd += [url, path]
 
-            log(f"{idx + 1}/{len(self._args.url)} Cloning '{url}'")
-            subprocess.run(cmd)
+            log(f"{num}/{len(self._args.url)} Cloning '{url}'")
+            subprocess.run(cmd, check=True)
             self._modify_db(lambda repos, p=path: repos.append(p))
             self._run_hook("gra.post-clone", path)
 
@@ -146,8 +158,8 @@ class GitRepoAdmin:
         """Run a command in each repository."""
         repos = self._existing_repos()
         log(f"running '{' '.join(self._args.exec)}' in each repository")
-        for idx, repo in enumerate(repos):
-            log_header(f"{idx + 1}/{len(repos)} {repo}")
+        for num, repo in enumerate(repos, 1):
+            log_header(f"{num}/{len(repos)} {repo}")
             cmd = [
                 s.replace("{{GRA_ROOT}}", str(self._root)).replace(
                     "{{GRA_REPO}}", str(repo)
@@ -288,7 +300,7 @@ to hide gra's status output:
 
     gra -q each du -h -d0 {{{{GRA_REPO}}}}""",
     )
-    p.add_argument("exec", nargs=argparse.REMAINDER, help="the command")
+    p.add_argument("exec", nargs="+", help="the command")
 
     subparsers.add_parser(
         "ls",
