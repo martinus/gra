@@ -1,353 +1,246 @@
 #!/usr/bin/env python3
 
-"""
-gra - Git Repo Admin
+"""gra - Git Repo Admin
 
-The repository administrator helps organize and manage git repositories. It structures
-repositories under gra's root location (default: ~/git) like this:
+A tiny clone helper that puts repositories under a flat ~/git layout:
 
-~/git
-├── github.com
-│   ├── martinus
-│   │   ├── gra
-│   │   └── unordered_dense
-└── sourceware.org
-    └── git
-        └── glibc
+    ~/git/<repo>/<default-branch>
 
-CONFIGURATION
-
-gra is configured in your ~/.gitconfig. Most importantly, set your gra.root:
-
-    git config --global gra.root ~/develop
-
-It provides pre and post commands that can be automatically executed. Here is
-a sample configuration:
-
-[gra]
-    root = ~/develop
-    post-clone = "git maintenance register"
-    pre-rm = "git maintenance unregister"
+Only the `clone` command is supported.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 import argparse
-import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from collections.abc import Callable
+from typing import NoReturn
+from urllib.parse import urlparse
 
+
+FALLBACK_ROOT = "~/git"
+CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
 
 _quiet = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 if _use_color:
-    # ANSI color codes
-    BLUE, CYAN, GREEN, YELLOW, RED = (
+    BLUE, GREEN, RED = (
         "\x1b[38;5;4m",
-        "\x1b[38;5;38m",
         "\x1b[38;5;2m",
-        "\x1b[38;5;3m",
         "\x1b[38;5;1m",
     )
-    BOLD, ENDC = "\033[1m", "\033[0m"
+    ENDC = "\033[0m"
 else:
-    # ANSI color codes
-    BLUE, CYAN, GREEN, YELLOW, RED = (
-        "",
-        "",
-        "",
-        "",
-        "",
-    )
-    BOLD, ENDC = "", ""
+    BLUE = GREEN = RED = ENDC = ""
 
 
-def _expand_path(path: str) -> Path:
-    """Expand ~ and environment variables in path."""
+def expand_path(path: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(path)))
 
 
 def log(msg: str, color: str = BLUE) -> None:
-    """Print a message to stdout if not in quiet mode."""
     if not _quiet:
         print(f"{color}{msg}{ENDC}")
 
 
-def log_header(msg: str) -> None:
-    """Print a header message to stdout if not in quiet mode."""
-    if not _quiet:
-        print(f"{BOLD}{CYAN}── {msg} {'─' * (95 - len(msg))}{ENDC}")
+def fail(msg: str) -> NoReturn:
+    print(f"{RED}ERROR: {msg}{ENDC}", file=sys.stderr)
+    sys.exit(1)
 
 
-def git_config(name: str) -> str | None:
-    """Get a git configuration value."""
+def run_git(args: list[str | Path], *, cwd: Path | None = None) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True)
+
+
+def git_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None:
     try:
-        return subprocess.check_output(
-            ["git", "config", "--get", name], encoding="utf-8"
-        ).strip()
+        return subprocess.check_output(["git", *args], cwd=cwd, encoding="utf-8").strip()
     except subprocess.CalledProcessError:
         return None
 
 
-class GitRepoAdmin:
-    def __init__(self, args: argparse.Namespace, db_file: str, root: str):
-        """Initialize the GitRepoAdmin with arguments, database file, and root directory."""
-        self._args = args
-        self._db_file: Path = _expand_path(db_file)
-        self._root: Path = _expand_path(root)
+def git_config(name: str) -> str | None:
+    return git_output(["config", "--get", name])
 
-    def _load_db(self) -> list[Path]:
-        """Load repositories from database, creating empty db if needed."""
-        if not self._db_file.is_file():
-            self._db_file.parent.mkdir(parents=True, exist_ok=True)
-            self._db_file.write_text(json.dumps({"repositories": []}, indent="\t"))
-        return [Path(r) for r in json.loads(self._db_file.read_text())["repositories"]]
 
-    def _save_db(self, repos: list[Path]) -> None:
-        """Save repositories to database, sorted and unique."""
-        unique = sorted({str(r) for r in repos}, key=str.lower)
-        self._db_file.write_text(json.dumps({"repositories": unique}, indent="\t"))
+def url_parts(url: str) -> list[str]:
+    if match := re.match(r"[^@/]+@[^:]+:(.+)$", url):
+        path = match.group(1)
+    else:
+        parsed = urlparse(url)
+        path = parsed.path if parsed.scheme else url
+    return [part for part in path.rstrip("/").removesuffix(".git").split("/") if part]
 
-    def _existing_repos(self) -> list[Path]:
-        """Return repositories that actually exist on disk."""
-        return [r for r in self._load_db() if r.exists()]
 
-    def _modify_db(self, fn: Callable[[list[Path]], None]) -> None:
-        """Load db, apply modification function, save."""
-        repos = self._load_db()
-        fn(repos)
-        self._save_db(repos)
+def repo_name_from_url(url: str) -> str:
+    parts = url_parts(url)
+    if not parts:
+        raise ValueError(f"cannot derive repository name from '{url}'")
+    return parts[-1]
 
-    def _url_to_path(self, url: str) -> Path:
-        """Convert a git URL to a local path under the root directory."""
-        for pattern in [r"https://(.*)", r"(?:ssh://)?git\@(.*)", r"git://(.*)"]:
-            if m := re.match(pattern, url):
-                parsed = m.group(1).removesuffix(".git").replace(":", "/")
-                return self._root / parsed
-        raise ValueError(f"cannot parse URL '{url}'")
 
-    def _run_hook(self, name: str, path: Path) -> None:
-        """Run a configured git hook command if it exists."""
-        if cmd := git_config(name):
-            log(f"Running '{name}' command '{cmd}'")
-            subprocess.run(cmd, shell=True, cwd=path)
+def owner_from_url(url: str) -> str | None:
+    parts = url_parts(url)
+    if len(parts) >= 2:
+        return parts[-2]
+    return None
 
-    def _clone(self) -> None:
-        """Clone repositories specified in arguments."""
-        for num, url in enumerate(self._args.url, 1):
-            path = self._url_to_path(url)
-            path.mkdir(parents=True, exist_ok=True)
-            self._run_hook("gra.pre-clone", path)
 
-            cmd: list[str | Path] = ["git", "clone"]
-            if not self._args.no_submodules:
-                cmd += ["--recurse-submodules", "--remote-submodules"]
-            cmd += [url, path]
-
-            log(f"{num}/{len(self._args.url)} Cloning '{url}'")
-            subprocess.run(cmd, check=True)
-            self._modify_db(lambda repos, p=path: repos.append(p))
-            self._run_hook("gra.post-clone", path)
-
-    def _each(self) -> None:
-        """Run a command in each repository."""
-        repos = self._existing_repos()
-        log(f"running '{' '.join(self._args.exec)}' in each repository")
-        for num, repo in enumerate(repos, 1):
-            log_header(f"{num}/{len(repos)} {repo}")
-            cmd = [
-                s.replace("{{GRA_ROOT}}", str(self._root)).replace(
-                    "{{GRA_REPO}}", str(repo)
-                )
-                for s in self._args.exec
-            ]
-            subprocess.run(cmd, cwd=repo)
-
-    def _ls(self) -> None:
-        """List all known repositories."""
-        for repo in self._existing_repos():
-            print(repo)
-
-    def _updatedb(self) -> None:
-        """Update the database by finding all repositories in the root directory."""
-        repos: list[Path] = []
-        for root, dirs, _ in os.walk(self._root):
-            if ".git" in dirs:
-                log(f"found '{root}'")
-                repos.append(Path(root))
-                dirs.clear()
-        self._save_db(repos)
-        log(
-            f"found {len(repos)} repositories in '{self._root}', updated '{self._db_file}'",
-            GREEN,
+def validate_repo_name(name: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        fail(
+            f"invalid repository name '{name}'; use only letters, numbers, dots, underscores, and dashes"
         )
-
-    def _rm(self) -> None:
-        """Remove a repository from disk and the database."""
-        p = _expand_path(self._args.path).resolve()
-
-        if not p.exists():
-            log(f"ERROR: directory '{p}' does not exist!", RED)
-            sys.exit(1)
-        if not (p / ".git").exists():
-            log(f"ERROR: directory '{p}' is not a git repository!", RED)
-            sys.exit(1)
-        if self._root not in p.parents and p != self._root:
-            log(f"ERROR: directory '{p}' is not inside the root '{self._root}'!", RED)
-            sys.exit(1)
-
-        origin_url = subprocess.check_output(
-            ["git", "config", "--get", "remote.origin.url"], encoding="utf-8", cwd=p
-        ).strip()
-
-        git_status = subprocess.check_output(
-            ["git", "status", "--porcelain"], encoding="utf-8", cwd=p
-        ).strip()
-        if git_status:
-            log(f"WARNING: repository has modifications:\n{git_status}", YELLOW)
-
-        yes_no = input(
-            f"{BLUE}remove directory '{p}', origin '{origin_url}'{ENDC} [y/n]? "
-        )
-        if yes_no == "n":
-            return
-        if yes_no != "y":
-            log(f"ERROR: not removing, got '{yes_no}' instead of [y/n]", RED)
-            sys.exit(1)
-
-        self._run_hook("gra.pre-rm", p)
-        shutil.rmtree(p)
-
-        # Remove empty parent directories up to root
-        parent = p.parent
-        try:
-            while self._root in parent.parents:
-                parent.rmdir()
-                parent = parent.parent
-        except OSError:
-            pass
-
-        self._modify_db(lambda repos: repos.remove(p))
-        log(f"removed '{p}'", GREEN)
-
-    def run(self) -> None:
-        """Execute the command specified in arguments."""
-        commands: dict[str, Callable[[], None]] = {
-            "clone": self._clone,
-            "each": self._each,
-            "ls": self._ls,
-            "rm": self._rm,
-            "root": lambda: print(self._root),
-            "updatedb": self._updatedb,
-        }
-        commands[self._args.cmd]()
+    if name in {".", ".."} or name.startswith("."):
+        fail(f"invalid repository name '{name}'")
 
 
-if __name__ == "__main__":
-    DB_FILE = "~/.local/share/gra/db.json"
-    FALLBACK_ROOT = "~/git"
+def origin_url(checkout: Path) -> str | None:
+    if not (checkout / ".git").exists():
+        return None
+    return git_output(["config", "--get", "remote.origin.url"], cwd=checkout)
 
-    os.environ["GIT_ASK_YESNO"] = "1"
 
-    root = _expand_path(git_config("gra.root") or FALLBACK_ROOT)
+def existing_origin(container: Path) -> str | None:
+    if not container.is_dir():
+        return None
+    for child in sorted(container.iterdir(), key=lambda path: path.name):
+        if child.is_dir():
+            origin = origin_url(child)
+            if origin:
+                return origin
+    return None
+
+
+def suggest_name(url: str, repo_name: str) -> str | None:
+    owner = owner_from_url(url)
+    if not owner:
+        return None
+    suggestion = f"{repo_name}-{owner}"
+    return suggestion if suggestion != repo_name else None
+
+
+def clone_collision_error(url: str, container: Path, repo_name: str) -> None:
+    lines = [
+        f"local repository name '{repo_name}' already exists",
+        "",
+        "Existing:",
+        f"  path:   {container}",
+    ]
+    if origin := existing_origin(container):
+        lines.append(f"  origin: {origin}")
+    lines += [
+        "",
+        "Requested:",
+        f"  origin: {url}",
+    ]
+    if suggestion := suggest_name(url, repo_name):
+        lines += [
+            "",
+            "Use a distinct name, for example:",
+            f"  gra clone {url} --name {suggestion}",
+        ]
+    fail("\n".join(lines))
+
+
+def checkout_dir_name(checkout: Path) -> str:
+    branch = git_output(["branch", "--show-current"], cwd=checkout)
+    name = (branch or "checkout").replace("/", "-")
+    return name if re.fullmatch(r"[A-Za-z0-9._-]+", name) else "checkout"
+
+
+def add_local_excludes(checkout: Path) -> None:
+    exclude = checkout / ".git" / "info" / "exclude"
+    if not exclude.is_file():
+        return
+
+    lines = exclude.read_text().splitlines()
+    if CLAUDE_WORKTREES_EXCLUDE not in lines:
+        with exclude.open("a", encoding="utf-8") as file:
+            if lines and lines[-1] != "":
+                file.write("\n")
+            file.write(f"{CLAUDE_WORKTREES_EXCLUDE}\n")
+
+
+def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None:
+    try:
+        repo_name = name or repo_name_from_url(url)
+    except ValueError as error:
+        fail(str(error))
+    validate_repo_name(repo_name)
+
+    container = root / repo_name
+    if container.exists():
+        clone_collision_error(url, container, repo_name)
+
+    tmp_checkout = container / ".clone"
+    try:
+        container.mkdir(parents=True)
+        cmd: list[str | Path] = ["clone"]
+        if with_submodules:
+            cmd += ["--recurse-submodules", "--remote-submodules"]
+        cmd += [url, tmp_checkout]
+
+        log(f"Cloning '{url}' into '{container}'")
+        run_git(cmd)
+
+        checkout = container / checkout_dir_name(tmp_checkout)
+        if checkout.exists():
+            fail(f"cannot move checkout to '{checkout}' because it already exists")
+        tmp_checkout.rename(checkout)
+        add_local_excludes(checkout)
+        log(f"created '{checkout}'", GREEN)
+    except Exception:
+        if tmp_checkout.exists():
+            shutil.rmtree(tmp_checkout)
+        if container.exists() and not any(container.iterdir()):
+            container.rmdir()
+        raise
+
+
+def parse_args() -> argparse.Namespace:
+    root = expand_path(git_config("gra.root") or FALLBACK_ROOT)
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "-q", "--quiet", action="store_true", help="do not print any status information"
+        "-q", "--quiet", action="store_true", help="do not print status information"
     )
     parser.add_argument(
         "-v", "--version", action="version", version="%(prog)s " + __version__
     )
 
     subparsers = parser.add_subparsers(required=True, dest="cmd", title="commands")
-
-    p = subparsers.add_parser(
+    clone_parser = subparsers.add_parser(
         "clone",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="clone one or more remote repository",
-        description=f"""Clones one or more repository into the gra root directory '{root}'. The
-repository directory is created based on the URL and it is registered into
-gra's database.""",
+        help="clone a remote repository",
+        description=f"Clone a repository into '{root}/<name>/<default-branch>'.",
     )
-    p.add_argument(
-        "--no-submodules", action="store_true", help="Skip fetching of submodules"
-    )
-    p.add_argument("url", nargs="+", help="one or more git repository URLs to clone")
-
-    p = subparsers.add_parser(
-        "each",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="run a command in the working directory of each repository",
-        description=f"""Runs the given command with all arguments for each repository. The working directory of each command
-is its repository, and the commands can use these strings which are automatically replaced:
-
-{{{{GRA_ROOT}}}}: Replaced by gra root directory '{root}'.
-{{{{GRA_REPO}}}}: Replaced by the full path of each repository.
-
-Here are examples that you can try. Show short git status of each repository:
-
-    gra each git status -sb
-
-Show disk usage of each repository. I use {{{{GRA_REPO}}}} so `du` shows the path, and the argument -q
-to hide gra's status output:
-
-    gra -q each du -h -d0 {{{{GRA_REPO}}}}""",
-    )
-    p.add_argument("exec", nargs="+", help="the command")
-
-    subparsers.add_parser(
-        "ls",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="list all repositories",
-        description="""Simply list all repositories. The list is updated automatically on each clone,
-but if you add/remove repositories without the script, run `updatedb` to
-update the index.""",
-    )
-
-    subparsers.add_parser(
-        "root",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help=f"shows repository root, currently '{root}'",
-        description=f"""Prints the root path used by gra. The path is configured in the global
-~/.gitconfig. If not configured, the default is '{FALLBACK_ROOT}'. Set the
-configuration with e.g.
-
-    git config --global gra.root ~/git
-
-This root folder is used as the base for all commands.""",
-    )
-
-    p = subparsers.add_parser(
-        "rm",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="removes a local repository",
-        description="""Removes a local git repository. This removes all empty parent directores (not including
-the root) as well.
-
-You have to confirm with 'y' before actual removal takes place.""",
-    )
-    p.add_argument("path", help="repository to remove")
-
-    subparsers.add_parser(
-        "updatedb",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="crawls the gra root to update the list of repositories",
-        description=f"""Walks through the whole directory tree in the root path '{root}' to find all
-directories that contain a '.git' folder. These are then set as the repositories
-in the database.
-
-Usually there is no need to call that command, unless you add repositories without the
-'clone' command. The repositories are then sorted and stored into '{DB_FILE}'.""",
+    clone_parser.add_argument("url", help="git repository URL to clone")
+    clone_parser.add_argument("--name", help="local repository name under the gra root")
+    clone_parser.add_argument(
+        "--no-submodules", action="store_true", help="skip fetching submodules"
     )
 
     args = parser.parse_args()
-    _quiet = args.quiet
+    args.root = root
+    return args
 
-    GitRepoAdmin(args, DB_FILE, str(root)).run()
+
+def main() -> None:
+    global _quiet
+
+    args = parse_args()
+    _quiet = args.quiet
+    clone(args.url, args.name, args.root, not args.no_submodules)
+
+
+if __name__ == "__main__":
+    os.environ["GIT_ASK_YESNO"] = "1"
+    main()
