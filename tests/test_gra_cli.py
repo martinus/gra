@@ -156,12 +156,52 @@ def test_wt_lists_worktrees_for_current_repo(tmp_path: Path) -> None:
     assert "main" in result.stdout
     assert "wt/review" in result.stdout
     assert "feature" in result.stdout
-    assert "dirty" in result.stdout
+    assert "● dirty" in result.stdout
+    assert "▶" in result.stdout
 
     repo_result = run_cli(["wt"], home, cwd=home / "git" / "project")
     assert repo_result.returncode == 0, repo_result.stderr
-    assert "*  main" not in repo_result.stdout
-    assert "*  wt/review" not in repo_result.stdout
+    assert "▶" not in repo_result.stdout
+
+
+def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    project = make_repo(tmp_path, "project")
+    git(["switch", "-c", "feature"], cwd=project)
+    (project / "README.md").write_text("# feature\n")
+    git(["commit", "-am", "feature"], cwd=project)
+    git(["switch", "main"], cwd=project)
+    library = make_repo(tmp_path, "library")
+
+    project_clone = run_cli(["clone", str(project), "--no-submodules"], home)
+    assert project_clone.returncode == 0, project_clone.stderr
+    library_clone = run_cli(["clone", str(library), "--no-submodules"], home)
+    assert library_clone.returncode == 0, library_clone.stderr
+
+    project_checkout = home / "git" / "project" / "main"
+    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=project_checkout)
+    assert review_result.returncode == 0, review_result.stderr
+    review = home / "git" / "project" / "wt" / "review"
+    (review / "scratch.txt").write_text("local change\n")
+
+    result = run_cli(["ls"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert f"Root: {home / 'git'}" in result.stdout
+    assert "Repositories: 2" in result.stdout
+    assert "Worktrees: 3" in result.stdout
+    assert "REPOSITORY" in result.stdout
+    assert "library" in result.stdout
+    assert "project" in result.stdout
+    assert "WORKTREE" in result.stdout
+    assert "REF" in result.stdout
+    assert "STATUS" in result.stdout
+    assert "main" in result.stdout
+    assert "wt/review" in result.stdout
+    assert "feature" in result.stdout
+    assert "✓ clean" in result.stdout
+    assert "● dirty" in result.stdout
 
 
 def test_clone_reports_collision_with_name_suggestion(tmp_path: Path) -> None:
@@ -190,7 +230,7 @@ def test_unknown_command_is_rejected(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
 
-    result = run_cli(["ls"], home)
+    result = run_cli(["unknown"], home)
 
     assert result.returncode != 0
-    assert "invalid choice: 'ls'" in result.stderr
+    assert "invalid choice: 'unknown'" in result.stderr

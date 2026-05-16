@@ -7,10 +7,10 @@ A tiny clone helper that puts repositories under a flat ~/git layout:
     ~/git/<repo>/<default-branch>
     ~/git/<repo>/wt
 
-Only the `clone` and `wt` commands are supported.
+Only the `clone`, `ls`, and `wt` commands are supported.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 import argparse
 import os
@@ -36,14 +36,18 @@ CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
 _quiet = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 if _use_color:
-    BLUE, GREEN, RED = (
+    BLUE, GREEN, RED, YELLOW, CYAN, BOLD, DIM = (
         "\x1b[38;5;4m",
         "\x1b[38;5;2m",
         "\x1b[38;5;1m",
+        "\x1b[38;5;3m",
+        "\x1b[38;5;6m",
+        "\x1b[1m",
+        "\x1b[2m",
     )
     ENDC = "\033[0m"
 else:
-    BLUE = GREEN = RED = ENDC = ""
+    BLUE = GREEN = RED = YELLOW = CYAN = BOLD = DIM = ENDC = ""
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +62,11 @@ def expand_path(path: str) -> Path:
 def log(msg: str, color: str = BLUE) -> None:
     if not _quiet:
         print(f"{color}{msg}{ENDC}")
+
+
+def style(text: str, *colors: str) -> str:
+    code = "".join(colors)
+    return f"{code}{text}{ENDC}" if code else text
 
 
 def fail(msg: str) -> NoReturn:
@@ -318,11 +327,99 @@ def worktree_status(path: Path) -> str:
     return "dirty" if status else "clean"
 
 
+def status_label(status: str) -> str:
+    labels = {
+        "clean": "✓ clean",
+        "dirty": "● dirty",
+        "missing": "× missing",
+    }
+    return labels.get(status, status)
+
+
 def relative_worktree_path(container: Path, path: Path) -> str:
     try:
         return path.relative_to(container).as_posix()
     except ValueError:
         return str(path)
+
+
+def repository_checkouts(root: Path) -> list[tuple[Path, Path]]:
+    """Return gra repo containers and one checkout that can query each repo."""
+    if not root.is_dir():
+        return []
+
+    repositories = []
+    for container in sorted(root.iterdir(), key=lambda path: path.name):
+        if not container.is_dir():
+            continue
+        checkout = checkout_in_container(container)
+        if checkout:
+            repositories.append((container, checkout))
+    return repositories
+
+
+def worktree_rows(
+    checkout: Path, container: Path, current: Path | None
+) -> list[list[str]]:
+    rows = []
+    for path in worktree_paths(checkout):
+        marker = "▶" if current and path.resolve() == current else ""
+        rows.append(
+            [
+                marker,
+                relative_worktree_path(container, path),
+                worktree_ref(path),
+                status_label(worktree_status(path)),
+            ]
+        )
+    return rows
+
+
+def table_cell(header: str, value: str) -> str:
+    if not value:
+        return value
+    if not header:
+        return style(value, BLUE, BOLD)
+    if header == "REPOSITORY":
+        return style(value, BLUE, BOLD)
+    if header == "WORKTREE" and value.startswith(f"{WORKTREE_DIR}/"):
+        return style(value, DIM)
+    if header == "REF":
+        return style(value, CYAN)
+    if header == "STATUS":
+        if value.startswith("✓"):
+            return style(value, GREEN)
+        if value.startswith("●"):
+            return style(value, YELLOW)
+        if value.startswith("×"):
+            return style(value, RED)
+    return value
+
+
+def table_line(headers: list[str], values: list[str], widths: list[int]) -> str:
+    cells = []
+    for header, value, width in zip(headers, values, widths):
+        cells.append(table_cell(header, value) + " " * (width - len(value)))
+    return "  ".join(cells).rstrip()
+
+
+def print_table(headers: list[str], rows: list[list[str]], *, indent: str = "") -> None:
+    columns = [
+        index
+        for index, header in enumerate(headers)
+        if header or any(row[index] for row in rows)
+    ]
+    headers = [headers[index] for index in columns]
+    rows = [[row[index] for index in columns] for row in rows]
+
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+
+    print(indent + style(table_line(headers, headers, widths), BOLD))
+    for row in rows:
+        print(indent + table_line(headers, row, widths))
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +480,32 @@ def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None
 
 
 # ---------------------------------------------------------------------------
+# ls command
+# ---------------------------------------------------------------------------
+
+
+def print_repositories(root: Path) -> None:
+    """Show every gra repository and every Git worktree under the gra root."""
+    repositories = repository_checkouts(root)
+    print(f"Root: {root}")
+    if not repositories:
+        print("No repositories found.")
+        return
+
+    active_checkout = git_toplevel(Path.cwd())
+    current = active_checkout.resolve() if active_checkout else None
+    rows = []
+    for container, checkout in repositories:
+        repo_rows = worktree_rows(checkout, container, current)
+        for index, row in enumerate(repo_rows):
+            rows.append([row[0], container.name if index == 0 else "", *row[1:]])
+
+    print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
+    print()
+    print_table(["", "REPOSITORY", "WORKTREE", "REF", "STATUS"], rows)
+
+
+# ---------------------------------------------------------------------------
 # wt command
 # ---------------------------------------------------------------------------
 
@@ -391,29 +514,9 @@ def print_worktrees() -> None:
     """Show the repo's worktrees using paths relative to the gra container."""
     checkout = current_checkout()
     container = repo_container(checkout)
-    rows = []
     active_checkout = git_toplevel(Path.cwd())
     current = active_checkout.resolve() if active_checkout else None
-    for path in worktree_paths(checkout):
-        marker = "*" if current and path.resolve() == current else ""
-        rows.append(
-            [
-                marker,
-                relative_worktree_path(container, path),
-                worktree_ref(path),
-                worktree_status(path),
-            ]
-        )
-
-    headers = ["", "WORKTREE", "REF", "STATUS"]
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(value))
-
-    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)).rstrip())
-    for row in rows:
-        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip())
+    print_table(["", "WORKTREE", "REF", "STATUS"], worktree_rows(checkout, container, current))
 
 
 def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
@@ -499,6 +602,13 @@ def parse_args() -> argparse.Namespace:
         "--no-submodules", action="store_true", help="skip fetching submodules"
     )
 
+    subparsers.add_parser(
+        "ls",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="list repositories and worktrees under the gra root",
+        description=f"List repositories and worktrees under '{root}'.",
+    )
+
     wt_parser = subparsers.add_parser(
         "wt",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -527,6 +637,8 @@ def main() -> None:
     _quiet = args.quiet
     if args.cmd == "clone":
         clone(args.url, args.name, args.root, not args.no_submodules)
+    elif args.cmd == "ls":
+        print_repositories(args.root)
     elif args.cmd == "wt":
         if args.branch:
             wt_create(args.branch, args.name)

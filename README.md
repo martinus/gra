@@ -65,6 +65,26 @@ gra clone git@github.com:martinus/gra.git --no-submodules
 `gra` also adds `.claude/worktrees/` to the checkout's local Git exclude file so
 Claude Code worktrees do not show up as untracked files.
 
+## ls - list repositories and worktrees
+
+Run `gra ls` from anywhere to see all repositories under the configured gra root
+and every worktree Git knows about:
+
+```sh
+gra ls
+```
+
+Example output:
+
+```text
+Root: /home/me/git
+Repositories: 1  Worktrees: 2
+
+REPOSITORY  WORKTREE   REF      STATUS
+gra         main       main     ✓ clean
+            wt/review  feature  ● dirty
+```
+
 ## wt - list, create, or update worktrees
 
 Run `gra wt` from a checkout, worktree, the repo folder, or the `wt` folder to
