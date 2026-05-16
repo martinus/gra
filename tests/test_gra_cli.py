@@ -11,7 +11,7 @@ GRA = REPO_ROOT / "gra"
 
 
 def run_cli(
-    args: list[str], home: Path, *, cwd: Path | None = None
+    args: list[str], home: Path, *, cwd: Path | None = None, input_text: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(
@@ -26,6 +26,7 @@ def run_cli(
         capture_output=True,
         cwd=cwd,
         env=env,
+        input=input_text,
         text=True,
     )
 
@@ -162,6 +163,81 @@ def test_wt_lists_worktrees_for_current_repo(tmp_path: Path) -> None:
     repo_result = run_cli(["wt"], home, cwd=home / "git" / "project")
     assert repo_result.returncode == 0, repo_result.stderr
     assert "▶" not in repo_result.stdout
+
+
+def test_wt_missing_branch_can_be_declined(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+
+    result = run_cli(
+        ["wt", "NOISSUE-fix-fedora-headless"], home, cwd=checkout, input_text="n\n"
+    )
+
+    assert result.returncode == 1
+    assert (
+        "Branch 'NOISSUE-fix-fedora-headless' does not exist. Create it from 'origin/main'?"
+        in result.stderr
+    )
+    assert "branch 'NOISSUE-fix-fedora-headless' was not created" in result.stderr
+
+
+def test_wt_missing_branch_can_be_created_from_repo_folder(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project", branch="trunk")
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    container = home / "git" / "project"
+
+    result = run_cli(
+        ["wt", "NOISSUE-fix-fedora-headless"],
+        home,
+        cwd=container,
+        input_text="y\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "Branch 'NOISSUE-fix-fedora-headless' does not exist. Create it from 'origin/trunk'?"
+        in result.stderr
+    )
+    worktree = container / "wt" / "NOISSUE-fix-fedora-headless"
+    assert (worktree / ".git").is_file()
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "NOISSUE-fix-fedora-headless"
+    assert (worktree / "README.md").read_text() == "# project\n"
+
+
+def test_wt_missing_named_branch_can_be_created_from_wt_folder(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project", branch="master")
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    container = home / "git" / "project"
+
+    result = run_cli(
+        ["wt", "--name", "review", "NOISSUE-fix-fedora-headless"],
+        home,
+        cwd=container / "wt",
+        input_text="yes\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "Branch 'NOISSUE-fix-fedora-headless' does not exist. Create it from 'origin/master'?"
+        in result.stderr
+    )
+    review = container / "wt" / "review"
+    assert (review / ".git").is_file()
+    assert git_output(["branch", "--show-current"], cwd=review) == "NOISSUE-fix-fedora-headless"
+    assert (review / "README.md").read_text() == "# project\n"
 
 
 def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:

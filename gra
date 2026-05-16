@@ -74,6 +74,15 @@ def fail(msg: str) -> NoReturn:
     sys.exit(1)
 
 
+def ask_yes_no(question: str) -> bool:
+    print(f"{question} [y/N] ", end="", file=sys.stderr, flush=True)
+    answer = sys.stdin.readline()
+    if not answer:
+        print(file=sys.stderr)
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
 def run_git(args: list[str | Path], *, cwd: Path | None = None) -> None:
     """Run a Git command that should own its normal terminal output."""
     subprocess.run(["git", *args], cwd=cwd, check=True)
@@ -293,6 +302,28 @@ def remote_branch_exists(checkout: Path, branch: str) -> bool:
         )
         is not None
     )
+
+
+def ref_exists(checkout: Path, ref: str) -> bool:
+    return (
+        git_output(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=checkout)
+        is not None
+    )
+
+
+def remote_default_branch(checkout: Path) -> str | None:
+    origin_head = git_output(
+        ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        cwd=checkout,
+    )
+    if origin_head and ref_exists(checkout, origin_head):
+        return origin_head
+
+    for branch in ["main", "master"]:
+        if remote_branch_exists(checkout, branch):
+            return f"origin/{branch}"
+
+    return None
 
 
 def worktree_paths(checkout: Path) -> list[Path]:
@@ -519,6 +550,18 @@ def print_worktrees() -> None:
     print_table(["", "WORKTREE", "REF", "STATUS"], worktree_rows(checkout, container, current))
 
 
+def create_missing_branch(checkout: Path, branch: str) -> None:
+    start_point = remote_default_branch(checkout)
+    if not start_point:
+        fail(f"cannot resolve branch '{branch}' and cannot find origin's default branch")
+
+    if not ask_yes_no(f"Branch '{branch}' does not exist. Create it from '{start_point}'?"):
+        fail(f"branch '{branch}' was not created")
+
+    run_git(["branch", branch, start_point], cwd=checkout)
+    log(f"created branch '{branch}' from '{start_point}'", GREEN)
+
+
 def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
     """Create a worktree that checks out branch, tracking origin if needed."""
     if local_branch_exists(checkout, branch):
@@ -532,7 +575,8 @@ def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
         )
         return
 
-    fail(f"cannot resolve branch '{branch}'")
+    create_missing_branch(checkout, branch)
+    run_git(["worktree", "add", target, branch], cwd=checkout)
 
 
 def switch_to_branch(checkout: Path, target: Path, branch: str) -> None:
@@ -545,7 +589,8 @@ def switch_to_branch(checkout: Path, target: Path, branch: str) -> None:
         run_git(["switch", "--track", f"origin/{branch}"], cwd=target)
         return
 
-    fail(f"cannot resolve branch '{branch}'")
+    create_missing_branch(checkout, branch)
+    run_git(["switch", branch], cwd=target)
 
 
 def wt_create(branch: str, name: str | None) -> None:

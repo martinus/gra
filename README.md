@@ -116,6 +116,10 @@ Named worktrees check out the requested branch. If the branch only exists as
 be checked out in only one worktree at a time, so switching `review` to a branch
 that is already checked out elsewhere will fail with Git's normal message.
 
+If the branch does not exist locally or on `origin`, `gra` asks whether it
+should create the branch from origin's default branch, for example `origin/main`,
+`origin/master`, or the remote `HEAD` branch.
+
 
 # Alternatives
 
