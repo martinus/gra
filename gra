@@ -417,6 +417,8 @@ def table_cell(header: str, value: str) -> str:
         return style(value, DIM)
     if header == "REF":
         return style(value, CYAN)
+    if header == "REMOTE":
+        return style(value, DIM)
     if header == "STATUS":
         if value.startswith("✓"):
             return style(value, GREEN)
@@ -528,12 +530,20 @@ def print_repositories(root: Path) -> None:
     rows = []
     for container, checkout in repositories:
         repo_rows = worktree_rows(checkout, container, current)
+        remote = origin_url(checkout) or "-"
         for index, row in enumerate(repo_rows):
-            rows.append([row[0], container.name if index == 0 else "", *row[1:]])
+            rows.append(
+                [
+                    row[0],
+                    container.name if index == 0 else "",
+                    *row[1:],
+                    remote if index == 0 else "",
+                ]
+            )
 
     print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
     print()
-    print_table(["", "REPOSITORY", "WORKTREE", "REF", "STATUS"], rows)
+    print_table(["", "REPOSITORY", "WORKTREE", "REF", "STATUS", "REMOTE"], rows)
 
 
 # ---------------------------------------------------------------------------

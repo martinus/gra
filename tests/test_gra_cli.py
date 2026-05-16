@@ -268,8 +268,11 @@ def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
     assert "Repositories: 2" in result.stdout
     assert "Worktrees: 3" in result.stdout
     assert "REPOSITORY" in result.stdout
+    assert "REMOTE" in result.stdout
     assert "library" in result.stdout
     assert "project" in result.stdout
+    assert str(library) in result.stdout
+    assert str(project) in result.stdout
     assert "WORKTREE" in result.stdout
     assert "REF" in result.stdout
     assert "STATUS" in result.stdout

@@ -80,8 +80,8 @@ Example output:
 Root: /home/me/git
 Repositories: 1  Worktrees: 2
 
-REPOSITORY  WORKTREE   REF      STATUS
-gra         main       main     ✓ clean
+REPOSITORY  WORKTREE   REF      STATUS   REMOTE
+gra         main       main     ✓ clean  git@github.com:martinus/gra
             wt/review  feature  ● dirty
 ```
 
