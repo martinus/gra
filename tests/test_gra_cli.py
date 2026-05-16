@@ -52,6 +52,7 @@ def test_clone_creates_flat_default_branch_checkout(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     checkout = home / "git" / "project" / "main"
     assert (checkout / ".git").is_dir()
+    assert (home / "git" / "project" / "wt").is_dir()
     assert (checkout / "README.md").read_text() == "# project\n"
     assert ".claude/worktrees/" in (checkout / ".git" / "info" / "exclude").read_text()
 

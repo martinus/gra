@@ -7,7 +7,8 @@ branch:
 ```text
 ~/git
 └── gra
-   └── main
+  ├── main
+  └── wt
 ```
 
 The default root is `~/git`. Configure a different root in `~/.gitconfig`:
@@ -32,7 +33,8 @@ git config --global gra.root ~/develop
 
 ## clone - clone a remote repository
 
-Clones one repository into `~/git/<name>/<default-branch>`:
+Clones one repository into `~/git/<name>/<default-branch>` and creates
+`~/git/<name>/wt` for worktrees:
 
 ```sh
 gra clone git@github.com:martinus/gra.git
@@ -41,7 +43,9 @@ gra clone git@github.com:martinus/gra.git
 This creates:
 
 ```text
-~/git/gra/main
+~/git/gra
+├── main
+└── wt
 ```
 
 The local repository name is derived from the URL. If that name already exists,

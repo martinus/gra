@@ -5,11 +5,12 @@
 A tiny clone helper that puts repositories under a flat ~/git layout:
 
     ~/git/<repo>/<default-branch>
+    ~/git/<repo>/wt
 
 Only the `clone` command is supported.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 import argparse
 import os
@@ -192,6 +193,7 @@ def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None
         if checkout.exists():
             fail(f"cannot move checkout to '{checkout}' because it already exists")
         tmp_checkout.rename(checkout)
+        (container / "wt").mkdir()
         add_local_excludes(checkout)
         log(f"created '{checkout}'", GREEN)
     except Exception:
