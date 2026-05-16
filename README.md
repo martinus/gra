@@ -65,6 +65,37 @@ gra clone git@github.com:martinus/gra.git --no-submodules
 `gra` also adds `.claude/worktrees/` to the checkout's local Git exclude file so
 Claude Code worktrees do not show up as untracked files.
 
+## wt - list, create, or update worktrees
+
+Run `gra wt` from a checkout, worktree, the repo folder, or the `wt` folder to
+see the repo's worktrees and their status:
+
+```sh
+gra wt
+```
+
+Create a worktree for an existing branch by passing the branch name. The folder
+name under `wt` is derived from the branch name:
+
+```sh
+gra wt feature/search
+```
+
+This creates `~/git/gra/wt/feature-search` and checks out `feature/search`.
+
+Use `--name` for a reusable worktree folder. This is useful for a review slot
+that moves between branches:
+
+```sh
+gra wt --name review feature/search
+gra wt --name review bugfix/crash
+```
+
+Named worktrees check out the requested branch. If the branch only exists as
+`origin/<branch>`, `gra` creates a local tracking branch. Git allows a branch to
+be checked out in only one worktree at a time, so switching `review` to a branch
+that is already checked out elsewhere will fail with Git's normal message.
+
 
 # Alternatives
 

@@ -7,10 +7,10 @@ A tiny clone helper that puts repositories under a flat ~/git layout:
     ~/git/<repo>/<default-branch>
     ~/git/<repo>/wt
 
-Only the `clone` command is supported.
+Only the `clone` and `wt` commands are supported.
 """
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 import argparse
 import os
@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 FALLBACK_ROOT = "~/git"
 CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
+WORKTREE_DIR = "wt"
 
 _quiet = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
@@ -59,7 +60,9 @@ def run_git(args: list[str | Path], *, cwd: Path | None = None) -> None:
 
 def git_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None:
     try:
-        return subprocess.check_output(["git", *args], cwd=cwd, encoding="utf-8").strip()
+        return subprocess.check_output(
+            ["git", *args], cwd=cwd, encoding="utf-8", stderr=subprocess.DEVNULL
+        ).strip()
     except subprocess.CalledProcessError:
         return None
 
@@ -154,6 +157,145 @@ def checkout_dir_name(checkout: Path) -> str:
     return name if re.fullmatch(r"[A-Za-z0-9._-]+", name) else "checkout"
 
 
+def validate_worktree_name(name: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        fail(
+            f"invalid worktree name '{name}'; use only letters, numbers, dots, underscores, and dashes"
+        )
+    if name in {".", ".."} or name.startswith("."):
+        fail(f"invalid worktree name '{name}'")
+
+
+def worktree_name_from_ref(ref: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", ref.replace("/", "-")).strip("-")
+    if not name or name in {".", ".."} or name.startswith("."):
+        fail(f"cannot derive worktree name from '{ref}'")
+    return name
+
+
+def git_toplevel(path: Path) -> Path | None:
+    checkout = git_output(["rev-parse", "--show-toplevel"], cwd=path)
+    return Path(checkout) if checkout else None
+
+
+def is_git_worktree(path: Path) -> bool:
+    return git_output(["rev-parse", "--is-inside-work-tree"], cwd=path) == "true"
+
+
+def checkout_in_container(container: Path) -> Path | None:
+    if not container.is_dir():
+        return None
+
+    for child in sorted(container.iterdir(), key=lambda path: path.name):
+        if child.name != WORKTREE_DIR and child.is_dir() and is_git_worktree(child):
+            return child
+
+    wt_root = container / WORKTREE_DIR
+    if wt_root.is_dir():
+        for child in sorted(wt_root.iterdir(), key=lambda path: path.name):
+            if child.is_dir() and is_git_worktree(child):
+                return child
+
+    return None
+
+
+def checkout_from_layout(path: Path) -> Path | None:
+    for candidate in [path, *path.parents]:
+        if candidate.name == WORKTREE_DIR:
+            checkout = checkout_in_container(candidate.parent)
+            if checkout:
+                return checkout
+
+        if (candidate / WORKTREE_DIR).is_dir():
+            checkout = checkout_in_container(candidate)
+            if checkout:
+                return checkout
+
+    return None
+
+
+def current_checkout() -> Path:
+    cwd = Path.cwd()
+    checkout = git_toplevel(cwd) or checkout_from_layout(cwd)
+    if not checkout:
+        fail("gra wt must be run from inside a gra repository")
+    return checkout
+
+
+def repo_container(checkout: Path) -> Path:
+    if checkout.parent.name == WORKTREE_DIR:
+        return checkout.parent.parent
+    return checkout.parent
+
+
+def ref_exists(checkout: Path, ref: str) -> bool:
+    return (
+        git_output(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=checkout)
+        is not None
+    )
+
+
+def local_branch_exists(checkout: Path, branch: str) -> bool:
+    return git_output(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=checkout) is not None
+
+
+def remote_branch_exists(checkout: Path, branch: str) -> bool:
+    return (
+        git_output(["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=checkout)
+        is not None
+    )
+
+
+def resolve_ref(checkout: Path, ref: str) -> str:
+    if ref_exists(checkout, ref):
+        return ref
+
+    remote_ref = f"origin/{ref}"
+    if not ref.startswith("origin/") and ref_exists(checkout, remote_ref):
+        return remote_ref
+
+    fail(f"cannot resolve ref '{ref}'")
+
+
+def worktree_paths(checkout: Path) -> list[Path]:
+    output = git_output(["worktree", "list", "--porcelain"], cwd=checkout) or ""
+    paths = []
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            paths.append(Path(line.removeprefix("worktree ")))
+    return paths
+
+
+def worktree_ref(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+
+    branch = git_output(["branch", "--show-current"], cwd=path)
+    if branch:
+        return branch
+
+    exact = git_output(["describe", "--all", "--exact-match", "HEAD"], cwd=path)
+    if exact:
+        return exact.removeprefix("heads/").removeprefix("remotes/")
+
+    short_head = git_output(["rev-parse", "--short", "HEAD"], cwd=path)
+    return short_head or "detached"
+
+
+def worktree_status(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    status = git_output(["status", "--porcelain"], cwd=path)
+    return "dirty" if status else "clean"
+
+
+def relative_worktree_path(container: Path, path: Path) -> str:
+    try:
+        return path.relative_to(container).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def add_local_excludes(checkout: Path) -> None:
     exclude = checkout / ".git" / "info" / "exclude"
     if not exclude.is_file():
@@ -193,7 +335,7 @@ def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None
         if checkout.exists():
             fail(f"cannot move checkout to '{checkout}' because it already exists")
         tmp_checkout.rename(checkout)
-        (container / "wt").mkdir()
+        (container / WORKTREE_DIR).mkdir()
         add_local_excludes(checkout)
         log(f"created '{checkout}'", GREEN)
     except Exception:
@@ -202,6 +344,80 @@ def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None
         if container.exists() and not any(container.iterdir()):
             container.rmdir()
         raise
+
+
+def print_worktrees() -> None:
+    checkout = current_checkout()
+    container = repo_container(checkout)
+    rows = []
+    active_checkout = git_toplevel(Path.cwd())
+    current = active_checkout.resolve() if active_checkout else None
+    for path in worktree_paths(checkout):
+        marker = "*" if current and path.resolve() == current else ""
+        rows.append(
+            [
+                marker,
+                relative_worktree_path(container, path),
+                worktree_ref(path),
+                worktree_status(path),
+            ]
+        )
+
+    headers = ["", "WORKTREE", "REF", "STATUS"]
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)).rstrip())
+    for row in rows:
+        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip())
+
+
+def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
+    if local_branch_exists(checkout, branch):
+        run_git(["worktree", "add", target, branch], cwd=checkout)
+        return
+
+    if remote_branch_exists(checkout, branch):
+        run_git(["worktree", "add", "--track", "-b", branch, target, f"origin/{branch}"], cwd=checkout)
+        return
+
+    fail(f"cannot resolve branch '{branch}'")
+
+
+def switch_to_branch(checkout: Path, target: Path, branch: str) -> None:
+    if local_branch_exists(checkout, branch):
+        run_git(["switch", branch], cwd=target)
+        return
+
+    if remote_branch_exists(checkout, branch):
+        run_git(["switch", "--track", f"origin/{branch}"], cwd=target)
+        return
+
+    fail(f"cannot resolve branch '{branch}'")
+
+
+def wt_create(branch: str, name: str | None) -> None:
+    checkout = current_checkout()
+    container = repo_container(checkout)
+    wt_root = container / WORKTREE_DIR
+    target_name = name or worktree_name_from_ref(branch)
+    validate_worktree_name(target_name)
+
+    target = wt_root / target_name
+    if target.exists():
+        if not target.is_dir() or not is_git_worktree(target):
+            fail(f"cannot use '{target}' because it is not a Git worktree")
+        log(f"Switching '{target}' to '{branch}'")
+        switch_to_branch(checkout, target, branch)
+        log(f"updated '{target}'", GREEN)
+        return
+
+    wt_root.mkdir(exist_ok=True)
+    log(f"Creating worktree '{target}' for branch '{branch}'")
+    add_attached_worktree(checkout, target, branch)
+    log(f"created '{target}'", GREEN)
 
 
 def parse_args() -> argparse.Namespace:
@@ -230,6 +446,22 @@ def parse_args() -> argparse.Namespace:
         "--no-submodules", action="store_true", help="skip fetching submodules"
     )
 
+    wt_parser = subparsers.add_parser(
+        "wt",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="list, create, or update worktrees under the repository wt directory",
+        description=(
+            "List worktrees for the current repository, or create a worktree under '<repo>/wt'.\n"
+            "Use --name for a reusable worktree folder such as 'review'."
+        ),
+    )
+    wt_parser.add_argument(
+        "branch",
+        nargs="?",
+        help="existing branch to check out; omitted to list worktrees",
+    )
+    wt_parser.add_argument("--name", help="folder name under the repository wt directory")
+
     args = parser.parse_args()
     args.root = root
     return args
@@ -240,7 +472,15 @@ def main() -> None:
 
     args = parse_args()
     _quiet = args.quiet
-    clone(args.url, args.name, args.root, not args.no_submodules)
+    if args.cmd == "clone":
+        clone(args.url, args.name, args.root, not args.no_submodules)
+    elif args.cmd == "wt":
+        if args.branch:
+            wt_create(args.branch, args.name)
+        elif args.name:
+            fail("--name requires a branch")
+        else:
+            print_worktrees()
 
 
 if __name__ == "__main__":
