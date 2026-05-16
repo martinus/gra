@@ -553,7 +553,7 @@ def print_repositories(root: Path) -> None:
 
 def worktree_choices(root: Path) -> list[str]:
     """Return fzf input lines with the absolute path in the first field."""
-    headers = ["REPOSITORY", "WORKTREE", "REF", "STATUS"]
+    headers = ["REPOSITORY", "WORKTREE", "REF"]
     rows: list[tuple[Path, list[str]]] = []
     for container, checkout in repository_checkouts(root):
         for path in worktree_paths(checkout):
@@ -566,7 +566,6 @@ def worktree_choices(root: Path) -> list[str]:
                         container.name,
                         relative_worktree_path(container, path),
                         worktree_ref(path),
-                        status_label(worktree_status(path)),
                     ],
                 )
             )
@@ -587,7 +586,7 @@ def worktree_choices(root: Path) -> list[str]:
 
 def worktree_picker_header(choices: list[str]) -> str:
     """Return a header aligned with the visible fzf choice text."""
-    headers = ["REPOSITORY", "WORKTREE", "REF", "STATUS"]
+    headers = ["REPOSITORY", "WORKTREE", "REF"]
     widths = [len(header) for header in headers]
     for choice in choices:
         _path, label = choice.split("\t", 1)

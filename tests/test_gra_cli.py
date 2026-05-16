@@ -322,8 +322,8 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{home / 'git' / 'project' / 'wt' / 'review'}\n"
     assert fzf_input.read_text().splitlines() == [
-        f"{home / 'git' / 'project' / 'main'}\tproject  main       main     ✓ clean",
-        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature  ✓ clean",
+        f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
+        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
     ]
 
 
