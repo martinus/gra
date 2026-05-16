@@ -614,7 +614,7 @@ def print_cd_target(root: Path) -> None:
             "--height=80%",
             "--layout=reverse",
             "--border",
-            "--no-sort",
+            "--tiebreak=begin,index",
             "--prompt=gra cd> ",
             f"--header={worktree_picker_header(choices)}",
             "--delimiter=\t",

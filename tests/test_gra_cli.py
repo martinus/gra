@@ -309,18 +309,33 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     bin_dir.mkdir()
     fzf = bin_dir / "fzf"
     fzf_input = tmp_path / "fzf-input"
-    fzf.write_text("#!/bin/sh\ncat > \"$FZF_INPUT\"\nsed -n '2p' \"$FZF_INPUT\"\n")
+    fzf_args = tmp_path / "fzf-args"
+    fzf.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
+        "cat > \"$FZF_INPUT\"\n"
+        "sed -n '2p' \"$FZF_INPUT\"\n"
+    )
     fzf.chmod(0o755)
 
     result = run_cli(
         ["cd"],
         home,
         cwd=tmp_path,
-        env_extra={"PATH": f"{bin_dir}:{os.environ['PATH']}", "FZF_INPUT": str(fzf_input)},
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "FZF_ARGS": str(fzf_args),
+            "FZF_INPUT": str(fzf_input),
+        },
     )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{home / 'git' / 'project' / 'wt' / 'review'}\n"
+    args = fzf_args.read_text().splitlines()
+    assert "--tiebreak=begin,index" in args
+    assert "--no-sort" not in args
+    assert "--exact" not in args
+    assert "--nth=2" not in args
     assert fzf_input.read_text().splitlines() == [
         f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
         f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
