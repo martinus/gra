@@ -138,6 +138,16 @@ should create the branch from origin's default branch, for example `origin/main`
 `origin/master`, or the remote `HEAD` branch.
 
 
+# Development
+
+Install test dependencies and run the suite with:
+
+```sh
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest -q
+```
+
+
 # Alternatives
 
 * [ghq](https://github.com/x-motemen/ghq) was the main inspiration for `gra`. gra is much simpler,

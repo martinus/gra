@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 # and the shared worktree directory.
 FALLBACK_ROOT = "~/git"
 WORKTREE_DIR = "wt"
+VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 # Claude may create its own temporary worktrees inside a checkout. Keep those
 # local-only directories out of `git status` without changing tracked files.
@@ -131,13 +132,13 @@ def owner_from_url(url: str) -> str | None:
     return None
 
 
-def validate_repo_name(name: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+def validate_path_name(kind: str, name: str) -> None:
+    if not VALID_PATH_NAME.fullmatch(name):
         fail(
-            f"invalid repository name '{name}'; use only letters, numbers, dots, underscores, and dashes"
+            f"invalid {kind} name '{name}'; use only letters, numbers, dots, underscores, and dashes"
         )
     if name in {".", ".."} or name.startswith("."):
-        fail(f"invalid repository name '{name}'")
+        fail(f"invalid {kind} name '{name}'")
 
 
 def origin_url(checkout: Path) -> str | None:
@@ -193,21 +194,12 @@ def checkout_dir_name(checkout: Path) -> str:
     """Name the first checkout after the remote's default branch."""
     branch = git_output(["branch", "--show-current"], cwd=checkout)
     name = (branch or "checkout").replace("/", "-")
-    return name if re.fullmatch(r"[A-Za-z0-9._-]+", name) else "checkout"
+    return name if VALID_PATH_NAME.fullmatch(name) else "checkout"
 
 
 # ---------------------------------------------------------------------------
 # gra layout discovery
 # ---------------------------------------------------------------------------
-
-
-def validate_worktree_name(name: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
-        fail(
-            f"invalid worktree name '{name}'; use only letters, numbers, dots, underscores, and dashes"
-        )
-    if name in {".", ".."} or name.startswith("."):
-        fail(f"invalid worktree name '{name}'")
 
 
 def worktree_name_from_ref(ref: str) -> str:
@@ -406,6 +398,28 @@ def worktree_rows(
     return rows
 
 
+def visible_columns(headers: list[str], rows: list[list[str]]) -> list[int]:
+    return [
+        index
+        for index, header in enumerate(headers)
+        if header or any(row[index] for row in rows)
+    ]
+
+
+def column_widths(
+    headers: list[str], rows: list[list[str]], *, include_headers: bool = True
+) -> list[int]:
+    widths = [len(header) if include_headers else 0 for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+    return widths
+
+
+def padded_line(values: list[str], widths: list[int]) -> str:
+    return "  ".join(value.ljust(width) for value, width in zip(values, widths)).rstrip()
+
+
 def table_cell(header: str, value: str) -> str:
     if not value:
         return value
@@ -437,18 +451,11 @@ def table_line(headers: list[str], values: list[str], widths: list[int]) -> str:
 
 
 def print_table(headers: list[str], rows: list[list[str]], *, indent: str = "") -> None:
-    columns = [
-        index
-        for index, header in enumerate(headers)
-        if header or any(row[index] for row in rows)
-    ]
+    columns = visible_columns(headers, rows)
     headers = [headers[index] for index in columns]
     rows = [[row[index] for index in columns] for row in rows]
 
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(value))
+    widths = column_widths(headers, rows)
 
     print(indent + style(table_line(headers, headers, widths), BOLD))
     for row in rows:
@@ -480,7 +487,7 @@ def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None
         repo_name = name or repo_name_from_url(url)
     except ValueError as error:
         fail(str(error))
-    validate_repo_name(repo_name)
+    validate_path_name("repository", repo_name)
 
     container = root / repo_name
     if container.exists():
@@ -551,8 +558,8 @@ def print_repositories(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def worktree_choices(root: Path) -> list[str]:
-    """Return fzf input lines with the absolute path in the first field."""
+def worktree_picker_choices(root: Path) -> tuple[list[str], str]:
+    """Return fzf input lines and an aligned header."""
     headers = ["REPOSITORY", "WORKTREE", "REF"]
     rows: list[tuple[Path, list[str]]] = []
     for container, checkout in repository_checkouts(root):
@@ -570,38 +577,18 @@ def worktree_choices(root: Path) -> list[str]:
                 )
             )
 
-    widths = [len(header) for header in headers]
-    for _path, values in rows:
-        for index, value in enumerate(values):
-            widths[index] = max(widths[index], len(value))
+    widths = column_widths(headers, [values for _path, values in rows], include_headers=False)
 
     choices = []
     for path, values in rows:
-        label = "  ".join(
-            value.ljust(width) for value, width in zip(values, widths)
-        ).rstrip()
+        label = padded_line(values, widths)
         choices.append(f"{path}\t{label}")
-    return choices
-
-
-def worktree_picker_header(choices: list[str]) -> str:
-    """Return a header aligned with the visible fzf choice text."""
-    headers = ["REPOSITORY", "WORKTREE", "REF"]
-    widths = [len(header) for header in headers]
-    for choice in choices:
-        _path, label = choice.split("\t", 1)
-        values = re.split(r" {2,}", label)
-        for index, value in enumerate(values):
-            widths[index] = max(widths[index], len(value))
-
-    return "  ".join(
-        header.ljust(width) for header, width in zip(headers, widths)
-    ).rstrip()
+    return choices, padded_line(headers, widths)
 
 
 def print_cd_target(root: Path) -> None:
     """Select a worktree with fzf and print the selected absolute path."""
-    choices = worktree_choices(root)
+    choices, header = worktree_picker_choices(root)
     if not choices:
         fail(f"no worktrees found under '{root}'")
 
@@ -616,7 +603,7 @@ def print_cd_target(root: Path) -> None:
             "--border",
             "--tiebreak=begin,index",
             "--prompt=gra cd> ",
-            f"--header={worktree_picker_header(choices)}",
+            f"--header={header}",
             "--delimiter=\t",
             "--with-nth=2",
         ],
@@ -653,11 +640,11 @@ BASH_INIT = r'''gra() {
 
 
 def print_shell_init(shell: str) -> None:
-        """Print shell integration code for eval."""
-        if shell == "bash":
-                print(BASH_INIT, end="")
-                return
-        fail(f"unsupported shell '{shell}'")
+    """Print shell integration code for eval."""
+    if shell == "bash":
+        print(BASH_INIT, end="")
+        return
+    fail(f"unsupported shell '{shell}'")
 
 
 # ---------------------------------------------------------------------------
@@ -686,34 +673,32 @@ def create_missing_branch(checkout: Path, branch: str) -> None:
     log(f"created branch '{branch}' from '{start_point}'", GREEN)
 
 
+def branch_needs_tracking(checkout: Path, branch: str) -> bool:
+    """Ensure branch can be checked out; return true when only origin has it."""
+    if local_branch_exists(checkout, branch):
+        return False
+    if remote_branch_exists(checkout, branch):
+        return True
+    create_missing_branch(checkout, branch)
+    return False
+
+
 def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
     """Create a worktree that checks out branch, tracking origin if needed."""
-    if local_branch_exists(checkout, branch):
-        run_git(["worktree", "add", target, branch], cwd=checkout)
-        return
-
-    if remote_branch_exists(checkout, branch):
+    if branch_needs_tracking(checkout, branch):
         run_git(
             ["worktree", "add", "--track", "-b", branch, target, f"origin/{branch}"],
             cwd=checkout,
         )
         return
-
-    create_missing_branch(checkout, branch)
     run_git(["worktree", "add", target, branch], cwd=checkout)
 
 
 def switch_to_branch(checkout: Path, target: Path, branch: str) -> None:
     """Reuse an existing worktree by switching it to branch."""
-    if local_branch_exists(checkout, branch):
-        run_git(["switch", branch], cwd=target)
-        return
-
-    if remote_branch_exists(checkout, branch):
+    if branch_needs_tracking(checkout, branch):
         run_git(["switch", "--track", f"origin/{branch}"], cwd=target)
         return
-
-    create_missing_branch(checkout, branch)
     run_git(["switch", branch], cwd=target)
 
 
@@ -723,7 +708,7 @@ def wt_create(branch: str, name: str | None) -> None:
     container = repo_container(checkout)
     wt_root = container / WORKTREE_DIR
     target_name = name or worktree_name_from_ref(branch)
-    validate_worktree_name(target_name)
+    validate_path_name("worktree", target_name)
 
     target = wt_root / target_name
     if target.exists():
@@ -743,6 +728,31 @@ def wt_create(branch: str, name: str | None) -> None:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+def run_clone_command(args: argparse.Namespace) -> None:
+    clone(args.url, args.name, args.root, not args.no_submodules)
+
+
+def run_ls_command(args: argparse.Namespace) -> None:
+    print_repositories(args.root)
+
+
+def run_cd_command(args: argparse.Namespace) -> None:
+    print_cd_target(args.root)
+
+
+def run_init_command(args: argparse.Namespace) -> None:
+    print_shell_init(args.shell)
+
+
+def run_wt_command(args: argparse.Namespace) -> None:
+    if args.branch:
+        wt_create(args.branch, args.name)
+    elif args.name:
+        fail("--name requires a branch")
+    else:
+        print_worktrees()
 
 
 def parse_args() -> argparse.Namespace:
@@ -770,15 +780,17 @@ def parse_args() -> argparse.Namespace:
     clone_parser.add_argument(
         "--no-submodules", action="store_true", help="skip fetching submodules"
     )
+    clone_parser.set_defaults(handler=run_clone_command)
 
-    subparsers.add_parser(
+    ls_parser = subparsers.add_parser(
         "ls",
         formatter_class=argparse.RawTextHelpFormatter,
         help="list repositories and worktrees under the gra root",
         description=f"List repositories and worktrees under '{root}'.",
     )
+    ls_parser.set_defaults(handler=run_ls_command)
 
-    subparsers.add_parser(
+    cd_parser = subparsers.add_parser(
         "cd",
         formatter_class=argparse.RawTextHelpFormatter,
         help="select a worktree path with fzf",
@@ -787,6 +799,7 @@ def parse_args() -> argparse.Namespace:
             "Use 'eval \"$(gra init bash)\"' to make 'gra cd' change directories."
         ),
     )
+    cd_parser.set_defaults(handler=run_cd_command)
 
     init_parser = subparsers.add_parser(
         "init",
@@ -795,6 +808,7 @@ def parse_args() -> argparse.Namespace:
         description="Print shell integration code for eval.",
     )
     init_parser.add_argument("shell", choices=["bash"], help="shell to initialize")
+    init_parser.set_defaults(handler=run_init_command)
 
     wt_parser = subparsers.add_parser(
         "wt",
@@ -811,6 +825,7 @@ def parse_args() -> argparse.Namespace:
         help="existing branch to check out; omitted to list worktrees",
     )
     wt_parser.add_argument("--name", help="folder name under the repository wt directory")
+    wt_parser.set_defaults(handler=run_wt_command)
 
     args = parser.parse_args()
     args.root = root
@@ -822,21 +837,7 @@ def main() -> None:
 
     args = parse_args()
     _quiet = args.quiet
-    if args.cmd == "clone":
-        clone(args.url, args.name, args.root, not args.no_submodules)
-    elif args.cmd == "ls":
-        print_repositories(args.root)
-    elif args.cmd == "cd":
-        print_cd_target(args.root)
-    elif args.cmd == "init":
-        print_shell_init(args.shell)
-    elif args.cmd == "wt":
-        if args.branch:
-            wt_create(args.branch, args.name)
-        elif args.name:
-            fail("--name requires a branch")
-        else:
-            print_worktrees()
+    args.handler(args)
 
 
 if __name__ == "__main__":
