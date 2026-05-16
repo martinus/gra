@@ -85,6 +85,23 @@ gra         main       main     ✓ clean  git@github.com:martinus/gra
             wt/review  feature  ● dirty
 ```
 
+## cd - jump to a worktree
+
+Run `gra cd` to choose any worktree under the gra root with `fzf`:
+
+```sh
+gra cd
+```
+
+The command prints the selected path. To make `gra cd` change the current Bash
+shell's directory, add this to `~/.bashrc` after `gra` is on your `PATH`:
+
+```sh
+eval "$(gra init bash)"
+```
+
+Then run `gra cd`, select a worktree, and press Enter.
+
 ## wt - list, create, or update worktrees
 
 Run `gra wt` from a checkout, worktree, the repo folder, or the `wt` folder to

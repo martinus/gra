@@ -11,7 +11,12 @@ GRA = REPO_ROOT / "gra"
 
 
 def run_cli(
-    args: list[str], home: Path, *, cwd: Path | None = None, input_text: str | None = None
+    args: list[str],
+    home: Path,
+    *,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    env_extra: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(
@@ -21,6 +26,8 @@ def run_cli(
             "HOME": str(home),
         }
     )
+    if env_extra:
+        env.update(env_extra)
     return subprocess.run(
         [sys.executable, str(GRA), *args],
         capture_output=True,
@@ -281,6 +288,63 @@ def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
     assert "feature" in result.stdout
     assert "✓ clean" in result.stdout
     assert "● dirty" in result.stdout
+
+
+def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    git(["switch", "-c", "feature"], cwd=source)
+    (source / "README.md").write_text("# feature\n")
+    git(["commit", "-am", "feature"], cwd=source)
+    git(["switch", "main"], cwd=source)
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
+    assert review_result.returncode == 0, review_result.stderr
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fzf = bin_dir / "fzf"
+    fzf_input = tmp_path / "fzf-input"
+    fzf.write_text("#!/bin/sh\ncat > \"$FZF_INPUT\"\nsed -n '2p' \"$FZF_INPUT\"\n")
+    fzf.chmod(0o755)
+
+    result = run_cli(
+        ["cd"],
+        home,
+        cwd=tmp_path,
+        env_extra={"PATH": f"{bin_dir}:{os.environ['PATH']}", "FZF_INPUT": str(fzf_input)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{home / 'git' / 'project' / 'wt' / 'review'}\n"
+    assert fzf_input.read_text().splitlines() == [
+        f"{home / 'git' / 'project' / 'main'}\tproject  main       main     ✓ clean",
+        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature  ✓ clean",
+    ]
+
+
+def test_init_bash_prints_shell_helper(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = run_cli(["init", "bash"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert "gra() {" in result.stdout
+    assert 'target="$(command gra cd "$@")" || return' in result.stdout
+    assert "command gra \"$@\"" in result.stdout
+
+    syntax = subprocess.run(
+        ["bash", "-n"],
+        input=result.stdout,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
 
 
 def test_clone_reports_collision_with_name_suggestion(tmp_path: Path) -> None:

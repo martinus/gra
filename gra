@@ -7,7 +7,7 @@ A tiny clone helper that puts repositories under a flat ~/git layout:
     ~/git/<repo>/<default-branch>
     ~/git/<repo>/wt
 
-Only the `clone`, `ls`, and `wt` commands are supported.
+Only the `clone`, `cd`, `init`, `ls`, and `wt` commands are supported.
 """
 
 __version__ = "0.7.0"
@@ -547,6 +547,121 @@ def print_repositories(root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# cd command
+# ---------------------------------------------------------------------------
+
+
+def worktree_choices(root: Path) -> list[str]:
+    """Return fzf input lines with the absolute path in the first field."""
+    headers = ["REPOSITORY", "WORKTREE", "REF", "STATUS"]
+    rows: list[tuple[Path, list[str]]] = []
+    for container, checkout in repository_checkouts(root):
+        for path in worktree_paths(checkout):
+            if not path.is_dir():
+                continue
+            rows.append(
+                (
+                    path,
+                    [
+                        container.name,
+                        relative_worktree_path(container, path),
+                        worktree_ref(path),
+                        status_label(worktree_status(path)),
+                    ],
+                )
+            )
+
+    widths = [len(header) for header in headers]
+    for _path, values in rows:
+        for index, value in enumerate(values):
+            widths[index] = max(widths[index], len(value))
+
+    choices = []
+    for path, values in rows:
+        label = "  ".join(
+            value.ljust(width) for value, width in zip(values, widths)
+        ).rstrip()
+        choices.append(f"{path}\t{label}")
+    return choices
+
+
+def worktree_picker_header(choices: list[str]) -> str:
+    """Return a header aligned with the visible fzf choice text."""
+    headers = ["REPOSITORY", "WORKTREE", "REF", "STATUS"]
+    widths = [len(header) for header in headers]
+    for choice in choices:
+        _path, label = choice.split("\t", 1)
+        values = re.split(r" {2,}", label)
+        for index, value in enumerate(values):
+            widths[index] = max(widths[index], len(value))
+
+    return "  ".join(
+        header.ljust(width) for header, width in zip(headers, widths)
+    ).rstrip()
+
+
+def print_cd_target(root: Path) -> None:
+    """Select a worktree with fzf and print the selected absolute path."""
+    choices = worktree_choices(root)
+    if not choices:
+        fail(f"no worktrees found under '{root}'")
+
+    if not shutil.which("fzf"):
+        fail("fzf is required for 'gra cd'")
+
+    result = subprocess.run(
+        [
+            "fzf",
+            "--height=80%",
+            "--layout=reverse",
+            "--border",
+            "--no-sort",
+            "--prompt=gra cd> ",
+            f"--header={worktree_picker_header(choices)}",
+            "--delimiter=\t",
+            "--with-nth=2",
+        ],
+        input="\n".join(choices) + "\n",
+        stdout=subprocess.PIPE,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+    selected = result.stdout.rstrip("\n")
+    if not selected:
+        sys.exit(1)
+    print(selected.split("\t", 1)[0])
+
+
+# ---------------------------------------------------------------------------
+# init command
+# ---------------------------------------------------------------------------
+
+
+BASH_INIT = r'''gra() {
+    if [[ ${1-} == cd ]]; then
+        shift
+        local target
+        target="$(command gra cd "$@")" || return
+        [[ -n $target ]] && builtin cd "$target"
+    else
+        command gra "$@"
+    fi
+}
+'''
+
+
+def print_shell_init(shell: str) -> None:
+        """Print shell integration code for eval."""
+        if shell == "bash":
+                print(BASH_INIT, end="")
+                return
+        fail(f"unsupported shell '{shell}'")
+
+
+# ---------------------------------------------------------------------------
 # wt command
 # ---------------------------------------------------------------------------
 
@@ -664,6 +779,24 @@ def parse_args() -> argparse.Namespace:
         description=f"List repositories and worktrees under '{root}'.",
     )
 
+    subparsers.add_parser(
+        "cd",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="select a worktree path with fzf",
+        description=(
+            "Select a worktree under the gra root with fzf and print its path.\n"
+            "Use 'eval \"$(gra init bash)\"' to make 'gra cd' change directories."
+        ),
+    )
+
+    init_parser = subparsers.add_parser(
+        "init",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="print shell integration code",
+        description="Print shell integration code for eval.",
+    )
+    init_parser.add_argument("shell", choices=["bash"], help="shell to initialize")
+
     wt_parser = subparsers.add_parser(
         "wt",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -694,6 +827,10 @@ def main() -> None:
         clone(args.url, args.name, args.root, not args.no_submodules)
     elif args.cmd == "ls":
         print_repositories(args.root)
+    elif args.cmd == "cd":
+        print_cd_target(args.root)
+    elif args.cmd == "init":
+        print_shell_init(args.shell)
     elif args.cmd == "wt":
         if args.branch:
             wt_create(args.branch, args.name)
