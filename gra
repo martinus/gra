@@ -630,34 +630,11 @@ def select_worktree_from_rows(
     return selected.split("\t", 1)[0]
 
 
-def select_worktree_path(root: Path, command: str) -> str:
-    """Select a local worktree with fzf and return the selected absolute path."""
-    return select_worktree_from_rows(
-        local_worktree_picker_rows(root), command, f"under '{root}'"
-    )
-
-
 def print_cd_target(root: Path) -> None:
     """Select a worktree with fzf and print the selected absolute path."""
-    print(select_worktree_path(root, "cd"))
-
-
-def parse_worktree_picker_rows(data: object, source: str) -> list[tuple[str, list[str]]]:
-    """Parse JSON-compatible worktree picker rows."""
-    if not isinstance(data, list):
-        fail(f"invalid worktree data from {source}")
-
-    rows = []
-    for item in data:
-        if not isinstance(item, list) or len(item) != 2:
-            fail(f"invalid worktree data from {source}")
-        path, values = item
-        if not isinstance(path, str) or not isinstance(values, list):
-            fail(f"invalid worktree data from {source}")
-        if len(values) != 3 or not all(isinstance(value, str) for value in values):
-            fail(f"invalid worktree data from {source}")
-        rows.append((path, values))
-    return rows
+    print(
+        select_worktree_from_rows(local_worktree_picker_rows(root), "cd", f"under '{root}'")
+    )
 
 
 def print_worktree_picker_rows(root: Path) -> None:
@@ -665,18 +642,20 @@ def print_worktree_picker_rows(root: Path) -> None:
     print(json.dumps(local_worktree_picker_rows(root)))
 
 
-REMOTE_GRA_WORKTREES_COMMAND = 'PATH="$HOME/.local/bin:$PATH"; export PATH; exec gra code --worktrees-json'
+REMOTE_GRA_WORKTREES_COMMAND = (
+    'PATH="$HOME/.local/bin:$PATH"; export PATH; exec gra code --worktrees-json'
+)
 
 
-def remote_worktree_picker_rows(host: str) -> list[tuple[str, list[str]]]:
+def remote_worktree_picker_rows(ssh_target: str) -> list[tuple[str, list[str]]]:
     """Return worktree picker rows from gra installed on a remote SSH target."""
-    if not host or host.startswith("-"):
-        fail(f"invalid SSH target '{host}'")
+    if not ssh_target or ssh_target.startswith("-"):
+        fail(f"invalid SSH target '{ssh_target}'")
     if not shutil.which("ssh"):
         fail("ssh is required for 'gra code SSH_TARGET'")
 
     result = subprocess.run(
-        ["ssh", "-T", host, REMOTE_GRA_WORKTREES_COMMAND],
+        ["ssh", "-T", ssh_target, REMOTE_GRA_WORKTREES_COMMAND],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         encoding="utf-8",
@@ -684,38 +663,31 @@ def remote_worktree_picker_rows(host: str) -> list[tuple[str, list[str]]]:
     )
     if result.returncode != 0:
         detail = result.stderr.strip()
-        fail(f"ssh to '{host}' failed" + (f": {detail}" if detail else ""))
+        fail(f"ssh to '{ssh_target}' failed" + (f": {detail}" if detail else ""))
 
     try:
-        rows = parse_worktree_picker_rows(json.loads(result.stdout), f"'{host}'")
+        return [(path, values) for path, values in json.loads(result.stdout)]
     except json.JSONDecodeError as error:
-        fail(f"could not parse worktrees from '{host}': {error}")
-    return rows
+        fail(f"could not parse worktrees from '{ssh_target}': {error}")
+    except (TypeError, ValueError):
+        fail(f"invalid worktree data from '{ssh_target}'")
 
 
-def select_remote_worktree_path(host: str) -> str:
-    """Select a remote worktree with fzf and return its absolute path."""
-    return select_worktree_from_rows(
-        remote_worktree_picker_rows(host), "code", f"on '{host}'"
-    )
-
-
-def vscode_ssh_remote_authority(host: str) -> str:
-    """Return the VS Code Remote SSH authority for an SSH target."""
-    return f"ssh-remote+{host}"
-
-
-def open_code_target(root: Path, host: str | None) -> None:
+def open_code_target(root: Path, ssh_target: str | None) -> None:
     """Select a worktree with fzf and open it in Visual Studio Code."""
     code = shutil.which("code")
     if not code:
         fail("code is required for 'gra code'")
 
-    if host:
-        target = select_remote_worktree_path(host)
-        command = [code, "--remote", vscode_ssh_remote_authority(host), target]
+    if ssh_target:
+        target = select_worktree_from_rows(
+            remote_worktree_picker_rows(ssh_target), "code", f"on '{ssh_target}'"
+        )
+        command = [code, "--remote", f"ssh-remote+{ssh_target}", target]
     else:
-        target = select_worktree_path(root, "code")
+        target = select_worktree_from_rows(
+            local_worktree_picker_rows(root), "code", f"under '{root}'"
+        )
         command = [code, target]
     log(shlex.join(command))
     result = subprocess.run(command, check=False)
@@ -848,7 +820,7 @@ def run_code_command(args: argparse.Namespace) -> None:
     if args.worktrees_json:
         print_worktree_picker_rows(args.root)
         return
-    open_code_target(args.root, args.host)
+    open_code_target(args.root, args.ssh_target)
 
 
 def run_shell_command(args: argparse.Namespace) -> None:
@@ -920,7 +892,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     code_parser.add_argument(
-        "host",
+        "ssh_target",
         nargs="?",
         metavar="SSH_TARGET",
         help="SSH target to query, for example HOST or USER@HOST",
