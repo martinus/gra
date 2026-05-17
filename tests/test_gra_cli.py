@@ -342,11 +342,67 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     ]
 
 
-def test_init_bash_prints_shell_helper(tmp_path: Path) -> None:
+def test_code_opens_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    git(["switch", "-c", "feature"], cwd=source)
+    (source / "README.md").write_text("# feature\n")
+    git(["commit", "-am", "feature"], cwd=source)
+    git(["switch", "main"], cwd=source)
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
+    assert review_result.returncode == 0, review_result.stderr
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fzf = bin_dir / "fzf"
+    code = bin_dir / "code"
+    fzf_input = tmp_path / "fzf-input"
+    fzf_args = tmp_path / "fzf-args"
+    code_args = tmp_path / "code-args"
+    fzf.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
+        "cat > \"$FZF_INPUT\"\n"
+        "sed -n '2p' \"$FZF_INPUT\"\n"
+    )
+    fzf.chmod(0o755)
+    code.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CODE_ARGS\"\n")
+    code.chmod(0o755)
+
+    result = run_cli(
+        ["code"],
+        home,
+        cwd=tmp_path,
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "FZF_ARGS": str(fzf_args),
+            "FZF_INPUT": str(fzf_input),
+            "CODE_ARGS": str(code_args),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{code} {home / 'git' / 'project' / 'wt' / 'review'}\n"
+    args = fzf_args.read_text().splitlines()
+    assert "--prompt=gra code> " in args
+    assert "--with-nth=2" in args
+    assert code_args.read_text() == f"{home / 'git' / 'project' / 'wt' / 'review'}\n"
+    assert fzf_input.read_text().splitlines() == [
+        f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
+        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
+    ]
+
+
+def test_shell_bash_prints_shell_helper(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
 
-    result = run_cli(["init", "bash"], home)
+    result = run_cli(["shell", "bash"], home)
 
     assert result.returncode == 0, result.stderr
     assert "gra() {" in result.stdout

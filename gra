@@ -7,7 +7,7 @@ A tiny clone helper that puts repositories under a flat ~/git layout:
     ~/git/<repo>/<default-branch>
     ~/git/<repo>/wt
 
-Only the `clone`, `cd`, `init`, `ls`, and `wt` commands are supported.
+Only the `clone`, `cd`, `code`, `ls`, `shell`, and `wt` commands are supported.
 """
 
 __version__ = "0.7.0"
@@ -15,6 +15,7 @@ __version__ = "0.7.0"
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -586,14 +587,14 @@ def worktree_picker_choices(root: Path) -> tuple[list[str], str]:
     return choices, padded_line(headers, widths)
 
 
-def print_cd_target(root: Path) -> None:
-    """Select a worktree with fzf and print the selected absolute path."""
+def select_worktree_path(root: Path, command: str) -> Path:
+    """Select a worktree with fzf and return the selected absolute path."""
     choices, header = worktree_picker_choices(root)
     if not choices:
         fail(f"no worktrees found under '{root}'")
 
     if not shutil.which("fzf"):
-        fail("fzf is required for 'gra cd'")
+        fail(f"fzf is required for 'gra {command}'")
 
     result = subprocess.run(
         [
@@ -602,7 +603,7 @@ def print_cd_target(root: Path) -> None:
             "--layout=reverse",
             "--border",
             "--tiebreak=begin,index",
-            "--prompt=gra cd> ",
+            f"--prompt=gra {command}> ",
             f"--header={header}",
             "--delimiter=\t",
             "--with-nth=2",
@@ -618,11 +619,30 @@ def print_cd_target(root: Path) -> None:
     selected = result.stdout.rstrip("\n")
     if not selected:
         sys.exit(1)
-    print(selected.split("\t", 1)[0])
+    return Path(selected.split("\t", 1)[0])
+
+
+def print_cd_target(root: Path) -> None:
+    """Select a worktree with fzf and print the selected absolute path."""
+    print(select_worktree_path(root, "cd"))
+
+
+def open_code_target(root: Path) -> None:
+    """Select a worktree with fzf and open it in Visual Studio Code."""
+    code = shutil.which("code")
+    if not code:
+        fail("code is required for 'gra code'")
+
+    target = select_worktree_path(root, "code")
+    command = [code, str(target)]
+    log(shlex.join(command))
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
 
 # ---------------------------------------------------------------------------
-# init command
+# shell command
 # ---------------------------------------------------------------------------
 
 
@@ -742,7 +762,11 @@ def run_cd_command(args: argparse.Namespace) -> None:
     print_cd_target(args.root)
 
 
-def run_init_command(args: argparse.Namespace) -> None:
+def run_code_command(args: argparse.Namespace) -> None:
+    open_code_target(args.root)
+
+
+def run_shell_command(args: argparse.Namespace) -> None:
     print_shell_init(args.shell)
 
 
@@ -796,19 +820,27 @@ def parse_args() -> argparse.Namespace:
         help="select a worktree path with fzf",
         description=(
             "Select a worktree under the gra root with fzf and print its path.\n"
-            "Use 'eval \"$(gra init bash)\"' to make 'gra cd' change directories."
+            "Use 'eval \"$(gra shell bash)\"' to make 'gra cd' change directories."
         ),
     )
     cd_parser.set_defaults(handler=run_cd_command)
 
-    init_parser = subparsers.add_parser(
-        "init",
+    code_parser = subparsers.add_parser(
+        "code",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="select a worktree with fzf and open it in Visual Studio Code",
+        description="Select a worktree under the gra root with fzf and open it in Visual Studio Code.",
+    )
+    code_parser.set_defaults(handler=run_code_command)
+
+    shell_parser = subparsers.add_parser(
+        "shell",
         formatter_class=argparse.RawTextHelpFormatter,
         help="print shell integration code",
         description="Print shell integration code for eval.",
     )
-    init_parser.add_argument("shell", choices=["bash"], help="shell to initialize")
-    init_parser.set_defaults(handler=run_init_command)
+    shell_parser.add_argument("shell", choices=["bash"], help="shell to initialize")
+    shell_parser.set_defaults(handler=run_shell_command)
 
     wt_parser = subparsers.add_parser(
         "wt",

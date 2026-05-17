@@ -97,10 +97,19 @@ The command prints the selected path. To make `gra cd` change the current Bash
 shell's directory, add this to `~/.bashrc` after `gra` is on your `PATH`:
 
 ```sh
-eval "$(gra init bash)"
+eval "$(gra shell bash)"
 ```
 
 Then run `gra cd`, select a worktree, and press Enter.
+
+## code - open a worktree in Visual Studio Code
+
+Run `gra code` to choose any worktree under the gra root with the same `fzf`
+picker as `gra cd`, then open the selected directory in Visual Studio Code:
+
+```sh
+gra code
+```
 
 ## wt - list, create, or update worktrees
 
