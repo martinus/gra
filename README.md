@@ -111,6 +111,14 @@ picker as `gra cd`, then open the selected directory in Visual Studio Code:
 gra code
 ```
 
+Pass an SSH target to choose from that machine's gra worktrees and open the
+selected folder with VS Code Remote SSH. The target can include a username, and
+expects `gra` to be installed on the remote host and available on its `PATH`:
+
+```sh
+gra code martinleitnerankerl@10.102.7.17
+```
+
 ## wt - list, create, or update worktrees
 
 Run `gra wt` from a checkout, worktree, the repo folder, or the `wt` folder to

@@ -1,5 +1,6 @@
 """CLI tests for the gra clone command."""
 
+import json
 import os
 import subprocess
 import sys
@@ -395,6 +396,99 @@ def test_code_opens_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     assert fzf_input.read_text().splitlines() == [
         f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
         f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
+    ]
+
+
+def test_code_worktrees_json_prints_picker_rows(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    git(["switch", "-c", "feature"], cwd=source)
+    (source / "README.md").write_text("# feature\n")
+    git(["commit", "-am", "feature"], cwd=source)
+    git(["switch", "main"], cwd=source)
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
+    assert review_result.returncode == 0, review_result.stderr
+
+    result = run_cli(["code", "--worktrees-json"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        [str(home / "git" / "project" / "main"), ["project", "main", "main"]],
+        [
+            str(home / "git" / "project" / "wt" / "review"),
+            ["project", "wt/review", "feature"],
+        ],
+    ]
+
+
+def test_code_opens_selected_remote_worktree_path_from_fzf(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    fzf = bin_dir / "fzf"
+    code = bin_dir / "code"
+    ssh_args = tmp_path / "ssh-args"
+    fzf_input = tmp_path / "fzf-input"
+    fzf_args = tmp_path / "fzf-args"
+    code_args = tmp_path / "code-args"
+    ssh.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" > \"$SSH_ARGS\"\n"
+        "printf '%s\n' '[[\"/home/remote/git/project/main\",[\"project\",\"main\",\"main\"]],[\"/home/remote/git/project/wt/review\",[\"project\",\"wt/review\",\"feature\"]]]'\n"
+    )
+    ssh.chmod(0o755)
+    fzf.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
+        "cat > \"$FZF_INPUT\"\n"
+        "sed -n '2p' \"$FZF_INPUT\"\n"
+    )
+    fzf.chmod(0o755)
+    code.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CODE_ARGS\"\n")
+    code.chmod(0o755)
+
+    result = run_cli(
+        ["code", "martinleitnerankerl@10.102.7.17"],
+        home,
+        cwd=tmp_path,
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "SSH_ARGS": str(ssh_args),
+            "FZF_ARGS": str(fzf_args),
+            "FZF_INPUT": str(fzf_input),
+            "CODE_ARGS": str(code_args),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        f"{code} --remote ssh-remote+martinleitnerankerl@10.102.7.17 "
+        "/home/remote/git/project/wt/review\n"
+    )
+    assert ssh_args.read_text().splitlines() == [
+        "-T",
+        "martinleitnerankerl@10.102.7.17",
+        "gra",
+        "code",
+        "--worktrees-json",
+    ]
+    args = fzf_args.read_text().splitlines()
+    assert "--prompt=gra code> " in args
+    assert code_args.read_text().splitlines() == [
+        "--remote",
+        "ssh-remote+martinleitnerankerl@10.102.7.17",
+        "/home/remote/git/project/wt/review",
+    ]
+    assert fzf_input.read_text().splitlines() == [
+        "/home/remote/git/project/main\tproject  main       main",
+        "/home/remote/git/project/wt/review\tproject  wt/review  feature",
     ]
 
 

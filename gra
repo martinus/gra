@@ -13,6 +13,7 @@ Only the `clone`, `cd`, `code`, `ls`, `shell`, and `wt` commands are supported.
 __version__ = "0.7.0"
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -559,17 +560,16 @@ def print_repositories(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def worktree_picker_choices(root: Path) -> tuple[list[str], str]:
-    """Return fzf input lines and an aligned header."""
-    headers = ["REPOSITORY", "WORKTREE", "REF"]
-    rows: list[tuple[Path, list[str]]] = []
+def local_worktree_picker_rows(root: Path) -> list[tuple[str, list[str]]]:
+    """Return local worktree picker rows under the gra root."""
+    rows: list[tuple[str, list[str]]] = []
     for container, checkout in repository_checkouts(root):
         for path in worktree_paths(checkout):
             if not path.is_dir():
                 continue
             rows.append(
                 (
-                    path,
+                    str(path),
                     [
                         container.name,
                         relative_worktree_path(container, path),
@@ -577,21 +577,29 @@ def worktree_picker_choices(root: Path) -> tuple[list[str], str]:
                     ],
                 )
             )
+    return rows
 
-    widths = column_widths(headers, [values for _path, values in rows], include_headers=False)
+
+def worktree_picker_choices(rows: list[tuple[str, list[str]]]) -> tuple[list[str], str]:
+    """Return fzf input lines and an aligned header."""
+    headers = ["REPOSITORY", "WORKTREE", "REF"]
+
+    widths = column_widths(headers, [values for _target, values in rows], include_headers=False)
 
     choices = []
-    for path, values in rows:
+    for target, values in rows:
         label = padded_line(values, widths)
-        choices.append(f"{path}\t{label}")
+        choices.append(f"{target}\t{label}")
     return choices, padded_line(headers, widths)
 
 
-def select_worktree_path(root: Path, command: str) -> Path:
+def select_worktree_from_rows(
+    rows: list[tuple[str, list[str]]], command: str, source: str
+) -> str:
     """Select a worktree with fzf and return the selected absolute path."""
-    choices, header = worktree_picker_choices(root)
+    choices, header = worktree_picker_choices(rows)
     if not choices:
-        fail(f"no worktrees found under '{root}'")
+        fail(f"no worktrees found {source}")
 
     if not shutil.which("fzf"):
         fail(f"fzf is required for 'gra {command}'")
@@ -619,7 +627,14 @@ def select_worktree_path(root: Path, command: str) -> Path:
     selected = result.stdout.rstrip("\n")
     if not selected:
         sys.exit(1)
-    return Path(selected.split("\t", 1)[0])
+    return selected.split("\t", 1)[0]
+
+
+def select_worktree_path(root: Path, command: str) -> str:
+    """Select a local worktree with fzf and return the selected absolute path."""
+    return select_worktree_from_rows(
+        local_worktree_picker_rows(root), command, f"under '{root}'"
+    )
 
 
 def print_cd_target(root: Path) -> None:
@@ -627,14 +642,73 @@ def print_cd_target(root: Path) -> None:
     print(select_worktree_path(root, "cd"))
 
 
-def open_code_target(root: Path) -> None:
+def parse_worktree_picker_rows(data: object, source: str) -> list[tuple[str, list[str]]]:
+    """Parse JSON-compatible worktree picker rows."""
+    if not isinstance(data, list):
+        fail(f"invalid worktree data from {source}")
+
+    rows = []
+    for item in data:
+        if not isinstance(item, list) or len(item) != 2:
+            fail(f"invalid worktree data from {source}")
+        path, values = item
+        if not isinstance(path, str) or not isinstance(values, list):
+            fail(f"invalid worktree data from {source}")
+        if len(values) != 3 or not all(isinstance(value, str) for value in values):
+            fail(f"invalid worktree data from {source}")
+        rows.append((path, values))
+    return rows
+
+
+def print_worktree_picker_rows(root: Path) -> None:
+    """Print local worktree picker rows as JSON for remote gra callers."""
+    print(json.dumps(local_worktree_picker_rows(root)))
+
+
+def remote_worktree_picker_rows(host: str) -> list[tuple[str, list[str]]]:
+    """Return worktree picker rows from gra installed on a remote SSH target."""
+    if not host or host.startswith("-"):
+        fail(f"invalid SSH target '{host}'")
+    if not shutil.which("ssh"):
+        fail("ssh is required for 'gra code SSH_TARGET'")
+
+    result = subprocess.run(
+        ["ssh", "-T", host, "gra", "code", "--worktrees-json"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        fail(f"ssh to '{host}' failed" + (f": {detail}" if detail else ""))
+
+    try:
+        rows = parse_worktree_picker_rows(json.loads(result.stdout), f"'{host}'")
+    except json.JSONDecodeError as error:
+        fail(f"could not parse worktrees from '{host}': {error}")
+    return rows
+
+
+def select_remote_worktree_path(host: str) -> str:
+    """Select a remote worktree with fzf and return its absolute path."""
+    return select_worktree_from_rows(
+        remote_worktree_picker_rows(host), "code", f"on '{host}'"
+    )
+
+
+def open_code_target(root: Path, host: str | None) -> None:
     """Select a worktree with fzf and open it in Visual Studio Code."""
     code = shutil.which("code")
     if not code:
         fail("code is required for 'gra code'")
 
-    target = select_worktree_path(root, "code")
-    command = [code, str(target)]
+    if host:
+        target = select_remote_worktree_path(host)
+        command = [code, "--remote", f"ssh-remote+{host}", target]
+    else:
+        target = select_worktree_path(root, "code")
+        command = [code, target]
     log(shlex.join(command))
     result = subprocess.run(command, check=False)
     if result.returncode != 0:
@@ -763,7 +837,10 @@ def run_cd_command(args: argparse.Namespace) -> None:
 
 
 def run_code_command(args: argparse.Namespace) -> None:
-    open_code_target(args.root)
+    if args.worktrees_json:
+        print_worktree_picker_rows(args.root)
+        return
+    open_code_target(args.root, args.host)
 
 
 def run_shell_command(args: argparse.Namespace) -> None:
@@ -829,7 +906,21 @@ def parse_args() -> argparse.Namespace:
         "code",
         formatter_class=argparse.RawTextHelpFormatter,
         help="select a worktree with fzf and open it in Visual Studio Code",
-        description="Select a worktree under the gra root with fzf and open it in Visual Studio Code.",
+        description=(
+            "Select a worktree under the gra root with fzf and open it in Visual Studio Code.\n"
+            "Pass SSH_TARGET, such as HOST or USER@HOST, to open a remote worktree with VS Code Remote SSH."
+        ),
+    )
+    code_parser.add_argument(
+        "host",
+        nargs="?",
+        metavar="SSH_TARGET",
+        help="SSH target to query, for example HOST or USER@HOST",
+    )
+    code_parser.add_argument(
+        "--worktrees-json",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     code_parser.set_defaults(handler=run_code_command)
 
