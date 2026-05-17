@@ -475,9 +475,7 @@ def test_code_opens_selected_remote_worktree_path_from_fzf(tmp_path: Path) -> No
     assert ssh_args.read_text().splitlines() == [
         "-T",
         "martinleitnerankerl@10.102.7.17",
-        "gra",
-        "code",
-        "--worktrees-json",
+        'PATH="$HOME/.local/bin:$PATH"; export PATH; exec gra code --worktrees-json',
     ]
     args = fzf_args.read_text().splitlines()
     assert "--prompt=gra code> " in args

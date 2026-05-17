@@ -665,6 +665,9 @@ def print_worktree_picker_rows(root: Path) -> None:
     print(json.dumps(local_worktree_picker_rows(root)))
 
 
+REMOTE_GRA_WORKTREES_COMMAND = 'PATH="$HOME/.local/bin:$PATH"; export PATH; exec gra code --worktrees-json'
+
+
 def remote_worktree_picker_rows(host: str) -> list[tuple[str, list[str]]]:
     """Return worktree picker rows from gra installed on a remote SSH target."""
     if not host or host.startswith("-"):
@@ -673,7 +676,7 @@ def remote_worktree_picker_rows(host: str) -> list[tuple[str, list[str]]]:
         fail("ssh is required for 'gra code SSH_TARGET'")
 
     result = subprocess.run(
-        ["ssh", "-T", host, "gra", "code", "--worktrees-json"],
+        ["ssh", "-T", host, REMOTE_GRA_WORKTREES_COMMAND],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         encoding="utf-8",
@@ -697,6 +700,11 @@ def select_remote_worktree_path(host: str) -> str:
     )
 
 
+def vscode_ssh_remote_authority(host: str) -> str:
+    """Return the VS Code Remote SSH authority for an SSH target."""
+    return f"ssh-remote+{host}"
+
+
 def open_code_target(root: Path, host: str | None) -> None:
     """Select a worktree with fzf and open it in Visual Studio Code."""
     code = shutil.which("code")
@@ -705,7 +713,7 @@ def open_code_target(root: Path, host: str | None) -> None:
 
     if host:
         target = select_remote_worktree_path(host)
-        command = [code, "--remote", f"ssh-remote+{host}", target]
+        command = [code, "--remote", vscode_ssh_remote_authority(host), target]
     else:
         target = select_worktree_path(root, "code")
         command = [code, target]

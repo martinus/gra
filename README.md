@@ -112,11 +112,28 @@ gra code
 ```
 
 Pass an SSH target to choose from that machine's gra worktrees and open the
-selected folder with VS Code Remote SSH. The target can include a username, and
-expects `gra` to be installed on the remote host and available on its `PATH`:
+selected folder with VS Code Remote SSH. The target can include a username:
 
 ```sh
 gra code martinleitnerankerl@10.102.7.17
+```
+
+This expects `gra` to be installed on the remote host. `gra code` adds
+`~/.local/bin` to the remote `PATH` before invoking `gra`, so the usual symlink
+location works for non-interactive SSH sessions.
+
+When using `~/.ssh/config`, put the username in `User`, not in the `Host`
+pattern, then pass the `Host` value to `gra code`. This avoids VS Code Remote
+SSH combining the username twice:
+
+```sshconfig
+Host 10.102.7.17
+  HostName 10.102.7.17
+  User martinleitnerankerl
+```
+
+```sh
+gra code 10.102.7.17
 ```
 
 ## wt - list, create, or update worktrees
