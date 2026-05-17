@@ -188,17 +188,11 @@ Host 10.102.7.17
 gra code 10.102.7.17
 ```
 
-## wt - list, create, or update worktrees
+## wt - create or update worktrees
 
-Run `gra wt` from a checkout, worktree, the repo folder, or the `wt` folder to
-see the repo's worktrees and their status:
-
-```sh
-gra wt
-```
-
-Create a worktree for an existing branch by passing the branch name. The folder
-name under `wt` is derived from the branch name:
+Run `gra wt BRANCH` from a checkout, worktree, the repo folder, or the `wt`
+folder to create a worktree for an existing branch. The folder name under `wt`
+is derived from the branch name:
 
 ```sh
 gra wt feature/search

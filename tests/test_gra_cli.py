@@ -139,38 +139,14 @@ def test_wt_creates_reusable_named_review_worktree(tmp_path: Path) -> None:
     assert git_output(["branch", "--show-current"], cwd=review) == second_branch
 
 
-def test_wt_lists_worktrees_for_current_repo(tmp_path: Path) -> None:
+def test_wt_requires_branch(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
 
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-    create_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
-    assert create_result.returncode == 0, create_result.stderr
-    review = home / "git" / "project" / "wt" / "review"
-    (review / "scratch.txt").write_text("local change\n")
+    result = run_cli(["wt"], home)
 
-    result = run_cli(["wt"], home, cwd=review)
-
-    assert result.returncode == 0, result.stderr
-    assert "WORKTREE" in result.stdout
-    assert "REF" in result.stdout
-    assert "STATUS" in result.stdout
-    assert "main" in result.stdout
-    assert "wt/review" in result.stdout
-    assert "feature" in result.stdout
-    assert "● dirty" in result.stdout
-    assert "▶" in result.stdout
-
-    repo_result = run_cli(["wt"], home, cwd=home / "git" / "project")
-    assert repo_result.returncode == 0, repo_result.stderr
-    assert "▶" not in repo_result.stdout
+    assert result.returncode == 2
+    assert "the following arguments are required: branch" in result.stderr
 
 
 def test_wt_missing_branch_can_be_declined(tmp_path: Path) -> None:

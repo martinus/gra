@@ -752,18 +752,6 @@ def wt_create(branch: str, name: str | None) -> None:
     log(f"created '{target}'", GREEN)
 
 
-def print_repo_worktrees() -> None:
-    """List worktrees for the current repository."""
-    checkout = current_checkout()
-    container = repo_container(checkout)
-    active = git_toplevel(Path.cwd())
-    current = active.resolve() if active else None
-    rows = worktree_rows(checkout, container, current)
-    print(f"Repository: {container.name}")
-    print()
-    print_table(["", "WORKTREE", "REF", "STATUS"], rows)
-
-
 # ---------------------------------------------------------------------------
 # clean command
 # ---------------------------------------------------------------------------
@@ -1010,22 +998,15 @@ def parse_args() -> argparse.Namespace:
     wt_parser = subparsers.add_parser(
         "wt",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="create, update, or list worktrees for the current repository",
+        help="create or update a worktree under the repository wt directory",
         description=(
-            "Without arguments, list worktrees for the current repository.\n"
-            "With BRANCH, create or update a worktree under '<repo>/wt'.\n"
+            "Create or update a worktree under '<repo>/wt'.\n"
             "Use --name for a reusable worktree folder such as 'review'."
         ),
     )
-    wt_parser.add_argument("branch", nargs="?", help="branch to check out")
+    wt_parser.add_argument("branch", help="branch to check out")
     wt_parser.add_argument("--name", help="folder name under the repository wt directory")
-    wt_parser.set_defaults(
-        handler=lambda args: (
-            wt_create(args.branch, args.name)
-            if args.branch
-            else print_repo_worktrees()
-        )
-    )
+    wt_parser.set_defaults(handler=lambda args: wt_create(args.branch, args.name))
 
     clean_parser = subparsers.add_parser(
         "clean",

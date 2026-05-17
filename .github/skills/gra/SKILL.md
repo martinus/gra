@@ -17,8 +17,7 @@ argument-hint: 'gra task or command'
 
 - `gra clone URL [--name NAME] [--no-submodules]` clones into the gra layout.
 - `gra ls` lists all repositories and worktrees under the gra root.
-- `gra wt` lists worktrees for the current repository; run it from a checkout, worktree, repo folder, or `wt` folder.
-- `gra wt BRANCH [--name NAME]` creates or reuses a worktree under `<repo>/wt`.
+- `gra wt BRANCH [--name NAME]` creates or reuses a worktree under `<repo>/wt`; run it from a checkout, worktree, repo folder, or `wt` folder.
 - `gra clean [--no-fetch]` dry-runs cleanup across all repositories, adding `VERDICT` and `REASON` columns to the `gra ls` table shape.
 - `gra clean --yes` removes `safe` worktrees and prunes `missing` worktree entries.
 - `gra cd` uses `fzf` to print a selected local worktree path.
