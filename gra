@@ -7,7 +7,7 @@ A tiny clone helper that puts repositories under a flat ~/git layout:
     ~/git/<repo>/<default-branch>
     ~/git/<repo>/wt
 
-Only the `clone`, `cd`, `code`, `ls`, `shell`, and `wt` commands are supported.
+Only the `clone`, `clean`, `cd`, `code`, `ls`, `shell`, and `wt` commands are supported.
 """
 
 __version__ = "0.8.0"
@@ -1036,7 +1036,7 @@ def parse_args() -> argparse.Namespace:
             "  keep  - default checkout, dirty, or has commits not in origin's default branch\n"
             "  safe  - clean and fully merged into origin's default branch\n"
             "  prune - the worktree path no longer exists on disk\n"
-            "Without --yes, only prints the tables."
+            "Without --yes, only prints the table."
         ),
     )
     clean_parser.add_argument(

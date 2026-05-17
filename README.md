@@ -85,6 +85,58 @@ gra         main       main     ✓ clean  git@github.com:martinus/gra
             wt/review  feature  ● dirty
 ```
 
+## clean - report or remove safe worktrees
+
+Run `gra clean` from anywhere to classify every worktree under the configured
+gra root. It prints one table like `gra ls`, with `VERDICT` and `REASON`
+columns added:
+
+```sh
+gra clean
+```
+
+Example output:
+
+```text
+Root: /home/me/git
+Repositories: 2  Worktrees: 4
+
+REPOSITORY  WORKTREE    REF      STATUS     VERDICT  REASON
+gra         main        main     ✓ clean    keep     default checkout
+            wt/review   feature  ● dirty    keep     uncommitted changes
+tools       main        main     ✓ clean    keep     default checkout
+            wt/old-fix  old-fix  ✓ clean    safe     merged into origin/main
+
+Dry run. Re-run with --yes to remove 1 worktree(s).
+```
+
+Verdicts mean:
+
+* `keep` - the worktree is the default checkout, has uncommitted changes, or
+  has commits that are not merged into origin's default branch.
+* `safe` - the worktree is clean and its `HEAD` is already merged into origin's
+  default branch.
+* `prune` - Git still knows about the worktree, but the directory no longer
+  exists on disk.
+
+By default, `gra clean` is a dry run. Use `--yes` to remove `safe` worktrees and
+prune missing entries:
+
+```sh
+gra clean --yes
+```
+
+Before classifying, `gra clean` runs `git fetch --prune origin` in each
+repository. Use `--no-fetch` to skip that step:
+
+```sh
+gra clean --no-fetch
+```
+
+`gra clean --yes` deletes local branches with `git branch -d` only after the
+worktree was removed. It never deletes the default checkout, never removes dirty
+worktrees, and never forces branch deletion with `-D`.
+
 ## cd - jump to a worktree
 
 Run `gra cd` to choose any worktree under the gra root with `fzf`:
