@@ -10,7 +10,7 @@ A tiny clone helper that puts repositories under a flat ~/git layout:
 Only the `clone`, `cd`, `code`, `ls`, `shell`, and `wt` commands are supported.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import argparse
 import json
@@ -218,25 +218,29 @@ def is_git_worktree(path: Path) -> bool:
     return git_output(["rev-parse", "--is-inside-work-tree"], cwd=path) == "true"
 
 
+def default_checkout(container: Path) -> Path | None:
+    """Return the main checkout (sibling of `wt/`) in a gra repo container."""
+    if not container.is_dir():
+        return None
+    for child in sorted(container.iterdir(), key=lambda path: path.name):
+        if child.name != WORKTREE_DIR and child.is_dir() and is_git_worktree(child):
+            return child
+    return None
+
+
 def checkout_in_container(container: Path) -> Path | None:
-    """Pick a real checkout that can anchor repo-wide Git commands.
+    """Pick any real checkout that can anchor repo-wide Git commands.
 
     This is what lets `gra wt` run from the repo container or from the `wt`
     folder, which are gra layout directories but not Git worktrees themselves.
     """
-    if not container.is_dir():
-        return None
-
-    for child in sorted(container.iterdir(), key=lambda path: path.name):
-        if child.name != WORKTREE_DIR and child.is_dir() and is_git_worktree(child):
-            return child
-
+    if checkout := default_checkout(container):
+        return checkout
     wt_root = container / WORKTREE_DIR
     if wt_root.is_dir():
         for child in sorted(wt_root.iterdir(), key=lambda path: path.name):
             if child.is_dir() and is_git_worktree(child):
                 return child
-
     return None
 
 
@@ -290,19 +294,14 @@ def remote_branch_exists(checkout: Path, branch: str) -> bool:
     )
 
 
-def ref_exists(checkout: Path, ref: str) -> bool:
-    return (
-        git_output(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=checkout)
-        is not None
-    )
-
-
 def remote_default_branch(checkout: Path) -> str | None:
     origin_head = git_output(
         ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
         cwd=checkout,
     )
-    if origin_head and ref_exists(checkout, origin_head):
+    if origin_head and git_output(
+        ["rev-parse", "--verify", "--quiet", f"{origin_head}^{{commit}}"], cwd=checkout
+    ):
         return origin_head
 
     for branch in ["main", "master"]:
@@ -409,6 +408,13 @@ def table_cell(header: str, value: str) -> str:
             return style(value, YELLOW)
         if value.startswith("×"):
             return style(value, RED)
+    if header == "VERDICT":
+        if value == "safe":
+            return style(value, GREEN)
+        if value == "prune":
+            return style(value, YELLOW)
+        if value == "keep":
+            return style(value, DIM)
     return value
 
 
@@ -583,11 +589,16 @@ def select_worktree_from_rows(
     return selected.split("\t", 1)[0]
 
 
+def pick_local_worktree(root: Path, command: str) -> str:
+    """Select a local worktree with fzf and return the selected absolute path."""
+    return select_worktree_from_rows(
+        local_worktree_picker_rows(root), command, f"under '{root}'"
+    )
+
+
 def print_cd_target(root: Path) -> None:
     """Select a worktree with fzf and print the selected absolute path."""
-    print(
-        select_worktree_from_rows(local_worktree_picker_rows(root), "cd", f"under '{root}'")
-    )
+    print(pick_local_worktree(root, "cd"))
 
 
 def print_worktree_picker_rows(root: Path) -> None:
@@ -638,9 +649,7 @@ def open_code_target(root: Path, ssh_target: str | None) -> None:
         )
         command = [code, "--remote", f"ssh-remote+{ssh_target}", target]
     else:
-        target = select_worktree_from_rows(
-            local_worktree_picker_rows(root), "code", f"under '{root}'"
-        )
+        target = pick_local_worktree(root, "code")
         command = [code, target]
     log(shlex.join(command))
     result = subprocess.run(command, check=False)
@@ -691,7 +700,7 @@ def create_missing_branch(checkout: Path, branch: str) -> None:
     log(f"created branch '{branch}' from '{start_point}'", GREEN)
 
 
-def resolve_branch(checkout: Path, branch: str) -> bool:
+def branch_needs_tracking(checkout: Path, branch: str) -> bool:
     """Ensure branch exists locally or on origin; return True when tracking is needed."""
     if local_branch_exists(checkout, branch):
         return False
@@ -703,7 +712,7 @@ def resolve_branch(checkout: Path, branch: str) -> bool:
 
 def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
     """Create a worktree that checks out branch, tracking origin if needed."""
-    if resolve_branch(checkout, branch):
+    if branch_needs_tracking(checkout, branch):
         run_git(
             ["worktree", "add", "--track", "-b", branch, target, f"origin/{branch}"],
             cwd=checkout,
@@ -714,7 +723,7 @@ def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
 
 def switch_to_branch(checkout: Path, target: Path, branch: str) -> None:
     """Reuse an existing worktree by switching it to branch."""
-    if resolve_branch(checkout, branch):
+    if branch_needs_tracking(checkout, branch):
         run_git(["switch", "--track", f"origin/{branch}"], cwd=target)
         return
     run_git(["switch", branch], cwd=target)
@@ -743,16 +752,174 @@ def wt_create(branch: str, name: str | None) -> None:
     log(f"created '{target}'", GREEN)
 
 
+def print_repo_worktrees() -> None:
+    """List worktrees for the current repository."""
+    checkout = current_checkout()
+    container = repo_container(checkout)
+    active = git_toplevel(Path.cwd())
+    current = active.resolve() if active else None
+    rows = worktree_rows(checkout, container, current)
+    print(f"Repository: {container.name}")
+    print()
+    print_table(["", "WORKTREE", "REF", "STATUS"], rows)
+
+
+# ---------------------------------------------------------------------------
+# clean command
+# ---------------------------------------------------------------------------
+
+
+def is_merged_into(path: Path, ref: str) -> bool:
+    """Return True if HEAD at path is reachable from ref."""
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", "HEAD", ref],
+        cwd=path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def classify_worktree(
+    path: Path, default_path: Path | None, default_ref: str | None
+) -> tuple[str, str]:
+    """Return (verdict, reason) for a worktree path. Verdict is keep/safe/prune."""
+    if not path.exists():
+        return ("prune", "missing path")
+    if default_path and path.resolve() == default_path.resolve():
+        return ("keep", "default checkout")
+    if git_output(["status", "--porcelain"], cwd=path):
+        return ("keep", "uncommitted changes")
+    if not default_ref:
+        return ("keep", "origin default branch unknown")
+    if is_merged_into(path, default_ref):
+        return ("safe", f"merged into {default_ref}")
+    return ("keep", f"has commits not in {default_ref}")
+
+
+def clean_repository_entries(
+    container: Path, checkout: Path, fetch: bool
+) -> list[tuple[Path, Path, str, str, str, str]]:
+    """Classify worktrees in one repository.
+
+    Returns rows of (container, path, ref_label, status, verdict, reason).
+    """
+    if fetch:
+        subprocess.run(
+            ["git", "fetch", "--prune", "origin"],
+            cwd=checkout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+    default_path = default_checkout(container)
+    default_ref = remote_default_branch(checkout)
+    entries = []
+    for path in worktree_paths(checkout):
+        verdict, reason = classify_worktree(path, default_path, default_ref)
+        entries.append(
+            (container, path, worktree_ref(path), fmt_worktree_status(path), verdict, reason)
+        )
+    return entries
+
+
+def apply_clean(checkout: Path, entries: list[tuple[Path, Path, str, str, str, str]]) -> None:
+    """Remove safe worktrees and prune missing entries for one repository."""
+    has_missing = False
+    for _container, path, _ref, _status, verdict, _reason in entries:
+        if verdict == "prune":
+            has_missing = True
+            continue
+        if verdict != "safe":
+            continue
+        branch = git_output(["branch", "--show-current"], cwd=path)
+        log(f"Removing worktree '{path}'")
+        run_git(["worktree", "remove", path], cwd=checkout)
+        if branch and local_branch_exists(checkout, branch):
+            deleted = subprocess.run(
+                ["git", "branch", "-d", branch],
+                cwd=checkout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if deleted.returncode == 0:
+                log(f"deleted branch '{branch}'", GREEN)
+    if has_missing:
+        log(f"Pruning missing worktree entries in '{checkout}'")
+        run_git(["worktree", "prune"], cwd=checkout)
+
+
+def clean(root: Path, yes: bool, fetch: bool) -> None:
+    """Report cleanable worktrees across every gra repository under root."""
+    repositories = repository_checkouts(root)
+    print(f"Root: {root}")
+    if not repositories:
+        print("No repositories found.")
+        return
+
+    if fetch:
+        log(f"Fetching origin for {len(repositories)} repositories")
+
+    repo_entries = [
+        (checkout, clean_repository_entries(container, checkout, fetch))
+        for container, checkout in repositories
+    ]
+
+    rows = []
+    for _checkout, entries in repo_entries:
+        for index, (container, path, ref_label, status, verdict, reason) in enumerate(entries):
+            rows.append(
+                [
+                    container.name if index == 0 else "",
+                    relative_worktree_path(container, path),
+                    ref_label,
+                    status,
+                    verdict,
+                    reason,
+                ]
+            )
+
+    total_safe = sum(1 for _c, entries in repo_entries for e in entries if e[4] == "safe")
+    total_missing = sum(1 for _c, entries in repo_entries for e in entries if e[4] == "prune")
+
+    print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
+    print()
+    print_table(
+        ["REPOSITORY", "WORKTREE", "REF", "STATUS", "VERDICT", "REASON"], rows
+    )
+
+    print()
+    if not total_safe and not total_missing:
+        log("Nothing to clean.", GREEN)
+        return
+
+    if not yes:
+        actions = []
+        if total_safe:
+            actions.append(f"remove {total_safe} worktree(s)")
+        if total_missing:
+            entries_word = "entry" if total_missing == 1 else "entries"
+            actions.append(f"prune {total_missing} missing {entries_word}")
+        log(f"Dry run. Re-run with --yes to {' and '.join(actions)}.", YELLOW)
+        return
+
+    for checkout, entries in repo_entries:
+        if any(e[4] in {"safe", "prune"} for e in entries):
+            apply_clean(checkout, entries)
+
+    print()
+    log(
+        f"Removed {total_safe} worktree(s); pruned missing entries in {total_missing} place(s).",
+        GREEN,
+    )
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-
-
-def run_code_command(args: argparse.Namespace) -> None:
-    if args.worktrees_json:
-        print_worktree_picker_rows(args.root)
-        return
-    open_code_target(args.root, args.ssh_target)
 
 
 def parse_args() -> argparse.Namespace:
@@ -823,7 +990,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
-    code_parser.set_defaults(handler=run_code_command)
+    code_parser.set_defaults(
+        handler=lambda args: (
+            print_worktree_picker_rows(args.root)
+            if args.worktrees_json
+            else open_code_target(args.root, args.ssh_target)
+        )
+    )
 
     shell_parser = subparsers.add_parser(
         "shell",
@@ -837,15 +1010,42 @@ def parse_args() -> argparse.Namespace:
     wt_parser = subparsers.add_parser(
         "wt",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="create or update a worktree under the repository wt directory",
+        help="create, update, or list worktrees for the current repository",
         description=(
-            "Create a worktree under '<repo>/wt'.\n"
+            "Without arguments, list worktrees for the current repository.\n"
+            "With BRANCH, create or update a worktree under '<repo>/wt'.\n"
             "Use --name for a reusable worktree folder such as 'review'."
         ),
     )
-    wt_parser.add_argument("branch", help="branch to check out")
+    wt_parser.add_argument("branch", nargs="?", help="branch to check out")
     wt_parser.add_argument("--name", help="folder name under the repository wt directory")
-    wt_parser.set_defaults(handler=lambda args: wt_create(args.branch, args.name))
+    wt_parser.set_defaults(
+        handler=lambda args: (
+            wt_create(args.branch, args.name)
+            if args.branch
+            else print_repo_worktrees()
+        )
+    )
+
+    clean_parser = subparsers.add_parser(
+        "clean",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="report or remove worktrees that are safe to delete",
+        description=(
+            f"Classify worktrees in every repository under '{root}':\n"
+            "  keep  - default checkout, dirty, or has commits not in origin's default branch\n"
+            "  safe  - clean and fully merged into origin's default branch\n"
+            "  prune - the worktree path no longer exists on disk\n"
+            "Without --yes, only prints the tables."
+        ),
+    )
+    clean_parser.add_argument(
+        "--yes", action="store_true", help="actually remove safe worktrees and prune missing ones"
+    )
+    clean_parser.add_argument(
+        "--no-fetch", action="store_true", help="skip 'git fetch --prune origin' before classifying"
+    )
+    clean_parser.set_defaults(handler=lambda args: clean(args.root, args.yes, not args.no_fetch))
 
     args = parser.parse_args()
     args.root = root
