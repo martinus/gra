@@ -409,7 +409,7 @@ def table_cell(header: str, value: str) -> str:
         if value.startswith("×"):
             return style(value, RED)
     if header == "VERDICT":
-        if value == "safe":
+        if value == "remove":
             return style(value, GREEN)
         if value == "prune":
             return style(value, YELLOW)
@@ -769,10 +769,19 @@ def is_merged_into(path: Path, ref: str) -> bool:
     return result.returncode == 0
 
 
+def has_patch_equivalent_changes_in(path: Path, ref: str) -> bool:
+    """Return True if commits unique to HEAD have matching patch IDs in ref."""
+    output = git_output(["cherry", ref, "HEAD"], cwd=path)
+    if output is None:
+        return False
+    lines = output.splitlines()
+    return bool(lines) and all(line.startswith("-") for line in lines)
+
+
 def classify_worktree(
     path: Path, default_path: Path | None, default_ref: str | None
 ) -> tuple[str, str]:
-    """Return (verdict, reason) for a worktree path. Verdict is keep/safe/prune."""
+    """Return (verdict, reason) for a worktree path. Verdict is keep/remove/prune."""
     if not path.exists():
         return ("prune", "missing path")
     if default_path and path.resolve() == default_path.resolve():
@@ -782,7 +791,9 @@ def classify_worktree(
     if not default_ref:
         return ("keep", "origin default branch unknown")
     if is_merged_into(path, default_ref):
-        return ("safe", f"merged into {default_ref}")
+        return ("remove", f"merged into {default_ref}")
+    if has_patch_equivalent_changes_in(path, default_ref):
+        return ("remove", f"changes already in {default_ref}")
     return ("keep", f"has commits not in {default_ref}")
 
 
@@ -814,13 +825,13 @@ def clean_repository_entries(
 
 
 def apply_clean(checkout: Path, entries: list[tuple[Path, Path, str, str, str, str]]) -> None:
-    """Remove safe worktrees and prune missing entries for one repository."""
+    """Remove removable worktrees and prune missing entries for one repository."""
     has_missing = False
     for _container, path, _ref, _status, verdict, _reason in entries:
         if verdict == "prune":
             has_missing = True
             continue
-        if verdict != "safe":
+        if verdict != "remove":
             continue
         branch = git_output(["branch", "--show-current"], cwd=path)
         log(f"Removing worktree '{path}'")
@@ -870,7 +881,9 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
                 ]
             )
 
-    total_safe = sum(1 for _c, entries in repo_entries for e in entries if e[4] == "safe")
+    total_removable = sum(
+        1 for _c, entries in repo_entries for e in entries if e[4] == "remove"
+    )
     total_missing = sum(1 for _c, entries in repo_entries for e in entries if e[4] == "prune")
 
     print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
@@ -880,14 +893,14 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
     )
 
     print()
-    if not total_safe and not total_missing:
+    if not total_removable and not total_missing:
         log("Nothing to clean.", GREEN)
         return
 
     if not yes:
         actions = []
-        if total_safe:
-            actions.append(f"remove {total_safe} worktree(s)")
+        if total_removable:
+            actions.append(f"remove {total_removable} worktree(s)")
         if total_missing:
             entries_word = "entry" if total_missing == 1 else "entries"
             actions.append(f"prune {total_missing} missing {entries_word}")
@@ -895,12 +908,12 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
         return
 
     for checkout, entries in repo_entries:
-        if any(e[4] in {"safe", "prune"} for e in entries):
+        if any(e[4] in {"remove", "prune"} for e in entries):
             apply_clean(checkout, entries)
 
     print()
     log(
-        f"Removed {total_safe} worktree(s); pruned missing entries in {total_missing} place(s).",
+        f"Removed {total_removable} worktree(s); pruned missing entries in {total_missing} place(s).",
         GREEN,
     )
 
@@ -1011,17 +1024,17 @@ def parse_args() -> argparse.Namespace:
     clean_parser = subparsers.add_parser(
         "clean",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="report or remove worktrees that are safe to delete",
+        help="report or remove clean merged worktrees",
         description=(
             f"Classify worktrees in every repository under '{root}':\n"
             "  keep  - default checkout, dirty, or has commits not in origin's default branch\n"
-            "  safe  - clean and fully merged into origin's default branch\n"
+            "  remove - clean and merged or patch-equivalent in origin's default branch\n"
             "  prune - the worktree path no longer exists on disk\n"
             "Without --yes, only prints the table."
         ),
     )
     clean_parser.add_argument(
-        "--yes", action="store_true", help="actually remove safe worktrees and prune missing ones"
+        "--yes", action="store_true", help="actually remove removable worktrees and prune missing ones"
     )
     clean_parser.add_argument(
         "--no-fetch", action="store_true", help="skip 'git fetch --prune origin' before classifying"

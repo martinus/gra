@@ -267,6 +267,32 @@ def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
     assert "● dirty" in result.stdout
 
 
+def test_clean_treats_squash_merged_worktree_as_removable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    git(["switch", "-c", "feature"], cwd=source)
+    (source / "README.md").write_text("# feature\n")
+    git(["commit", "-am", "feature"], cwd=source)
+    git(["switch", "main"], cwd=source)
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
+    assert review_result.returncode == 0, review_result.stderr
+
+    git(["merge", "--squash", "feature"], cwd=source)
+    git(["commit", "-m", "squash feature"], cwd=source)
+
+    result = run_cli(["clean"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "wt/review" in result.stdout
+    assert "remove" in result.stdout
+    assert "Dry run. Re-run with --yes to remove 1 worktree(s)." in result.stdout
+
+
 def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

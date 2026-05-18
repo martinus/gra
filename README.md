@@ -85,7 +85,7 @@ gra         main       main     ✓ clean  git@github.com:martinus/gra
             wt/review  feature  ● dirty
 ```
 
-## clean - report or remove safe worktrees
+## clean - report or remove clean merged worktrees
 
 Run `gra clean` from anywhere to classify every worktree under the configured
 gra root. It prints one table like `gra ls`, with `VERDICT` and `REASON`
@@ -105,7 +105,7 @@ REPOSITORY  WORKTREE    REF      STATUS     VERDICT  REASON
 gra         main        main     ✓ clean    keep     default checkout
             wt/review   feature  ● dirty    keep     uncommitted changes
 tools       main        main     ✓ clean    keep     default checkout
-            wt/old-fix  old-fix  ✓ clean    safe     merged into origin/main
+            wt/old-fix  old-fix  ✓ clean    remove   merged into origin/main
 
 Dry run. Re-run with --yes to remove 1 worktree(s).
 ```
@@ -114,13 +114,14 @@ Verdicts mean:
 
 * `keep` - the worktree is the default checkout, has uncommitted changes, or
   has commits that are not merged into origin's default branch.
-* `safe` - the worktree is clean and its `HEAD` is already merged into origin's
-  default branch.
+* `remove` - the worktree is clean and its `HEAD` is already merged into origin's
+  default branch, or its commits are patch-equivalent to changes already there
+  after a squash or cherry-pick merge.
 * `prune` - Git still knows about the worktree, but the directory no longer
   exists on disk.
 
-By default, `gra clean` is a dry run. Use `--yes` to remove `safe` worktrees and
-prune missing entries:
+By default, `gra clean` is a dry run. Use `--yes` to remove worktrees marked
+`remove` and prune missing entries:
 
 ```sh
 gra clean --yes
