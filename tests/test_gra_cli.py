@@ -176,13 +176,14 @@ def test_wt_missing_branch_can_be_created_from_repo_folder(tmp_path: Path) -> No
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project", branch="trunk")
+    branch = "NOISSUE-fix-fedora-headless"
 
     clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
     assert clone_result.returncode == 0, clone_result.stderr
     container = home / "git" / "project"
 
     result = run_cli(
-        ["wt", "NOISSUE-fix-fedora-headless"],
+        ["wt", branch],
         home,
         cwd=container,
         input_text="y\n",
@@ -195,7 +196,9 @@ def test_wt_missing_branch_can_be_created_from_repo_folder(tmp_path: Path) -> No
     )
     worktree = container / "wt" / "NOISSUE-fix-fedora-headless"
     assert (worktree / ".git").is_file()
-    assert git_output(["branch", "--show-current"], cwd=worktree) == "NOISSUE-fix-fedora-headless"
+    assert git_output(["branch", "--show-current"], cwd=worktree) == branch
+    assert git_output(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"], cwd=worktree) == f"origin/{branch}"
+    git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=source)
     assert (worktree / "README.md").read_text() == "# project\n"
 
 

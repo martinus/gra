@@ -701,7 +701,8 @@ def create_missing_branch(checkout: Path, branch: str) -> None:
         fail(f"branch '{branch}' was not created")
 
     run_git(["branch", branch, start_point], cwd=checkout)
-    log(f"created branch '{branch}' from '{start_point}'", GREEN)
+    run_git(["push", "--set-upstream", "origin", branch], cwd=checkout)
+    log(f"created branch '{branch}' from '{start_point}' and tracking 'origin/{branch}'", GREEN)
 
 
 def branch_needs_tracking(checkout: Path, branch: str) -> bool:

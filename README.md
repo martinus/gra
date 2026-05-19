@@ -219,7 +219,8 @@ that is already checked out elsewhere will fail with Git's normal message.
 
 If the branch does not exist locally or on `origin`, `gra` asks whether it
 should create the branch from origin's default branch, for example `origin/main`,
-`origin/master`, or the remote `HEAD` branch.
+`origin/master`, or the remote `HEAD` branch. When you confirm, `gra` pushes the
+new branch to `origin` and sets the local branch to track `origin/<branch>`.
 
 
 # Development
