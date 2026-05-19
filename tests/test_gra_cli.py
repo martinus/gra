@@ -70,7 +70,9 @@ def test_clone_creates_flat_default_branch_checkout(tmp_path: Path) -> None:
     assert (checkout / ".git").is_dir()
     assert (home / "git" / "project" / "wt").is_dir()
     assert (checkout / "README.md").read_text() == "# project\n"
-    assert ".claude/worktrees/" in (checkout / ".git" / "info" / "exclude").read_text()
+    exclude = (checkout / ".git" / "info" / "exclude").read_text()
+    assert ".claude/worktrees/" in exclude
+    assert ".grakeep" in exclude
 
 
 def test_clone_supports_custom_name(tmp_path: Path) -> None:
@@ -291,6 +293,37 @@ def test_clean_treats_squash_merged_worktree_as_removable(tmp_path: Path) -> Non
     assert "wt/review" in result.stdout
     assert "remove" in result.stdout
     assert "Dry run. Re-run with --yes to remove 1 worktree(s)." in result.stdout
+
+
+def test_clean_keeps_grakeep_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    git(["switch", "-c", "feature"], cwd=source)
+    (source / "README.md").write_text("# feature\n")
+    git(["commit", "-am", "feature"], cwd=source)
+    git(["switch", "main"], cwd=source)
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
+    assert review_result.returncode == 0, review_result.stderr
+    review = home / "git" / "project" / "wt" / "review"
+    (review / ".grakeep").write_text("")
+
+    assert git_output(["status", "--porcelain", "--", ".grakeep"], cwd=review) == ""
+
+    git(["merge", "--squash", "feature"], cwd=source)
+    git(["commit", "-m", "squash feature"], cwd=source)
+
+    result = run_cli(["clean"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "wt/review" in result.stdout
+    assert ".grakeep marker" in result.stdout
+    assert "Nothing to clean." in result.stdout
+    assert "Dry run. Re-run" not in result.stdout
 
 
 def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:

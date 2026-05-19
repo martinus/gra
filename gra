@@ -35,6 +35,8 @@ VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
 # Claude may create its own temporary worktrees inside a checkout. Keep those
 # local-only directories out of `git status` without changing tracked files.
 CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
+GRAKEEP_FILE = ".grakeep"
+LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
 
 _quiet = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
@@ -448,12 +450,14 @@ def add_local_excludes(checkout: Path) -> None:
     if not exclude.is_file():
         return
 
-    lines = exclude.read_text().splitlines()
-    if CLAUDE_WORKTREES_EXCLUDE not in lines:
+    lines = exclude.read_text(encoding="utf-8").splitlines()
+    missing = [pattern for pattern in LOCAL_EXCLUDES if pattern not in lines]
+    if missing:
         with exclude.open("a", encoding="utf-8") as file:
             if lines and lines[-1] != "":
                 file.write("\n")
-            file.write(f"{CLAUDE_WORKTREES_EXCLUDE}\n")
+            for pattern in missing:
+                file.write(f"{pattern}\n")
 
 
 def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None:
@@ -786,6 +790,8 @@ def classify_worktree(
         return ("prune", "missing path")
     if default_path and path.resolve() == default_path.resolve():
         return ("keep", "default checkout")
+    if (path / GRAKEEP_FILE).is_file():
+        return ("keep", f"{GRAKEEP_FILE} marker")
     if git_output(["status", "--porcelain"], cwd=path):
         return ("keep", "uncommitted changes")
     if not default_ref:
@@ -1027,7 +1033,7 @@ def parse_args() -> argparse.Namespace:
         help="report or remove clean merged worktrees",
         description=(
             f"Classify worktrees in every repository under '{root}':\n"
-            "  keep  - default checkout, dirty, or has commits not in origin's default branch\n"
+            "  keep  - default checkout, .grakeep marker, dirty, or has commits not in origin's default branch\n"
             "  remove - clean and merged or patch-equivalent in origin's default branch\n"
             "  prune - the worktree path no longer exists on disk\n"
             "Without --yes, only prints the table."

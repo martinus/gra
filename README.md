@@ -62,8 +62,9 @@ submodules:
 gra clone git@github.com:martinus/gra.git --no-submodules
 ```
 
-`gra` also adds `.claude/worktrees/` to the checkout's local Git exclude file so
-Claude Code worktrees do not show up as untracked files.
+`gra` also adds `.claude/worktrees/` and `.grakeep` to the checkout's local Git
+exclude file so tool-managed paths and keep markers do not show up as untracked
+files.
 
 ## ls - list repositories and worktrees
 
@@ -113,7 +114,9 @@ Dry run. Re-run with --yes to remove 1 worktree(s).
 Verdicts mean:
 
 * `keep` - the worktree is the default checkout, has uncommitted changes, or
-  has commits that are not merged into origin's default branch.
+  has commits that are not merged into origin's default branch. A clean worktree
+  that would otherwise be removable is also kept when it contains a `.grakeep`
+  file.
 * `remove` - the worktree is clean and its `HEAD` is already merged into origin's
   default branch, or its commits are patch-equivalent to changes already there
   after a squash or cherry-pick merge.
