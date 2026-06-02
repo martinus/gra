@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import threading
 from pathlib import Path
 from types import ModuleType
 
@@ -88,3 +89,61 @@ def test_branch_needs_tracking_creates_missing_branch(
 
     assert gra.branch_needs_tracking(Path("repo"), "feature") is False
     assert created_branches == ["feature"]
+
+
+def test_fetch_repositories_runs_fetches_in_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], Path, int, int, bool]] = []
+    lock = threading.Lock()
+    both_started = threading.Event()
+
+    def fake_run(
+        args: list[str], *, cwd: Path, stdout: int, stderr: int, check: bool
+    ) -> object:
+        with lock:
+            calls.append((args, cwd, stdout, stderr, check))
+            if len(calls) == 2:
+                both_started.set()
+        assert both_started.wait(1)
+        return object()
+
+    monkeypatch.setattr(gra.subprocess, "run", fake_run)
+
+    gra.fetch_repositories(
+        [(Path("repo-a"), Path("repo-a/main")), (Path("repo-b"), Path("repo-b/main"))]
+    )
+
+    assert {call[1] for call in calls} == {Path("repo-a/main"), Path("repo-b/main")}
+    assert all(call[0] == ["git", "fetch", "--prune", "origin"] for call in calls)
+    assert all(call[4] is False for call in calls)
+
+
+def test_clean_repository_entries_builds_worktree_entries_in_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[Path] = []
+    lock = threading.Lock()
+    both_started = threading.Event()
+
+    monkeypatch.setattr(gra, "default_checkout", lambda container: container / "main")
+    monkeypatch.setattr(gra, "remote_default_branch", lambda checkout: "origin/main")
+    monkeypatch.setattr(
+        gra,
+        "worktree_paths",
+        lambda checkout: [Path("repo/main"), Path("repo/wt/feature")],
+    )
+
+    def fake_clean_worktree_entry(
+        container: Path, path: Path, _default_path: Path, default_ref: str
+    ) -> tuple[Path, Path, str, str, str, str]:
+        with lock:
+            calls.append(path)
+            if len(calls) == 2:
+                both_started.set()
+        assert both_started.wait(1)
+        return (container, path, path.name, "✓ clean", "keep", default_ref)
+
+    monkeypatch.setattr(gra, "clean_worktree_entry", fake_clean_worktree_entry)
+
+    entries = gra.clean_repository_entries(Path("repo"), Path("repo/main"))
+
+    assert [entry[1] for entry in entries] == [Path("repo/main"), Path("repo/wt/feature")]

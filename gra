@@ -13,6 +13,7 @@ Only the `clone`, `clean`, `cd`, `code`, `ls`, `shell`, and `wt` commands are su
 __version__ = "0.8.0"
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -334,10 +335,16 @@ def worktree_ref(path: Path) -> str:
     return short_head or "detached"
 
 
-def fmt_worktree_status(path: Path) -> str:
+def worktree_status_output(path: Path) -> str:
+    return git_output(["status", "--porcelain"], cwd=path) or ""
+
+
+def fmt_worktree_status(path: Path, status_output: str | None = None) -> str:
     if not path.exists():
         return "× missing"
-    return "● dirty" if git_output(["status", "--porcelain"], cwd=path) else "✓ clean"
+    if status_output is None:
+        status_output = worktree_status_output(path)
+    return "● dirty" if status_output else "✓ clean"
 
 
 def relative_worktree_path(container: Path, path: Path) -> str:
@@ -783,8 +790,29 @@ def has_patch_equivalent_changes_in(path: Path, ref: str) -> bool:
     return bool(lines) and all(line.startswith("-") for line in lines)
 
 
+def fetch_repository(checkout: Path) -> None:
+    subprocess.run(
+        ["git", "fetch", "--prune", "origin"],
+        cwd=checkout,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def fetch_repositories(repositories: list[tuple[Path, Path]]) -> None:
+    checkouts = [checkout for _container, checkout in repositories]
+    if not checkouts:
+        return
+    with ThreadPoolExecutor(max_workers=min(8, len(checkouts))) as executor:
+        list(executor.map(fetch_repository, checkouts))
+
+
 def classify_worktree(
-    path: Path, default_path: Path | None, default_ref: str | None
+    path: Path,
+    default_path: Path | None,
+    default_ref: str | None,
+    status_output: str | None = None,
 ) -> tuple[str, str]:
     """Return (verdict, reason) for a worktree path. Verdict is keep/remove/prune."""
     if not path.exists():
@@ -793,7 +821,9 @@ def classify_worktree(
         return ("keep", "default checkout")
     if (path / GRAKEEP_FILE).is_file():
         return ("keep", f"{GRAKEEP_FILE} marker")
-    if git_output(["status", "--porcelain"], cwd=path):
+    if status_output is None:
+        status_output = worktree_status_output(path)
+    if status_output:
         return ("keep", "uncommitted changes")
     if not default_ref:
         return ("keep", "origin default branch unknown")
@@ -804,31 +834,39 @@ def classify_worktree(
     return ("keep", f"has commits not in {default_ref}")
 
 
+def clean_worktree_entry(
+    container: Path, path: Path, default_path: Path | None, default_ref: str | None
+) -> tuple[Path, Path, str, str, str, str]:
+    status_output = worktree_status_output(path) if path.exists() else ""
+    verdict, reason = classify_worktree(path, default_path, default_ref, status_output)
+    return (
+        container,
+        path,
+        worktree_ref(path),
+        fmt_worktree_status(path, status_output),
+        verdict,
+        reason,
+    )
+
+
 def clean_repository_entries(
-    container: Path, checkout: Path, fetch: bool
+    container: Path, checkout: Path
 ) -> list[tuple[Path, Path, str, str, str, str]]:
     """Classify worktrees in one repository.
 
     Returns rows of (container, path, ref_label, status, verdict, reason).
     """
-    if fetch:
-        subprocess.run(
-            ["git", "fetch", "--prune", "origin"],
-            cwd=checkout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-
     default_path = default_checkout(container)
     default_ref = remote_default_branch(checkout)
-    entries = []
-    for path in worktree_paths(checkout):
-        verdict, reason = classify_worktree(path, default_path, default_ref)
-        entries.append(
-            (container, path, worktree_ref(path), fmt_worktree_status(path), verdict, reason)
-        )
-    return entries
+    paths = worktree_paths(checkout)
+    if len(paths) <= 1:
+        return [clean_worktree_entry(container, path, default_path, default_ref) for path in paths]
+
+    def entry_for_path(path: Path) -> tuple[Path, Path, str, str, str, str]:
+        return clean_worktree_entry(container, path, default_path, default_ref)
+
+    with ThreadPoolExecutor(max_workers=min(8, len(paths))) as executor:
+        return list(executor.map(entry_for_path, paths))
 
 
 def apply_clean(checkout: Path, entries: list[tuple[Path, Path, str, str, str, str]]) -> None:
@@ -868,9 +906,10 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
 
     if fetch:
         log(f"Fetching origin for {len(repositories)} repositories")
+        fetch_repositories(repositories)
 
     repo_entries = [
-        (checkout, clean_repository_entries(container, checkout, fetch))
+        (checkout, clean_repository_entries(container, checkout))
         for container, checkout in repositories
     ]
 
