@@ -7,7 +7,7 @@ A tiny clone helper that puts repositories under a flat ~/git layout:
     ~/git/<repo>/<default-branch>
     ~/git/<repo>/wt
 
-Only the `clone`, `clean`, `cd`, `code`, `ls`, `shell`, and `wt` commands are supported.
+Only the `clone`, `clean`, `cd`, `code`, `ls`, `shell`, `tmux`, and `wt` commands are supported.
 """
 
 __version__ = "0.8.0"
@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 FALLBACK_ROOT = "~/git"
 WORKTREE_DIR = "wt"
 VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
+DEFAULT_TMUX_SESSION = "main"
 
 # Claude may create its own temporary worktrees inside a checkout. Keep those
 # local-only directories out of `git status` without changing tracked files.
@@ -669,6 +670,84 @@ def open_code_target(root: Path, ssh_target: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# tmux command
+# ---------------------------------------------------------------------------
+
+
+def tmux_window_name(values: list[str]) -> str:
+    return f"{values[0]}/{values[1]}"
+
+
+def run_tmux(args: list[str | Path]) -> None:
+    subprocess.run(["tmux", *args], check=True)
+
+
+def tmux_session_exists(session: str) -> bool:
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", session],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def tmux_window_names(session: str) -> set[str]:
+    result = subprocess.run(
+        ["tmux", "list-windows", "-t", session, "-F", "#{window_name}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        fail(f"could not list tmux windows in '{session}'" + (f": {detail}" if detail else ""))
+    return set(result.stdout.splitlines())
+
+
+def open_tmux_windows(root: Path, session: str) -> None:
+    """Create one tmux window per local gra worktree."""
+    if not session or session.startswith("-"):
+        fail(f"invalid tmux session '{session}'")
+    if not shutil.which("tmux"):
+        fail("tmux is required for 'gra tmux'")
+
+    rows = local_worktree_picker_rows(root)
+    if not rows:
+        fail(f"no worktrees found under '{root}'")
+
+    created = 0
+    skipped = 0
+    if tmux_session_exists(session):
+        existing = tmux_window_names(session)
+    else:
+        target, values = rows[0]
+        name = tmux_window_name(values)
+        run_tmux(["new-session", "-d", "-s", session, "-n", name, "-c", target])
+        existing = {name}
+        created += 1
+        rows = rows[1:]
+
+    for target, values in rows:
+        name = tmux_window_name(values)
+        if name in existing:
+            skipped += 1
+            continue
+        run_tmux(["new-window", "-d", "-t", f"{session}:", "-n", name, "-c", target])
+        existing.add(name)
+        created += 1
+
+    if created:
+        message = f"created {created} tmux window(s) in session '{session}'"
+        if skipped:
+            message += f"; skipped {skipped} existing window(s)"
+        log(message, GREEN)
+    else:
+        log(f"tmux session '{session}' already has windows for all worktrees", GREEN)
+
+
+# ---------------------------------------------------------------------------
 # shell command
 # ---------------------------------------------------------------------------
 
@@ -1053,6 +1132,22 @@ def parse_args() -> argparse.Namespace:
     )
     shell_parser.add_argument("shell", choices=["bash"], help="shell to initialize")
     shell_parser.set_defaults(handler=lambda args: print_shell_init(args.shell))
+
+    tmux_parser = subparsers.add_parser(
+        "tmux",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="create tmux windows for every worktree",
+        description=(
+            "Create one window per worktree in a tmux session.\n"
+            "Each window starts in its worktree root and is named '<repo>/<worktree>'."
+        ),
+    )
+    tmux_parser.add_argument(
+        "--session",
+        default=DEFAULT_TMUX_SESSION,
+        help=f"tmux session name to create or update (default: {DEFAULT_TMUX_SESSION})",
+    )
+    tmux_parser.set_defaults(handler=lambda args: open_tmux_windows(args.root, args.session))
 
     wt_parser = subparsers.add_parser(
         "wt",

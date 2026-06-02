@@ -192,6 +192,25 @@ Host 10.102.7.17
 gra code 10.102.7.17
 ```
 
+## tmux - create windows for every worktree
+
+Run `gra tmux` to create one tmux window for every worktree under the gra root.
+The default session is `main`; it is created when it does not exist:
+
+```sh
+gra tmux
+```
+
+Each window starts in the worktree root and is named `<repo>/<worktree>`, for
+example `gra/main` or `gra/wt/review`. Existing windows with the same name are
+left alone, so re-running the command only adds missing worktree windows.
+
+Use `--session` for a different tmux session:
+
+```sh
+gra tmux --session work
+```
+
 ## wt - create or update worktrees
 
 Run `gra wt BRANCH` from a checkout, worktree, the repo folder, or the `wt`

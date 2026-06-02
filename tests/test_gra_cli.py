@@ -528,6 +528,68 @@ def test_code_opens_selected_remote_worktree_path_from_fzf(tmp_path: Path) -> No
     ]
 
 
+def test_tmux_creates_windows_for_all_worktrees(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    git(["switch", "-c", "feature"], cwd=source)
+    (source / "README.md").write_text("# feature\n")
+    git(["commit", "-am", "feature"], cwd=source)
+    git(["switch", "main"], cwd=source)
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
+    assert review_result.returncode == 0, review_result.stderr
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    tmux = bin_dir / "tmux"
+    tmux_args = tmp_path / "tmux-args"
+    tmux.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
+        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n"
+        "if [ \"$1\" = has-session ]; then exit 1; fi\n"
+    )
+    tmux.chmod(0o755)
+
+    result = run_cli(
+        ["tmux"],
+        home,
+        cwd=tmp_path,
+        env_extra={"PATH": f"{bin_dir}:{os.environ['PATH']}", "TMUX_ARGS": str(tmux_args)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "created 2 tmux window(s) in session 'main'" in result.stdout
+    assert tmux_args.read_text().splitlines() == [
+        "has-session",
+        "-t",
+        "main",
+        "---",
+        "new-session",
+        "-d",
+        "-s",
+        "main",
+        "-n",
+        "project/main",
+        "-c",
+        str(home / "git" / "project" / "main"),
+        "---",
+        "new-window",
+        "-d",
+        "-t",
+        "main:",
+        "-n",
+        "project/wt/review",
+        "-c",
+        str(home / "git" / "project" / "wt" / "review"),
+        "---",
+    ]
+
+
 def test_shell_bash_prints_shell_helper(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
