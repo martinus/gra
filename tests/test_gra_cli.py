@@ -172,6 +172,26 @@ def test_wt_missing_branch_can_be_declined(tmp_path: Path) -> None:
     assert "branch 'NOISSUE-fix-fedora-headless' was not created" in result.stderr
 
 
+def test_wt_missing_branch_name_is_sanitized_before_creation(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    raw_branch = "mla/OA-61238 OneAgent Research Linux sources"
+    branch = "mla/OA-61238-OneAgent-Research-Linux-sources"
+
+    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
+    assert clone_result.returncode == 0, clone_result.stderr
+    checkout = home / "git" / "project" / "main"
+
+    result = run_cli(["wt", raw_branch], home, cwd=checkout, input_text="yes\n")
+
+    assert result.returncode == 0, result.stderr
+    worktree = home / "git" / "project" / "wt" / "mla-OA-61238-OneAgent-Research-Linux-sources"
+    assert (worktree / ".git").is_file()
+    assert git_output(["branch", "--show-current"], cwd=worktree) == branch
+    assert git_output(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"], cwd=worktree) == f"origin/{branch}"
+
+
 def test_wt_missing_branch_can_be_created_from_repo_folder(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

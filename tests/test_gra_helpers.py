@@ -47,6 +47,22 @@ def test_worktree_name_from_ref_sanitizes_branch_names() -> None:
     assert gra.worktree_name_from_ref("feature/search:query") == "feature-search-query"
 
 
+def test_branch_name_from_input_sanitizes_branch_names() -> None:
+    assert gra.branch_name_from_input("feature/search") == "feature/search"
+    assert gra.branch_name_from_input("feature/search:query") == "feature/search-query"
+    assert (
+        gra.branch_name_from_input(
+            "mla/OA-61238 OneAgent Research Linux sources for per-processor properties parity with Windows"
+        )
+        == "mla/OA-61238-OneAgent-Research-Linux-sources-for-per-processor-properties-parity-with-Windows"
+    )
+
+
+def test_branch_name_from_input_rejects_lock_components() -> None:
+    with pytest.raises(SystemExit):
+        gra.branch_name_from_input("feature/foo.lock/bar")
+
+
 def test_picker_formatting_can_ignore_header_widths() -> None:
     headers = ["REPOSITORY", "WORKTREE", "REF"]
     rows = [

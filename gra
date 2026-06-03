@@ -212,6 +212,21 @@ def worktree_name_from_ref(ref: str) -> str:
     return name
 
 
+def branch_name_from_input(ref: str) -> str:
+    """Derive a Git-friendly branch name from user input."""
+    name = re.sub(r"[^A-Za-z0-9._/-]+", "-", ref.strip())
+    name = re.sub(r"-+", "-", name)
+    name = re.sub(r"/+", "/", name).strip("-/.")
+    name = re.sub(r"\.\.+", "-", name)
+    parts = [part.strip("-.") for part in name.split("/")]
+    name = "/".join(part for part in parts if part)
+    if not name or name in {"@", ".", ".."}:
+        fail(f"cannot derive branch name from '{ref}'")
+    if any(part.endswith(".lock") for part in name.split("/")):
+        fail(f"cannot derive branch name from '{ref}'")
+    return name
+
+
 def git_toplevel(path: Path) -> Path | None:
     """Return the enclosing Git worktree root, if path is inside one."""
     checkout = git_output(["rev-parse", "--show-toplevel"], cwd=path)
@@ -823,6 +838,7 @@ def wt_create(branch: str, name: str | None) -> None:
     checkout = current_checkout()
     container = repo_container(checkout)
     wt_root = container / WORKTREE_DIR
+    branch = branch_name_from_input(branch)
     target_name = name or worktree_name_from_ref(branch)
     validate_path_name("worktree", target_name)
 
