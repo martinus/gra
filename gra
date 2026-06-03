@@ -568,6 +568,13 @@ def select_worktree_from_rows(
     rows: list[tuple[str, list[str]]], command: str, source: str
 ) -> str:
     """Select a worktree with fzf and return the selected absolute path."""
+    return select_worktree_row_from_rows(rows, command, source)[0]
+
+
+def select_worktree_row_from_rows(
+    rows: list[tuple[str, list[str]]], command: str, source: str
+) -> tuple[str, list[str]]:
+    """Select a worktree with fzf and return its picker row."""
     choices, header = worktree_picker_choices(rows)
     if not choices:
         fail(f"no worktrees found {source}")
@@ -598,7 +605,11 @@ def select_worktree_from_rows(
     selected = result.stdout.rstrip("\n")
     if not selected:
         sys.exit(1)
-    return selected.split("\t", 1)[0]
+    target = selected.split("\t", 1)[0]
+    for row_target, values in rows:
+        if row_target == target:
+            return row_target, values
+    fail(f"invalid worktree selection '{target}'")
 
 
 def pick_local_worktree(root: Path, command: str) -> str:
@@ -692,9 +703,9 @@ def tmux_session_exists(session: str) -> bool:
     return result.returncode == 0
 
 
-def tmux_window_names(session: str) -> set[str]:
+def tmux_window_targets(session: str) -> dict[str, str]:
     result = subprocess.run(
-        ["tmux", "list-windows", "-t", session, "-F", "#{window_name}"],
+        ["tmux", "list-windows", "-t", session, "-F", "#{window_name}\t#{window_id}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         encoding="utf-8",
@@ -703,48 +714,35 @@ def tmux_window_names(session: str) -> set[str]:
     if result.returncode != 0:
         detail = result.stderr.strip()
         fail(f"could not list tmux windows in '{session}'" + (f": {detail}" if detail else ""))
-    return set(result.stdout.splitlines())
+    windows = {}
+    for line in result.stdout.splitlines():
+        name, window_id = line.split("\t", 1)
+        windows[name] = window_id
+    return windows
 
 
-def open_tmux_windows(root: Path, session: str) -> None:
-    """Create one tmux window per local gra worktree."""
+def open_tmux_window(root: Path, session: str) -> None:
+    """Select a local gra worktree and open it in tmux."""
     if not session or session.startswith("-"):
         fail(f"invalid tmux session '{session}'")
     if not shutil.which("tmux"):
         fail("tmux is required for 'gra tmux'")
 
     rows = local_worktree_picker_rows(root)
-    if not rows:
-        fail(f"no worktrees found under '{root}'")
+    target, values = select_worktree_row_from_rows(rows, "tmux", f"under '{root}'")
+    name = tmux_window_name(values)
 
-    created = 0
-    skipped = 0
     if tmux_session_exists(session):
-        existing = tmux_window_names(session)
-    else:
-        target, values = rows[0]
-        name = tmux_window_name(values)
-        run_tmux(["new-session", "-d", "-s", session, "-n", name, "-c", target])
-        existing = {name}
-        created += 1
-        rows = rows[1:]
+        if existing_target := tmux_window_targets(session).get(name):
+            run_tmux(["select-window", "-t", existing_target])
+            log(f"selected tmux window '{name}' in session '{session}'", GREEN)
+            return
+        run_tmux(["new-window", "-t", f"{session}:", "-n", name, "-c", target])
+        log(f"created tmux window '{name}' in session '{session}'", GREEN)
+        return
 
-    for target, values in rows:
-        name = tmux_window_name(values)
-        if name in existing:
-            skipped += 1
-            continue
-        run_tmux(["new-window", "-d", "-t", f"{session}:", "-n", name, "-c", target])
-        existing.add(name)
-        created += 1
-
-    if created:
-        message = f"created {created} tmux window(s) in session '{session}'"
-        if skipped:
-            message += f"; skipped {skipped} existing window(s)"
-        log(message, GREEN)
-    else:
-        log(f"tmux session '{session}' already has windows for all worktrees", GREEN)
+    run_tmux(["new-session", "-d", "-s", session, "-n", name, "-c", target])
+    log(f"created tmux session '{session}' with window '{name}'", GREEN)
 
 
 # ---------------------------------------------------------------------------
@@ -1136,10 +1134,10 @@ def parse_args() -> argparse.Namespace:
     tmux_parser = subparsers.add_parser(
         "tmux",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="create tmux windows for every worktree",
+        help="select a worktree and open it in tmux",
         description=(
-            "Create one window per worktree in a tmux session.\n"
-            "Each window starts in its worktree root and is named '<repo>/<worktree>'."
+            "Select a worktree under the gra root with fzf and open it in tmux.\n"
+            "The window starts in its worktree root and is named '<repo>/<worktree>'."
         ),
     )
     tmux_parser.add_argument(
@@ -1147,7 +1145,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_TMUX_SESSION,
         help=f"tmux session name to create or update (default: {DEFAULT_TMUX_SESSION})",
     )
-    tmux_parser.set_defaults(handler=lambda args: open_tmux_windows(args.root, args.session))
+    tmux_parser.set_defaults(handler=lambda args: open_tmux_window(args.root, args.session))
 
     wt_parser = subparsers.add_parser(
         "wt",

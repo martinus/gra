@@ -528,7 +528,7 @@ def test_code_opens_selected_remote_worktree_path_from_fzf(tmp_path: Path) -> No
     ]
 
 
-def test_tmux_creates_windows_for_all_worktrees(tmp_path: Path) -> None:
+def test_tmux_creates_window_for_selected_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -545,8 +545,18 @@ def test_tmux_creates_windows_for_all_worktrees(tmp_path: Path) -> None:
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    fzf = bin_dir / "fzf"
     tmux = bin_dir / "tmux"
+    fzf_input = tmp_path / "fzf-input"
+    fzf_args = tmp_path / "fzf-args"
     tmux_args = tmp_path / "tmux-args"
+    fzf.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
+        "cat > \"$FZF_INPUT\"\n"
+        "sed -n '2p' \"$FZF_INPUT\"\n"
+    )
+    fzf.chmod(0o755)
     tmux.write_text(
         "#!/bin/sh\n"
         "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
@@ -559,11 +569,23 @@ def test_tmux_creates_windows_for_all_worktrees(tmp_path: Path) -> None:
         ["tmux"],
         home,
         cwd=tmp_path,
-        env_extra={"PATH": f"{bin_dir}:{os.environ['PATH']}", "TMUX_ARGS": str(tmux_args)},
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "FZF_ARGS": str(fzf_args),
+            "FZF_INPUT": str(fzf_input),
+            "TMUX_ARGS": str(tmux_args),
+        },
     )
 
     assert result.returncode == 0, result.stderr
-    assert "created 2 tmux window(s) in session 'main'" in result.stdout
+    assert "created tmux session 'main' with window 'project/wt/review'" in result.stdout
+    args = fzf_args.read_text().splitlines()
+    assert "--prompt=gra tmux> " in args
+    assert "--with-nth=2" in args
+    assert fzf_input.read_text().splitlines() == [
+        f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
+        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
+    ]
     assert tmux_args.read_text().splitlines() == [
         "has-session",
         "-t",
@@ -573,15 +595,6 @@ def test_tmux_creates_windows_for_all_worktrees(tmp_path: Path) -> None:
         "-d",
         "-s",
         "main",
-        "-n",
-        "project/main",
-        "-c",
-        str(home / "git" / "project" / "main"),
-        "---",
-        "new-window",
-        "-d",
-        "-t",
-        "main:",
         "-n",
         "project/wt/review",
         "-c",
