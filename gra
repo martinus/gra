@@ -866,7 +866,7 @@ def print_shell_init(shell: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Branch resolution shared by work and clean
+# Branch resolution for the work command
 # ---------------------------------------------------------------------------
 
 
@@ -934,14 +934,8 @@ def switch_in_place(branch_input: str) -> None:
     log(f"'{worktree.name}' is now on '{branch}'", GREEN)
 
 
-def work(branch_input: str | None, root: Path, no_tmux: bool, switch: bool) -> None:
-    """Create a new worktree with a fresh random name, or switch the current one."""
-    if switch:
-        if not branch_input:
-            fail("gra work --switch requires a branch")
-        switch_in_place(branch_input)
-        return
-
+def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
+    """Create a new worktree with a fresh random name."""
     container = find_container(Path.cwd())
     if not container:
         fail(
@@ -1267,9 +1261,16 @@ def parse_args() -> argparse.Namespace:
     work_parser.add_argument(
         "--no-tmux", action="store_true", help="do not open a tmux window"
     )
-    work_parser.set_defaults(
-        handler=lambda args: work(args.branch, args.root, args.no_tmux, args.switch)
-    )
+
+    def run_work(args: argparse.Namespace) -> None:
+        if args.switch:
+            if not args.branch:
+                work_parser.error("--switch requires BRANCH")
+            switch_in_place(args.branch)
+        else:
+            work(args.branch, args.root, args.no_tmux)
+
+    work_parser.set_defaults(handler=run_work)
 
     done_parser = subparsers.add_parser(
         "done",
