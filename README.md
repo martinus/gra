@@ -19,7 +19,8 @@ freely.
 Worktree names are short random words (`hare`, `rose`, `wolf`, ...), all four
 letters, unique across **all** repositories, and unrelated to the branch they
 have checked out. A worktree is just a workspace: create one with `gra start`,
-switch branches inside it with `gra switch`, and throw it away with `gra done`.
+switch branches inside it with `gra start --switch`, and throw it away with
+`gra done`.
 Because names are globally unique, a word like `wolf` identifies one worktree
 across the whole machine - in `gra cd wolf`, in tmux window names, and in
 conversation.
@@ -108,8 +109,8 @@ confirmation the new branch is pushed to `origin` and set up to track
 `origin/<branch>`.
 
 Without a branch, the worktree starts detached at origin's default branch -
-instantly usable for looking around, running builds, or letting `gra switch`
-pick the real work later:
+instantly usable for looking around, running builds, or letting a later
+`gra start --switch` pick the real work:
 
 ```sh
 gra start
@@ -125,21 +126,20 @@ Worktree names are unique across all repositories under the gra root: before
 choosing, `gra` removes every name that is already taken anywhere and picks a
 random one from the rest.
 
-## switch - switch the current worktree to another branch
-
-Run `gra switch BRANCH` inside a worktree to reuse it for other work:
+To reuse the current worktree for other work instead of creating a new one,
+pass `--switch`:
 
 ```sh
-gra switch feature/search
-gra switch bugfix/crash
+gra start --switch feature/search
+gra start --switch bugfix/crash
 ```
 
-Branch resolution works like `gra start`: existing local branches are switched
-to, `origin/<branch>` gets a local tracking branch, and missing branches can be
-created from origin's default branch and pushed.
+Branch resolution is the same as without the flag: existing local branches are
+switched to, `origin/<branch>` gets a local tracking branch, and missing
+branches can be created from origin's default branch and pushed.
 
-`gra switch` refuses when the worktree has uncommitted changes - commit or
-stash first. Git allows a branch to be checked out in only one worktree at a
+`gra start --switch` refuses when the worktree has uncommitted changes - commit
+or stash first. Git allows a branch to be checked out in only one worktree at a
 time, so switching to a branch that is already checked out elsewhere fails with
 Git's normal message.
 
@@ -314,9 +314,9 @@ The layout is designed so that a coding agent can manage branches itself inside
 one worktree. A useful convention for a repository's `CLAUDE.md`:
 
 * to work on another branch in this worktree: commit or stash, then
-  `gra switch <branch>`,
-* `gra switch` also creates missing branches (from origin's default branch,
-  pushed and tracking) after asking for confirmation.
+  `gra start --switch <branch>`,
+* `gra start --switch` also creates missing branches (from origin's default
+  branch, pushed and tracking) after asking for confirmation.
 
 For parallel agents, give each its own worktree with `gra start` - one branch
 can only be checked out in one worktree at a time.

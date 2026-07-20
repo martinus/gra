@@ -327,7 +327,7 @@ def test_start_opens_tmux_window_when_inside_tmux(tmp_path: Path) -> None:
     assert f"created tmux window 'project/{worktree.name}'" in result.stdout
 
 
-def test_switch_changes_branch_in_place(tmp_path: Path) -> None:
+def test_start_switch_changes_branch_in_place(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -335,14 +335,15 @@ def test_switch_changes_branch_in_place(tmp_path: Path) -> None:
     container = clone_repo(home, source)
     worktree = start_worktree(home, container, "main")
 
-    result = run_cli(["switch", "feature"], home, cwd=worktree)
+    result = run_cli(["start", "--switch", "feature"], home, cwd=worktree)
 
     assert result.returncode == 0, result.stderr
     assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
     assert (worktree / "README.md").read_text() == "# feature\n"
+    assert worktree_dirs(container) == [worktree]
 
 
-def test_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
+def test_start_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -351,11 +352,24 @@ def test_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
     worktree = start_worktree(home, container, "main")
     (worktree / "README.md").write_text("# local edit\n")
 
-    result = run_cli(["switch", "feature"], home, cwd=worktree)
+    result = run_cli(["start", "--switch", "feature"], home, cwd=worktree)
 
     assert result.returncode == 1
     assert "uncommitted changes" in result.stderr
     assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
+
+
+def test_start_switch_requires_branch(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+
+    result = run_cli(["start", "--switch"], home, cwd=worktree)
+
+    assert result.returncode == 1
+    assert "requires a branch" in result.stderr
 
 
 def test_done_removes_merged_worktree_and_branch(tmp_path: Path) -> None:
