@@ -362,14 +362,11 @@ def test_work_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
 def test_work_switch_requires_branch(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
 
-    result = run_cli(["work", "--switch"], home, cwd=worktree)
+    result = run_cli(["work", "--switch"], home, cwd=tmp_path)
 
-    assert result.returncode == 1
-    assert "requires a branch" in result.stderr
+    assert result.returncode == 2
+    assert "--switch requires BRANCH" in result.stderr
 
 
 def test_done_removes_merged_worktree_and_branch(tmp_path: Path) -> None:
