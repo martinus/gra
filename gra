@@ -697,6 +697,10 @@ def open_code_target(root: Path, ssh_target: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def tmux_window_name(container_name: str, word: str) -> str:
+    return f"{container_name}/{word}"
+
+
 def run_tmux(args: list[str | Path]) -> None:
     subprocess.run(["tmux", *args], check=True)
 
@@ -756,7 +760,7 @@ def open_tmux_window(root: Path, session: str, name: str | None) -> None:
         fail("tmux is required for 'gra tmux'")
 
     target, values = pick_worktree_row(root, "tmux", name)
-    open_tmux_window_for_worktree(session, values[1], target)
+    open_tmux_window_for_worktree(session, tmux_window_name(values[0], values[1]), target)
 
 
 def kill_tmux_windows(name: str) -> None:
@@ -890,8 +894,9 @@ def start(branch_input: str | None, root: Path, no_tmux: bool) -> None:
     log(f"created '{target}'", GREEN)
 
     if not no_tmux and inside_tmux():
-        run_tmux(["new-window", "-n", word, "-c", target])
-        log(f"created tmux window '{word}'", GREEN)
+        window = tmux_window_name(container.name, word)
+        run_tmux(["new-window", "-n", window, "-c", target])
+        log(f"created tmux window '{window}'", GREEN)
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +1006,7 @@ def done(force: bool) -> None:
         log(f"kept branch '{branch}'")
 
     log(f"removed '{word}'", GREEN)
-    kill_tmux_windows(word)
+    kill_tmux_windows(tmux_window_name(container.name, word))
 
 
 # ---------------------------------------------------------------------------
@@ -1097,7 +1102,7 @@ def apply_clean(container: Path, entries: list[tuple[Path, Path, str, str, str, 
         run_git(["worktree", "remove", path], cwd=bare)
         if branch and local_branch_exists(bare, branch):
             delete_merged_branch(bare, branch)
-        kill_tmux_windows(path.name)
+        kill_tmux_windows(tmux_window_name(container.name, path.name))
     if has_missing:
         log(f"Pruning missing worktree entries in '{container.name}'")
         run_git(["worktree", "prune"], cwd=bare)
