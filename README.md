@@ -18,8 +18,8 @@ freely.
 
 Worktree names are short random words (`hare`, `rose`, `wolf`, ...), all four
 letters, unique across **all** repositories, and unrelated to the branch they
-have checked out. A worktree is just a workspace: create one with `gra start`,
-switch branches inside it with `gra start --switch`, and throw it away with
+have checked out. A worktree is just a workspace: create one with `gra work`,
+switch branches inside it with `gra work --switch`, and throw it away with
 `gra done`.
 Because names are globally unique, a word like `wolf` identifies one worktree
 across the whole machine - in `gra cd wolf`, in tmux window names, and in
@@ -41,7 +41,7 @@ git config --global gra.root ~/develop
 2. Create a worktree and symlink the script from it into your path:
   ```sh
   cd ~/gra/martinus-gra
-  python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" start main --no-tmux
+  python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" work main --no-tmux
   ln -s ~/gra/martinus-gra/*/gra ~/.local/bin/
   ```
 
@@ -68,7 +68,7 @@ This creates:
 └── .bare
 ```
 
-No branch is checked out; use `gra start` to begin working. The local name is
+No branch is checked out; use `gra work` to begin working. The local name is
 `<owner>-<repo>` for remote URLs and the repository name for local paths. Use
 `--name` to override it:
 
@@ -86,14 +86,14 @@ The bare checkout is set up to behave like a normal clone:
   exclude file so tool-managed paths and keep markers do not show up as
   untracked files in any worktree.
 
-## start - create a new worktree
+## work - create a new worktree
 
-Run `gra start` from anywhere inside a repository under the gra root. It picks
+Run `gra work` from anywhere inside a repository under the gra root. It picks
 a random unused four-letter word and creates a worktree with that name next to
 `.bare`:
 
 ```sh
-gra start feature/search
+gra work feature/search
 ```
 
 ```text
@@ -102,7 +102,7 @@ gra start feature/search
 └── hare        <- checked out feature/search
 ```
 
-With a branch, `gra start` checks it out. If the branch only exists as
+With a branch, `gra work` checks it out. If the branch only exists as
 `origin/<branch>`, a local tracking branch is created. If it does not exist at
 all, `gra` asks whether to create it from origin's default branch; on
 confirmation the new branch is pushed to `origin` and set up to track
@@ -110,15 +110,15 @@ confirmation the new branch is pushed to `origin` and set up to track
 
 Without a branch, the worktree starts detached at origin's default branch -
 instantly usable for looking around, running builds, or letting a later
-`gra start --switch` pick the real work:
+`gra work --switch` pick the real work:
 
 ```sh
-gra start
+gra work
 ```
 
 If the repository has submodules, they are initialized in the new worktree.
 
-When run inside tmux, `gra start` also opens a tmux window named
+When run inside tmux, `gra work` also opens a tmux window named
 `<repo>/<worktree>`, for example `martinus-oans/hare`, starting in the worktree
 directory. Use `--no-tmux` to skip that.
 
@@ -130,15 +130,15 @@ To reuse the current worktree for other work instead of creating a new one,
 pass `--switch`:
 
 ```sh
-gra start --switch feature/search
-gra start --switch bugfix/crash
+gra work --switch feature/search
+gra work --switch bugfix/crash
 ```
 
 Branch resolution is the same as without the flag: existing local branches are
 switched to, `origin/<branch>` gets a local tracking branch, and missing
 branches can be created from origin's default branch and pushed.
 
-`gra start --switch` refuses when the worktree has uncommitted changes - commit
+`gra work --switch` refuses when the worktree has uncommitted changes - commit
 or stash first. Git allows a branch to be checked out in only one worktree at a
 time, so switching to a branch that is already checked out elsewhere fails with
 Git's normal message.
@@ -314,11 +314,11 @@ The layout is designed so that a coding agent can manage branches itself inside
 one worktree. A useful convention for a repository's `CLAUDE.md`:
 
 * to work on another branch in this worktree: commit or stash, then
-  `gra start --switch <branch>`,
-* `gra start --switch` also creates missing branches (from origin's default
+  `gra work --switch <branch>`,
+* `gra work --switch` also creates missing branches (from origin's default
   branch, pushed and tracking) after asking for confirmation.
 
-For parallel agents, give each its own worktree with `gra start` - one branch
+For parallel agents, give each its own worktree with `gra work` - one branch
 can only be checked out in one worktree at a time.
 
 # Development

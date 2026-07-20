@@ -500,7 +500,7 @@ def clone(url: str, name: str | None, root: Path) -> None:
         run_git(["fetch", "--prune", "origin"], cwd=bare)
         run_git(["remote", "set-head", "origin", "--auto"], cwd=bare)
         add_local_excludes(bare)
-        log(f"created '{container}'; run 'gra start' inside it to begin working", GREEN)
+        log(f"created '{container}'; run 'gra work' inside it to begin working", GREEN)
     except Exception:
         if container.exists():
             shutil.rmtree(container)
@@ -866,7 +866,7 @@ def print_shell_init(shell: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Branch resolution shared by start and switch
+# Branch resolution shared by work and clean
 # ---------------------------------------------------------------------------
 
 
@@ -911,13 +911,13 @@ def init_submodules(worktree: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# start command
+# work command
 # ---------------------------------------------------------------------------
 
 
 def switch_in_place(branch_input: str) -> None:
     """Switch the current worktree to another branch."""
-    container, worktree = current_gra_worktree("start --switch")
+    container, worktree = current_gra_worktree("work --switch")
     bare = bare_dir(container)
     branch = branch_name_from_input(branch_input)
 
@@ -934,18 +934,18 @@ def switch_in_place(branch_input: str) -> None:
     log(f"'{worktree.name}' is now on '{branch}'", GREEN)
 
 
-def start(branch_input: str | None, root: Path, no_tmux: bool, switch: bool) -> None:
+def work(branch_input: str | None, root: Path, no_tmux: bool, switch: bool) -> None:
     """Create a new worktree with a fresh random name, or switch the current one."""
     if switch:
         if not branch_input:
-            fail("gra start --switch requires a branch")
+            fail("gra work --switch requires a branch")
         switch_in_place(branch_input)
         return
 
     container = find_container(Path.cwd())
     if not container:
         fail(
-            "gra start must be run from inside a repository under the gra root;\n"
+            "gra work must be run from inside a repository under the gra root;\n"
             "use 'gra ls' to see repositories or 'gra clone URL' to add one"
         )
     bare = bare_dir(container)
@@ -959,7 +959,7 @@ def start(branch_input: str | None, root: Path, no_tmux: bool, switch: bool) -> 
     else:
         ref = remote_default_branch(bare)
         if not ref:
-            fail("cannot find origin's default branch; pass a branch to 'gra start'")
+            fail("cannot find origin's default branch; pass a branch to 'gra work'")
         log(f"Creating worktree '{target}' detached at '{ref}'")
         run_git(["worktree", "add", "--detach", target, ref], cwd=bare)
 
@@ -1230,7 +1230,7 @@ def parse_args() -> argparse.Namespace:
         help="clone a remote repository as a bare checkout",
         description=(
             f"Clone a repository into '{root}/<owner>-<repo>/{BARE_DIR}'.\n"
-            "No branch is checked out; use 'gra start' to create a worktree."
+            "No branch is checked out; use 'gra work' to create a worktree."
         ),
     )
     clone_parser.add_argument("url", help="git repository URL to clone")
@@ -1245,10 +1245,10 @@ def parse_args() -> argparse.Namespace:
     )
     ls_parser.set_defaults(handler=lambda args: print_repositories(args.root))
 
-    start_parser = subparsers.add_parser(
-        "start",
+    work_parser = subparsers.add_parser(
+        "work",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="start work on a branch, in a new or the current worktree",
+        help="work on a branch, in a new or the current worktree",
         description=(
             "Create a new worktree named after a random unused word.\n"
             "With BRANCH, check it out (creating and pushing it when missing);\n"
@@ -1258,17 +1258,17 @@ def parse_args() -> argparse.Namespace:
             "BRANCH with the same branch resolution. Refuses when dirty."
         ),
     )
-    start_parser.add_argument("branch", nargs="?", help="branch to check out")
-    start_parser.add_argument(
+    work_parser.add_argument("branch", nargs="?", help="branch to check out")
+    work_parser.add_argument(
         "--switch",
         action="store_true",
         help="switch the current worktree to BRANCH instead of creating one",
     )
-    start_parser.add_argument(
+    work_parser.add_argument(
         "--no-tmux", action="store_true", help="do not open a tmux window"
     )
-    start_parser.set_defaults(
-        handler=lambda args: start(args.branch, args.root, args.no_tmux, args.switch)
+    work_parser.set_defaults(
+        handler=lambda args: work(args.branch, args.root, args.no_tmux, args.switch)
     )
 
     done_parser = subparsers.add_parser(
