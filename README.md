@@ -117,8 +117,9 @@ gra start
 
 If the repository has submodules, they are initialized in the new worktree.
 
-When run inside tmux, `gra start` also opens a tmux window named after the
-worktree, starting in the worktree directory. Use `--no-tmux` to skip that.
+When run inside tmux, `gra start` also opens a tmux window named
+`<repo>/<worktree>`, for example `martinus-oans/hare`, starting in the worktree
+directory. Use `--no-tmux` to skip that.
 
 Worktree names are unique across all repositories under the gra root: before
 choosing, `gra` removes every name that is already taken anywhere and picks a
@@ -296,10 +297,10 @@ gra tmux        # pick with fzf
 gra tmux wolf   # open the worktree named wolf
 ```
 
-The window starts in the worktree root and is named after the worktree, for
-example `wolf`. Because worktree names are unique across all repositories, the
-window name alone identifies the worktree. If a window with the same name
-already exists, `gra tmux` selects it instead of creating a duplicate.
+The window starts in the worktree root and is named `<repo>/<worktree>`, for
+example `martinus-oans/wolf`, so the window list shows at a glance which
+repository each workspace belongs to. If a window with the same name already
+exists, `gra tmux` selects it instead of creating a duplicate.
 
 Use `--session` for a different tmux session:
 

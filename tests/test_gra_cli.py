@@ -309,12 +309,12 @@ def test_start_opens_tmux_window_when_inside_tmux(tmp_path: Path) -> None:
     assert tmux_args.read_text().splitlines() == [
         "new-window",
         "-n",
-        worktree.name,
+        f"project/{worktree.name}",
         "-c",
         str(worktree),
         "---",
     ]
-    assert f"created tmux window '{worktree.name}'" in result.stdout
+    assert f"created tmux window 'project/{worktree.name}'" in result.stdout
 
 
 def test_switch_changes_branch_in_place(tmp_path: Path) -> None:
@@ -428,7 +428,7 @@ def test_done_kills_matching_tmux_window(tmp_path: Path) -> None:
         env_extra={
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "TMUX_ARGS": str(tmux_args),
-            "TMUX_WORD": worktree.name,
+            "TMUX_WORD": f"project/{worktree.name}",
         },
     )
 
@@ -680,7 +680,8 @@ def test_tmux_with_name_creates_window_for_worktree(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert (
-        f"created tmux session 'main' with window '{worktree.name}'" in result.stdout
+        f"created tmux session 'main' with window 'project/{worktree.name}'"
+        in result.stdout
     )
     assert tmux_args.read_text().splitlines() == [
         "has-session",
@@ -692,7 +693,7 @@ def test_tmux_with_name_creates_window_for_worktree(tmp_path: Path) -> None:
         "-s",
         "main",
         "-n",
-        worktree.name,
+        f"project/{worktree.name}",
         "-c",
         str(worktree),
         "---",
