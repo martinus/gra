@@ -1,17 +1,30 @@
 # gra - Git Repo Admin
 
-`gra` is a tiny clone helper. It keeps repositories under a flat root directory
-and creates a normal Git checkout in a folder named after the remote's default
-branch:
+`gra` is a tiny worktree-first clone helper. It keeps repositories under a flat
+root directory as bare checkouts, and all work happens in short-named worktrees
+next to them:
 
 ```text
-~/git
-└── gra
-  ├── main
-  └── wt
+~/gra
+└── martinus-oans
+  ├── .bare
+  ├── hare
+  └── rose
 ```
 
-The default root is `~/git`. Configure a different root in `~/.gitconfig`:
+There is no default checkout: no branch is ever pinned by a checkout you do not
+use, so any worktree can be on `main`, rebase onto it, or switch to any branch
+freely.
+
+Worktree names are short random words (`hare`, `rose`, `wolf`, ...), all four
+letters, unique across **all** repositories, and unrelated to the branch they
+have checked out. A worktree is just a workspace: create one with `gra start`,
+switch branches inside it with `gra switch`, and throw it away with `gra done`.
+Because names are globally unique, a word like `wolf` identifies one worktree
+across the whole machine - in `gra cd wolf`, in tmux window names, and in
+conversation.
+
+The default root is `~/gra`. Configure a different root in `~/.gitconfig`:
 
 ```sh
 git config --global gra.root ~/develop
@@ -24,52 +37,135 @@ git config --global gra.root ~/develop
   python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" clone git@github.com:martinus/gra.git
   ```
 
-2. Create a symlink in your path.
+2. Create a worktree and symlink the script from it into your path:
   ```sh
-  ln -s ~/git/gra/main/gra ~/.local/bin/
+  cd ~/gra/martinus-gra
+  python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" start main --no-tmux
+  ln -s ~/gra/martinus-gra/*/gra ~/.local/bin/
+  ```
+
+3. Optional but recommended: enable the shell integration in `~/.bashrc` so
+  `gra cd` changes directories and `gra done` leaves the removed directory:
+  ```sh
+  eval "$(gra shell bash)"
   ```
 
 # Commands
 
 ## clone - clone a remote repository
 
-Clones one repository into `~/git/<name>/<default-branch>` and creates
-`~/git/<name>/wt` for worktrees:
+Clones one repository as a bare checkout into `~/gra/<owner>-<repo>/.bare`:
 
 ```sh
-gra clone git@github.com:martinus/gra.git
+gra clone git@github.com:martinus/oans.git
 ```
 
 This creates:
 
 ```text
-~/git/gra
-├── main
-└── wt
+~/gra/martinus-oans
+└── .bare
 ```
 
-The local repository name is derived from the URL. If that name already exists,
-`gra` exits with an error and suggests using `--name`:
+No branch is checked out; use `gra start` to begin working. The local name is
+`<owner>-<repo>` for remote URLs and the repository name for local paths. Use
+`--name` to override it:
 
 ```sh
 gra clone git@github.com:martinus/AFLplusplus.git --name AFLplusplus-martinus
 ```
 
-By default, submodules are cloned recursively. Use `--no-submodules` to skip
-submodules:
+The bare checkout is set up to behave like a normal clone:
+
+* the fetch refspec tracks all of origin's branches as `origin/<branch>`
+  remote-tracking refs, and never mirrors them into local branches,
+* `origin/HEAD` points at origin's default branch,
+* reflogs are enabled (bare repositories disable them by default),
+* `.claude/worktrees/` and `.grakeep` are added to the shared local Git
+  exclude file so tool-managed paths and keep markers do not show up as
+  untracked files in any worktree.
+
+## start - create a new worktree
+
+Run `gra start` from anywhere inside a repository under the gra root. It picks
+a random unused four-letter word and creates a worktree with that name next to
+`.bare`:
 
 ```sh
-gra clone git@github.com:martinus/gra.git --no-submodules
+gra start feature/search
 ```
 
-`gra` also adds `.claude/worktrees/` and `.grakeep` to the checkout's local Git
-exclude file so tool-managed paths and keep markers do not show up as untracked
-files.
+```text
+~/gra/martinus-oans
+├── .bare
+└── hare        <- checked out feature/search
+```
+
+With a branch, `gra start` checks it out. If the branch only exists as
+`origin/<branch>`, a local tracking branch is created. If it does not exist at
+all, `gra` asks whether to create it from origin's default branch; on
+confirmation the new branch is pushed to `origin` and set up to track
+`origin/<branch>`.
+
+Without a branch, the worktree starts detached at origin's default branch -
+instantly usable for looking around, running builds, or letting `gra switch`
+pick the real work later:
+
+```sh
+gra start
+```
+
+If the repository has submodules, they are initialized in the new worktree.
+
+When run inside tmux, `gra start` also opens a tmux window named after the
+worktree, starting in the worktree directory. Use `--no-tmux` to skip that.
+
+Worktree names are unique across all repositories under the gra root: before
+choosing, `gra` removes every name that is already taken anywhere and picks a
+random one from the rest.
+
+## switch - switch the current worktree to another branch
+
+Run `gra switch BRANCH` inside a worktree to reuse it for other work:
+
+```sh
+gra switch feature/search
+gra switch bugfix/crash
+```
+
+Branch resolution works like `gra start`: existing local branches are switched
+to, `origin/<branch>` gets a local tracking branch, and missing branches can be
+created from origin's default branch and pushed.
+
+`gra switch` refuses when the worktree has uncommitted changes - commit or
+stash first. Git allows a branch to be checked out in only one worktree at a
+time, so switching to a branch that is already checked out elsewhere fails with
+Git's normal message.
+
+## done - remove the current worktree
+
+Run `gra done` inside a worktree when the work in it is finished:
+
+```sh
+gra done
+```
+
+`gra done` refuses when the worktree is dirty or when its commits are not in
+origin's default branch (squash and cherry-pick merges are recognized via patch
+equivalence). `--force` overrides both checks. On removal:
+
+* the worktree directory is removed,
+* the local branch is deleted, but only when its changes were verified to be
+  merged - with `--force` on an unmerged branch, the branch is kept,
+* any tmux window named after the worktree is killed.
+
+With the bash shell integration, `gra done` also moves your shell out of the
+removed directory into the repository folder.
 
 ## ls - list repositories and worktrees
 
-Run `gra ls` from anywhere to see all repositories under the configured gra root
-and every worktree Git knows about:
+Run `gra ls` from anywhere to see all repositories under the configured gra
+root and every worktree Git knows about:
 
 ```sh
 gra ls
@@ -78,13 +174,16 @@ gra ls
 Example output:
 
 ```text
-Root: /home/me/git
-Repositories: 1  Worktrees: 2
+Root: /home/me/gra
+Repositories: 2  Worktrees: 2
 
-REPOSITORY  WORKTREE   REF      STATUS   REMOTE
-gra         main       main     ✓ clean  git@github.com:martinus/gra
-            wt/review  feature  ● dirty
+REPOSITORY     WORKTREE  BRANCH          STATUS   REMOTE
+martinus-gra   wolf      main            ✓ clean  git@github.com:martinus/gra
+martinus-oans  hare      feature/search  ● dirty  git@github.com:martinus/oans
 ```
+
+Because worktree names carry no meaning, the `BRANCH` column is the primary
+information; the name is just an address.
 
 ## clean - report or remove clean merged worktrees
 
@@ -99,27 +198,24 @@ gra clean
 Example output:
 
 ```text
-Root: /home/me/git
-Repositories: 2  Worktrees: 4
+Root: /home/me/gra
+Repositories: 2  Worktrees: 2
 
-REPOSITORY  WORKTREE    REF      STATUS     VERDICT  REASON
-gra         main        main     ✓ clean    keep     default checkout
-            wt/review   feature  ● dirty    keep     uncommitted changes
-tools       main        main     ✓ clean    keep     default checkout
-            wt/old-fix  old-fix  ✓ clean    remove   merged into origin/main
+REPOSITORY     WORKTREE  BRANCH   STATUS   VERDICT  REASON
+martinus-gra   wolf      feature  ● dirty  keep     uncommitted changes
+martinus-oans  hare      old-fix  ✓ clean  remove   merged into origin/main
 
 Dry run. Re-run with --yes to remove 1 worktree(s).
 ```
 
 Verdicts mean:
 
-* `keep` - the worktree is the default checkout, has uncommitted changes, or
-  has commits that are not merged into origin's default branch. A clean worktree
-  that would otherwise be removable is also kept when it contains a `.grakeep`
-  file.
-* `remove` - the worktree is clean and its `HEAD` is already merged into origin's
-  default branch, or its commits are patch-equivalent to changes already there
-  after a squash or cherry-pick merge.
+* `keep` - the worktree has uncommitted changes or commits that are not merged
+  into origin's default branch. A clean worktree that would otherwise be
+  removable is also kept when it contains a `.grakeep` file.
+* `remove` - the worktree is clean and its `HEAD` is already merged into
+  origin's default branch, or its commits are patch-equivalent to changes
+  already there after a squash or cherry-pick merge.
 * `prune` - Git still knows about the worktree, but the directory no longer
   exists on disk.
 
@@ -131,22 +227,21 @@ gra clean --yes
 ```
 
 Before classifying, `gra clean` runs `git fetch --prune origin` in each
-repository. Use `--no-fetch` to skip that step:
+repository. Use `--no-fetch` to skip that step.
 
-```sh
-gra clean --no-fetch
-```
-
-`gra clean --yes` deletes local branches with `git branch -d` only after the
-worktree was removed. It never deletes the default checkout, never removes dirty
-worktrees, and never forces branch deletion with `-D`.
+`gra clean --yes` deletes the local branch of each removed worktree - the
+merged or patch-equivalent verification already happened as part of the
+verdict. It also kills tmux windows named after removed worktrees. It never
+removes dirty worktrees.
 
 ## cd - jump to a worktree
 
-Run `gra cd` to choose any worktree under the gra root with `fzf`:
+Run `gra cd` to choose any worktree under the gra root with `fzf`, or pass a
+worktree name to jump directly:
 
 ```sh
-gra cd
+gra cd        # pick with fzf
+gra cd wolf   # jump straight to the worktree named wolf
 ```
 
 The command prints the selected path. To make `gra cd` change the current Bash
@@ -155,8 +250,6 @@ shell's directory, add this to `~/.bashrc` after `gra` is on your `PATH`:
 ```sh
 eval "$(gra shell bash)"
 ```
-
-Then run `gra cd`, select a worktree, and press Enter.
 
 ## code - open a worktree in Visual Studio Code
 
@@ -194,17 +287,19 @@ gra code 10.102.7.17
 
 ## tmux - open a worktree in tmux
 
-Run `gra tmux` to choose a worktree with the same `fzf` picker as `gra cd`, then
-open it in a tmux window. The default session is `main`; it is created when it
-does not exist:
+Run `gra tmux` to choose a worktree with the same `fzf` picker as `gra cd`, or
+pass a worktree name directly, then open it in a tmux window. The default
+session is `main`; it is created when it does not exist:
 
 ```sh
-gra tmux
+gra tmux        # pick with fzf
+gra tmux wolf   # open the worktree named wolf
 ```
 
-The window starts in the worktree root and is named `<repo>/<worktree>`, for
-example `gra/main` or `gra/wt/review`. If a window with the same name already
-exists, `gra tmux` selects it instead of creating a duplicate.
+The window starts in the worktree root and is named after the worktree, for
+example `wolf`. Because worktree names are unique across all repositories, the
+window name alone identifies the worktree. If a window with the same name
+already exists, `gra tmux` selects it instead of creating a duplicate.
 
 Use `--session` for a different tmux session:
 
@@ -212,36 +307,18 @@ Use `--session` for a different tmux session:
 gra tmux --session work
 ```
 
-## wt - create or update worktrees
+# Working with Claude
 
-Run `gra wt BRANCH` from a checkout, worktree, the repo folder, or the `wt`
-folder to create a worktree for an existing branch. The folder name under `wt`
-is derived from the branch name:
+The layout is designed so that a coding agent can manage branches itself inside
+one worktree. A useful convention for a repository's `CLAUDE.md`:
 
-```sh
-gra wt feature/search
-```
+* to work on another branch in this worktree: commit or stash, then
+  `gra switch <branch>`,
+* `gra switch` also creates missing branches (from origin's default branch,
+  pushed and tracking) after asking for confirmation.
 
-This creates `~/git/gra/wt/feature-search` and checks out `feature/search`.
-
-Use `--name` for a reusable worktree folder. This is useful for a review slot
-that moves between branches:
-
-```sh
-gra wt --name review feature/search
-gra wt --name review bugfix/crash
-```
-
-Named worktrees check out the requested branch. If the branch only exists as
-`origin/<branch>`, `gra` creates a local tracking branch. Git allows a branch to
-be checked out in only one worktree at a time, so switching `review` to a branch
-that is already checked out elsewhere will fail with Git's normal message.
-
-If the branch does not exist locally or on `origin`, `gra` asks whether it
-should create the branch from origin's default branch, for example `origin/main`,
-`origin/master`, or the remote `HEAD` branch. When you confirm, `gra` pushes the
-new branch to `origin` and sets the local branch to track `origin/<branch>`.
-
+For parallel agents, give each its own worktree with `gra start` - one branch
+can only be checked out in one worktree at a time.
 
 # Development
 
@@ -251,7 +328,6 @@ Install test dependencies and run the suite with:
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest -q
 ```
-
 
 # Alternatives
 

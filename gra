@@ -2,20 +2,25 @@
 
 """gra - Git Repo Admin
 
-A tiny clone helper that puts repositories under a flat ~/git layout:
+A tiny worktree-first clone helper that puts repositories under a flat ~/gra
+layout. Each repository lives in a bare checkout, and work happens in
+short-named worktrees next to it:
 
-    ~/git/<repo>/<default-branch>
-    ~/git/<repo>/wt
+    ~/gra/<owner>-<repo>/.bare
+    ~/gra/<owner>-<repo>/<word>
 
-Only the `clone`, `clean`, `cd`, `code`, `ls`, `shell`, `tmux`, and `wt` commands are supported.
+Worktree names are short random words, unique across all repositories, and
+unrelated to the branch they have checked out: switch branches freely inside a
+worktree, or start a new one and remove it when done.
 """
 
-__version__ = "0.8.0"
+__version__ = "1.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -26,11 +31,8 @@ from typing import NoReturn
 from urllib.parse import urlparse
 
 
-# gra owns this layout. Git commands are anchored in one checkout, but paths are
-# resolved relative to the repository container that holds the default checkout
-# and the shared worktree directory.
-FALLBACK_ROOT = "~/git"
-WORKTREE_DIR = "wt"
+FALLBACK_ROOT = "~/gra"
+BARE_DIR = ".bare"
 VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
 DEFAULT_TMUX_SESSION = "main"
 
@@ -39,6 +41,37 @@ DEFAULT_TMUX_SESSION = "main"
 CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
 GRAKEEP_FILE = ".grakeep"
 LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
+
+# Worktree names come from this pool: short, memorable, all the same length,
+# and never colliding with a gra command name. A name is taken as long as any
+# repository under the gra root uses it, so a word identifies one worktree
+# across the whole machine.
+WORDS = (
+    "aloe", "aria", "atom", "axle", "beam", "bean", "bear", "bell", "bird",
+    "blue", "boar", "boat", "bolt", "bowl", "buck", "bush", "byte", "cake",
+    "calf", "cane", "carp", "cart", "cask", "cave", "chai", "clay", "coin",
+    "colt", "cork", "corn", "cove", "crab", "crag", "crow", "cube", "cyan",
+    "dale", "dawn", "deer", "dell", "dish", "dodo", "dome", "door", "dove",
+    "drum", "duck", "dune", "dusk", "echo", "epic", "fawn", "fell", "fern",
+    "flag", "foal", "foam", "ford", "fork", "frog", "gale", "gate", "gear",
+    "glen", "goat", "gold", "gong", "gray", "gulf", "gull", "hail", "hare",
+    "harp", "hawk", "haze", "helm", "herb", "hill", "hook", "horn", "hull",
+    "hymn", "ibex", "ibis", "iris", "iron", "isle", "jade", "kale", "kelp",
+    "kite", "kiwi", "knob", "lake", "lamb", "lamp", "lark", "lava", "leaf",
+    "lens", "lily", "lime", "lion", "lock", "loon", "lynx", "malt", "mare",
+    "mask", "mast", "mead", "mesa", "mink", "mint", "mist", "mole", "moon",
+    "moor", "moss", "moth", "mule", "myth", "naan", "nail", "newt", "nova",
+    "oats", "okra", "onyx", "opal", "orca", "oryx", "pail", "palm", "pane",
+    "peak", "pear", "pika", "pine", "pink", "pipe", "pita", "plow", "plum",
+    "poem", "pond", "pony", "pool", "prow", "puma", "quay", "raft", "rail",
+    "rain", "ramp", "reed", "reef", "rice", "rift", "ring", "rock", "rope",
+    "rose", "ruby", "rune", "rust", "saga", "sage", "sail", "salt", "sand",
+    "seal", "seed", "silt", "sled", "slug", "snow", "sole", "spar", "star",
+    "surf", "swan", "tarn", "taro", "teal", "tern", "tide", "tile", "toad",
+    "tofu", "tray", "tuna", "twig", "udon", "vale", "vane", "vase", "vine",
+    "vole", "volt", "wand", "wasp", "watt", "wave", "well", "wick", "wind",
+    "wold", "wolf", "wood", "worm", "wren", "yarn", "yoke", "zeal", "zinc",
+)
 
 _quiet = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
@@ -120,18 +153,18 @@ def url_parts(url: str) -> list[str]:
     return [part for part in path.rstrip("/").removesuffix(".git").split("/") if part]
 
 
-def repo_name_from_url(url: str) -> str:
+def is_remote_url(url: str) -> bool:
+    return bool(re.match(r"[^@/]+@[^:]+:", url)) or bool(urlparse(url).scheme)
+
+
+def local_name_from_url(url: str) -> str:
+    """Derive `<owner>-<repo>` for remote URLs, `<repo>` for local paths."""
     parts = url_parts(url)
     if not parts:
         raise ValueError(f"cannot derive repository name from '{url}'")
+    if is_remote_url(url) and len(parts) >= 2:
+        return f"{parts[-2]}-{parts[-1]}"
     return parts[-1]
-
-
-def owner_from_url(url: str) -> str | None:
-    parts = url_parts(url)
-    if len(parts) >= 2:
-        return parts[-2]
-    return None
 
 
 def validate_path_name(kind: str, name: str) -> None:
@@ -143,73 +176,33 @@ def validate_path_name(kind: str, name: str) -> None:
         fail(f"invalid {kind} name '{name}'")
 
 
-def origin_url(checkout: Path) -> str | None:
-    if not (checkout / ".git").exists():
-        return None
-    return git_output(["config", "--get", "remote.origin.url"], cwd=checkout)
+def origin_url(bare: Path) -> str | None:
+    return git_output(["config", "--get", "remote.origin.url"], cwd=bare)
 
 
-def existing_origin(container: Path) -> str | None:
-    """Find an origin URL inside a repo container for collision messages."""
-    if not container.is_dir():
-        return None
-    for child in sorted(container.iterdir(), key=lambda path: path.name):
-        if child.is_dir():
-            origin = origin_url(child)
-            if origin:
-                return origin
-    return None
-
-
-def suggest_name(url: str, repo_name: str) -> str | None:
-    owner = owner_from_url(url)
-    if not owner:
-        return None
-    suggestion = f"{repo_name}-{owner}"
-    return suggestion if suggestion != repo_name else None
-
-
-def clone_collision_error(url: str, container: Path, repo_name: str) -> None:
+def clone_collision_error(url: str, container: Path, local_name: str) -> None:
     lines = [
-        f"local repository name '{repo_name}' already exists",
+        f"local repository name '{local_name}' already exists",
         "",
         "Existing:",
         f"  path:   {container}",
     ]
-    if origin := existing_origin(container):
+    if origin := origin_url(container / BARE_DIR):
         lines.append(f"  origin: {origin}")
     lines += [
         "",
         "Requested:",
         f"  origin: {url}",
+        "",
+        "Use a distinct name, for example:",
+        f"  gra clone {url} --name {local_name}-2",
     ]
-    if suggestion := suggest_name(url, repo_name):
-        lines += [
-            "",
-            "Use a distinct name, for example:",
-            f"  gra clone {url} --name {suggestion}",
-        ]
     fail("\n".join(lines))
-
-
-def checkout_dir_name(checkout: Path) -> str:
-    """Name the first checkout after the remote's default branch."""
-    branch = git_output(["branch", "--show-current"], cwd=checkout)
-    name = (branch or "checkout").replace("/", "-")
-    return name if VALID_PATH_NAME.fullmatch(name) else "checkout"
 
 
 # ---------------------------------------------------------------------------
 # gra layout discovery
 # ---------------------------------------------------------------------------
-
-
-def worktree_name_from_ref(ref: str) -> str:
-    """Derive a filesystem-safe worktree folder from a branch name."""
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", ref.replace("/", "-")).strip("-")
-    if not name or name in {".", ".."} or name.startswith("."):
-        fail(f"cannot derive worktree name from '{ref}'")
-    return name
 
 
 def branch_name_from_input(ref: str) -> str:
@@ -227,68 +220,46 @@ def branch_name_from_input(ref: str) -> str:
     return name
 
 
+def is_container(path: Path) -> bool:
+    return (path / BARE_DIR).is_dir()
+
+
+def bare_dir(container: Path) -> Path:
+    return container / BARE_DIR
+
+
+def containers(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        (child for child in root.iterdir() if child.is_dir() and is_container(child)),
+        key=lambda path: path.name,
+    )
+
+
+def find_container(path: Path) -> Path | None:
+    """Walk upward looking for a gra repo container."""
+    for candidate in [path, *path.parents]:
+        if is_container(candidate):
+            return candidate
+    return None
+
+
 def git_toplevel(path: Path) -> Path | None:
     """Return the enclosing Git worktree root, if path is inside one."""
-    checkout = git_output(["rev-parse", "--show-toplevel"], cwd=path)
-    return Path(checkout) if checkout else None
+    toplevel = git_output(["rev-parse", "--show-toplevel"], cwd=path)
+    return Path(toplevel) if toplevel else None
 
 
-def is_git_worktree(path: Path) -> bool:
-    return git_output(["rev-parse", "--is-inside-work-tree"], cwd=path) == "true"
-
-
-def default_checkout(container: Path) -> Path | None:
-    """Return the main checkout (sibling of `wt/`) in a gra repo container."""
-    if not container.is_dir():
-        return None
-    for child in sorted(container.iterdir(), key=lambda path: path.name):
-        if child.name != WORKTREE_DIR and child.is_dir() and is_git_worktree(child):
-            return child
-    return None
-
-
-def checkout_in_container(container: Path) -> Path | None:
-    """Pick any real checkout that can anchor repo-wide Git commands.
-
-    This is what lets `gra wt` run from the repo container or from the `wt`
-    folder, which are gra layout directories but not Git worktrees themselves.
-    """
-    if checkout := default_checkout(container):
-        return checkout
-    wt_root = container / WORKTREE_DIR
-    if wt_root.is_dir():
-        for child in sorted(wt_root.iterdir(), key=lambda path: path.name):
-            if child.is_dir() and is_git_worktree(child):
-                return child
-    return None
-
-
-def checkout_from_layout(path: Path) -> Path | None:
-    """Walk upward looking for a gra repo container or its `wt` directory."""
-    for candidate in [path, *path.parents]:
-        if candidate.name == WORKTREE_DIR:
-            if checkout := checkout_in_container(candidate.parent):
-                return checkout
-        if (candidate / WORKTREE_DIR).is_dir():
-            if checkout := checkout_in_container(candidate):
-                return checkout
-    return None
-
-
-def current_checkout() -> Path:
-    """Resolve the checkout used to run Git for the current gra command."""
-    cwd = Path.cwd()
-    checkout = git_toplevel(cwd) or checkout_from_layout(cwd)
-    if not checkout:
-        fail("gra wt must be run from inside a gra repository")
-    return checkout
-
-
-def repo_container(checkout: Path) -> Path:
-    """Return the gra repo container for a checkout or nested worktree."""
-    if checkout.parent.name == WORKTREE_DIR:
-        return checkout.parent.parent
-    return checkout.parent
+def current_gra_worktree(command: str) -> tuple[Path, Path]:
+    """Resolve (container, worktree) for the current directory."""
+    worktree = git_toplevel(Path.cwd())
+    if not worktree:
+        fail(f"gra {command} must be run from inside a gra worktree")
+    container = worktree.parent
+    if not is_container(container) or worktree.name == BARE_DIR:
+        fail(f"'{worktree}' is not a gra worktree; gra {command} must be run inside one")
+    return container, worktree
 
 
 # ---------------------------------------------------------------------------
@@ -296,43 +267,57 @@ def repo_container(checkout: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def local_branch_exists(checkout: Path, branch: str) -> bool:
+def local_branch_exists(bare: Path, branch: str) -> bool:
     return (
-        git_output(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=checkout)
+        git_output(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=bare)
         is not None
     )
 
 
-def remote_branch_exists(checkout: Path, branch: str) -> bool:
+def remote_branch_exists(bare: Path, branch: str) -> bool:
     return (
         git_output(
             ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
-            cwd=checkout,
+            cwd=bare,
         )
         is not None
     )
 
 
-def remote_default_branch(checkout: Path) -> str | None:
+def remote_default_branch(bare: Path) -> str | None:
     origin_head = git_output(
         ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
-        cwd=checkout,
+        cwd=bare,
     )
     if origin_head and git_output(
-        ["rev-parse", "--verify", "--quiet", f"{origin_head}^{{commit}}"], cwd=checkout
+        ["rev-parse", "--verify", "--quiet", f"{origin_head}^{{commit}}"], cwd=bare
     ):
         return origin_head
 
     for branch in ["main", "master"]:
-        if remote_branch_exists(checkout, branch):
+        if remote_branch_exists(bare, branch):
             return f"origin/{branch}"
 
     return None
 
 
-def worktree_paths(checkout: Path) -> list[Path]:
-    output = git_output(["worktree", "list", "--porcelain"], cwd=checkout) or ""
-    return [Path(line.removeprefix("worktree ")) for line in output.splitlines() if line.startswith("worktree ")]
+def worktree_paths(bare: Path) -> list[Path]:
+    """Return registered worktree paths, excluding the bare repository itself."""
+    output = git_output(["worktree", "list", "--porcelain"], cwd=bare) or ""
+    paths: list[Path] = []
+    current: Path | None = None
+    current_is_bare = False
+    for line in [*output.splitlines(), ""]:
+        if line.startswith("worktree "):
+            current = Path(line.removeprefix("worktree "))
+            current_is_bare = False
+        elif line == "bare":
+            current_is_bare = True
+        elif not line:
+            if current and not current_is_bare:
+                paths.append(current)
+            current = None
+    return paths
 
 
 def worktree_ref(path: Path) -> str:
@@ -345,7 +330,14 @@ def worktree_ref(path: Path) -> str:
 
     exact = git_output(["describe", "--all", "--exact-match", "HEAD"], cwd=path)
     if exact:
-        return exact.removeprefix("heads/").removeprefix("remotes/")
+        ref = exact.removeprefix("heads/").removeprefix("remotes/")
+        if ref == "origin/HEAD":
+            resolved = git_output(
+                ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], cwd=path
+            )
+            if resolved:
+                ref = resolved
+        return ref
 
     short_head = git_output(["rev-parse", "--short", "HEAD"], cwd=path)
     return short_head or "detached"
@@ -363,40 +355,33 @@ def fmt_worktree_status(path: Path, status_output: str | None = None) -> str:
     return "● dirty" if status_output else "✓ clean"
 
 
-def relative_worktree_path(container: Path, path: Path) -> str:
-    try:
-        return path.relative_to(container).as_posix()
-    except ValueError:
-        return str(path)
+# ---------------------------------------------------------------------------
+# Worktree name picking
+# ---------------------------------------------------------------------------
 
 
-def repository_checkouts(root: Path) -> list[tuple[Path, Path]]:
-    """Return gra repo containers and one checkout that can query each repo."""
-    if not root.is_dir():
-        return []
-    return [
-        (container, checkout)
-        for container in sorted(root.iterdir(), key=lambda p: p.name)
-        if container.is_dir()
-        if (checkout := checkout_in_container(container))
-    ]
+def taken_worktree_names(root: Path) -> set[str]:
+    """Collect worktree names in use anywhere under the gra root."""
+    names: set[str] = set()
+    for container in containers(root):
+        for child in container.iterdir():
+            if child.name != BARE_DIR and child.is_dir():
+                names.add(child.name)
+        for path in worktree_paths(bare_dir(container)):
+            names.add(path.name)
+    return names
 
 
-def worktree_rows(
-    checkout: Path, container: Path, current: Path | None
-) -> list[list[str]]:
-    rows = []
-    for path in worktree_paths(checkout):
-        marker = "▶" if current and path.resolve() == current else ""
-        rows.append(
-            [
-                marker,
-                relative_worktree_path(container, path),
-                worktree_ref(path),
-                fmt_worktree_status(path),
-            ]
-        )
-    return rows
+def pick_worktree_name(root: Path) -> str:
+    available = sorted(set(WORDS) - taken_worktree_names(root))
+    if not available:
+        fail("all worktree names are taken; run 'gra clean' or 'gra done' first")
+    return random.choice(available)
+
+
+# ---------------------------------------------------------------------------
+# Table output helpers
+# ---------------------------------------------------------------------------
 
 
 def column_widths(
@@ -420,9 +405,7 @@ def table_cell(header: str, value: str) -> str:
         return style(value, BLUE, BOLD)
     if header == "REPOSITORY":
         return style(value, BLUE, BOLD)
-    if header == "WORKTREE" and value.startswith(f"{WORKTREE_DIR}/"):
-        return style(value, DIM)
-    if header == "REF":
+    if header == "BRANCH":
         return style(value, CYAN)
     if header == "REMOTE":
         return style(value, DIM)
@@ -467,13 +450,12 @@ def print_table(headers: list[str], rows: list[list[str]], *, indent: str = "") 
 # ---------------------------------------------------------------------------
 
 
-def add_local_excludes(checkout: Path) -> None:
-    """Install local ignore rules for tool-managed paths in the main checkout."""
-    exclude = checkout / ".git" / "info" / "exclude"
-    if not exclude.is_file():
-        return
-
-    lines = exclude.read_text(encoding="utf-8").splitlines()
+def add_local_excludes(bare: Path) -> None:
+    """Install ignore rules for tool-managed paths, shared by all worktrees."""
+    info = bare / "info"
+    exclude = info / "exclude"
+    info.mkdir(exist_ok=True)
+    lines = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
     missing = [pattern for pattern in LOCAL_EXCLUDES if pattern not in lines]
     if missing:
         with exclude.open("a", encoding="utf-8") as file:
@@ -483,41 +465,36 @@ def add_local_excludes(checkout: Path) -> None:
                 file.write(f"{pattern}\n")
 
 
-def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None:
-    """Clone into gra's repo container and prepare its worktree directory."""
+def clone(url: str, name: str | None, root: Path) -> None:
+    """Clone a repository into a bare checkout under the gra root."""
     try:
-        repo_name = name or repo_name_from_url(url)
+        local_name = name or local_name_from_url(url)
     except ValueError as error:
         fail(str(error))
-    validate_path_name("repository", repo_name)
+    validate_path_name("repository", local_name)
 
-    container = root / repo_name
+    container = root / local_name
     if container.exists():
-        clone_collision_error(url, container, repo_name)
+        clone_collision_error(url, container, local_name)
 
-    tmp_checkout = container / ".clone"
+    bare = bare_dir(container)
     try:
-        container.mkdir(parents=True)
-        cmd: list[str | Path] = ["clone"]
-        if with_submodules:
-            cmd += ["--recurse-submodules", "--remote-submodules"]
-        cmd += [url, tmp_checkout]
-
+        bare.mkdir(parents=True)
         log(f"Cloning '{url}' into '{container}'")
-        run_git(cmd)
-
-        checkout = container / checkout_dir_name(tmp_checkout)
-        if checkout.exists():
-            fail(f"cannot move checkout to '{checkout}' because it already exists")
-        tmp_checkout.rename(checkout)
-        (container / WORKTREE_DIR).mkdir()
-        add_local_excludes(checkout)
-        log(f"created '{checkout}'", GREEN)
+        run_git(["init", "--quiet", "--bare", bare])
+        # `git remote add` installs the standard +refs/heads/*:refs/remotes/origin/*
+        # refspec, so the bare repository tracks origin like a normal clone and
+        # never mirrors remote branches into local refs/heads.
+        run_git(["remote", "add", "origin", url], cwd=bare)
+        # Bare repositories disable reflogs by default; keep them for safety.
+        run_git(["config", "core.logAllRefUpdates", "true"], cwd=bare)
+        run_git(["fetch", "--prune", "origin"], cwd=bare)
+        run_git(["remote", "set-head", "origin", "--auto"], cwd=bare)
+        add_local_excludes(bare)
+        log(f"created '{container}'; run 'gra start' inside it to begin working", GREEN)
     except Exception:
-        if tmp_checkout.exists():
-            shutil.rmtree(tmp_checkout)
-        if container.exists() and not any(container.iterdir()):
-            container.rmdir()
+        if container.exists():
+            shutil.rmtree(container)
         raise
 
 
@@ -527,56 +504,66 @@ def clone(url: str, name: str | None, root: Path, with_submodules: bool) -> None
 
 
 def print_repositories(root: Path) -> None:
-    """Show every gra repository and every Git worktree under the gra root."""
-    repositories = repository_checkouts(root)
+    """Show every gra repository and every worktree under the gra root."""
+    repositories = containers(root)
     print(f"Root: {root}")
     if not repositories:
         print("No repositories found.")
         return
 
-    active_checkout = git_toplevel(Path.cwd())
-    current = active_checkout.resolve() if active_checkout else None
+    active_worktree = git_toplevel(Path.cwd())
+    current = active_worktree.resolve() if active_worktree else None
     rows = []
-    for container, checkout in repositories:
-        repo_rows = worktree_rows(checkout, container, current)
-        remote = origin_url(checkout) or "-"
-        for index, row in enumerate(repo_rows):
+    worktree_count = 0
+    for container in repositories:
+        bare = bare_dir(container)
+        remote = origin_url(bare) or "-"
+        paths = worktree_paths(bare)
+        worktree_count += len(paths)
+        if not paths:
+            rows.append(["", container.name, "-", "-", "-", remote])
+            continue
+        for index, path in enumerate(paths):
+            marker = "▶" if current and path.resolve() == current else ""
             rows.append(
                 [
-                    row[0],
+                    marker,
                     container.name if index == 0 else "",
-                    *row[1:],
+                    path.name,
+                    worktree_ref(path),
+                    fmt_worktree_status(path),
                     remote if index == 0 else "",
                 ]
             )
 
-    print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
+    print(f"Repositories: {len(repositories)}  Worktrees: {worktree_count}")
     print()
-    print_table(["", "REPOSITORY", "WORKTREE", "REF", "STATUS", "REMOTE"], rows)
+    print_table(["", "REPOSITORY", "WORKTREE", "BRANCH", "STATUS", "REMOTE"], rows)
 
 
 # ---------------------------------------------------------------------------
-# cd command
+# Picker helpers (cd, code, tmux)
 # ---------------------------------------------------------------------------
 
 
 def local_worktree_picker_rows(root: Path) -> list[tuple[str, list[str]]]:
     """Return local worktree picker rows under the gra root."""
     return [
-        (str(path), [container.name, relative_worktree_path(container, path), worktree_ref(path)])
-        for container, checkout in repository_checkouts(root)
-        for path in worktree_paths(checkout)
+        (str(path), [container.name, path.name, worktree_ref(path)])
+        for container in containers(root)
+        for path in worktree_paths(bare_dir(container))
         if path.is_dir()
     ]
 
 
+PICKER_HEADERS = ["REPOSITORY", "WORKTREE", "BRANCH"]
+
+
 def worktree_picker_choices(rows: list[tuple[str, list[str]]]) -> tuple[list[str], str]:
     """Return fzf input lines and an aligned header."""
-    headers = ["REPOSITORY", "WORKTREE", "REF"]
-
-    widths = column_widths(headers, [values for _, values in rows], include_headers=False)
+    widths = column_widths(PICKER_HEADERS, [values for _, values in rows], include_headers=False)
     choices = [f"{target}\t{padded_line(values, widths)}" for target, values in rows]
-    return choices, padded_line(headers, widths)
+    return choices, padded_line(PICKER_HEADERS, widths)
 
 
 def select_worktree_from_rows(
@@ -627,16 +614,26 @@ def select_worktree_row_from_rows(
     fail(f"invalid worktree selection '{target}'")
 
 
-def pick_local_worktree(root: Path, command: str) -> str:
-    """Select a local worktree with fzf and return the selected absolute path."""
-    return select_worktree_from_rows(
+def resolve_worktree_name(root: Path, name: str) -> tuple[str, list[str]]:
+    """Resolve a worktree name like 'wolf' to its picker row."""
+    for target, values in local_worktree_picker_rows(root):
+        if values[1] == name:
+            return target, values
+    fail(f"no worktree named '{name}' under '{root}'")
+
+
+def pick_worktree_row(root: Path, command: str, name: str | None) -> tuple[str, list[str]]:
+    """Resolve a worktree by name, or select one with fzf."""
+    if name:
+        return resolve_worktree_name(root, name)
+    return select_worktree_row_from_rows(
         local_worktree_picker_rows(root), command, f"under '{root}'"
     )
 
 
-def print_cd_target(root: Path) -> None:
-    """Select a worktree with fzf and print the selected absolute path."""
-    print(pick_local_worktree(root, "cd"))
+def print_cd_target(root: Path, name: str | None) -> None:
+    """Print the path of a worktree chosen by name or with fzf."""
+    print(pick_worktree_row(root, "cd", name)[0])
 
 
 def print_worktree_picker_rows(root: Path) -> None:
@@ -687,7 +684,7 @@ def open_code_target(root: Path, ssh_target: str | None) -> None:
         )
         command = [code, "--remote", f"ssh-remote+{ssh_target}", target]
     else:
-        target = pick_local_worktree(root, "code")
+        target = pick_worktree_row(root, "code", None)[0]
         command = [code, target]
     log(shlex.join(command))
     result = subprocess.run(command, check=False)
@@ -696,12 +693,8 @@ def open_code_target(root: Path, ssh_target: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# tmux command
+# tmux helpers and command
 # ---------------------------------------------------------------------------
-
-
-def tmux_window_name(values: list[str]) -> str:
-    return f"{values[0]}/{values[1]}"
 
 
 def run_tmux(args: list[str | Path]) -> None:
@@ -736,17 +729,12 @@ def tmux_window_targets(session: str) -> dict[str, str]:
     return windows
 
 
-def open_tmux_window(root: Path, session: str) -> None:
-    """Select a local gra worktree and open it in tmux."""
-    if not session or session.startswith("-"):
-        fail(f"invalid tmux session '{session}'")
-    if not shutil.which("tmux"):
-        fail("tmux is required for 'gra tmux'")
+def inside_tmux() -> bool:
+    return bool(os.environ.get("TMUX")) and bool(shutil.which("tmux"))
 
-    rows = local_worktree_picker_rows(root)
-    target, values = select_worktree_row_from_rows(rows, "tmux", f"under '{root}'")
-    name = tmux_window_name(values)
 
+def open_tmux_window_for_worktree(session: str, name: str, target: str) -> None:
+    """Open or select a tmux window named after the worktree."""
     if tmux_session_exists(session):
         if existing_target := tmux_window_targets(session).get(name):
             run_tmux(["select-window", "-t", existing_target])
@@ -760,20 +748,59 @@ def open_tmux_window(root: Path, session: str) -> None:
     log(f"created tmux session '{session}' with window '{name}'", GREEN)
 
 
+def open_tmux_window(root: Path, session: str, name: str | None) -> None:
+    """Choose a worktree by name or with fzf and open it in tmux."""
+    if not session or session.startswith("-"):
+        fail(f"invalid tmux session '{session}'")
+    if not shutil.which("tmux"):
+        fail("tmux is required for 'gra tmux'")
+
+    target, values = pick_worktree_row(root, "tmux", name)
+    open_tmux_window_for_worktree(session, values[1], target)
+
+
+def kill_tmux_windows(name: str) -> None:
+    """Kill tmux windows named after a removed worktree, in any session."""
+    if not shutil.which("tmux"):
+        return
+    result = subprocess.run(
+        ["tmux", "list-windows", "-a", "-F", "#{window_id}\t#{window_name}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        return
+    for line in result.stdout.splitlines():
+        window_id, _, window_name = line.partition("\t")
+        if window_name == name:
+            log(f"killing tmux window '{name}'")
+            subprocess.run(["tmux", "kill-window", "-t", window_id], check=False)
+
+
 # ---------------------------------------------------------------------------
 # shell command
 # ---------------------------------------------------------------------------
 
 
 BASH_INIT = r'''gra() {
-    if [[ ${1-} == cd ]]; then
-        shift
-        local target
-        target="$(command gra cd "$@")" || return
-        [[ -n $target ]] && builtin cd "$target"
-    else
-        command gra "$@"
-    fi
+    case ${1-} in
+        cd)
+            shift
+            local target
+            target="$(command gra cd "$@")" || return
+            [[ -n $target ]] && builtin cd "$target"
+            ;;
+        done)
+            local dir=$PWD
+            command gra "$@" || return
+            [[ -d $dir ]] || builtin cd "${dir%/*}"
+            ;;
+        *)
+            command gra "$@"
+            ;;
+    esac
 }
 '''
 
@@ -787,78 +814,112 @@ def print_shell_init(shell: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# wt command
+# Branch resolution shared by start and switch
 # ---------------------------------------------------------------------------
 
 
-def create_missing_branch(checkout: Path, branch: str) -> None:
-    start_point = remote_default_branch(checkout)
+def create_missing_branch(bare: Path, branch: str) -> None:
+    start_point = remote_default_branch(bare)
     if not start_point:
         fail(f"cannot resolve branch '{branch}' and cannot find origin's default branch")
 
     if not ask_yes_no(f"Branch '{branch}' does not exist. Create it from '{start_point}'?"):
         fail(f"branch '{branch}' was not created")
 
-    run_git(["branch", branch, start_point], cwd=checkout)
-    run_git(["push", "--set-upstream", "origin", branch], cwd=checkout)
+    run_git(["branch", branch, start_point], cwd=bare)
+    run_git(["push", "--set-upstream", "origin", branch], cwd=bare)
     log(f"created branch '{branch}' from '{start_point}' and tracking 'origin/{branch}'", GREEN)
 
 
-def branch_needs_tracking(checkout: Path, branch: str) -> bool:
+def branch_needs_tracking(bare: Path, branch: str) -> bool:
     """Ensure branch exists locally or on origin; return True when tracking is needed."""
-    if local_branch_exists(checkout, branch):
+    if local_branch_exists(bare, branch):
         return False
-    if remote_branch_exists(checkout, branch):
+    if remote_branch_exists(bare, branch):
         return True
-    create_missing_branch(checkout, branch)
+    create_missing_branch(bare, branch)
     return False
 
 
-def add_attached_worktree(checkout: Path, target: Path, branch: str) -> None:
+def add_attached_worktree(bare: Path, target: Path, branch: str) -> None:
     """Create a worktree that checks out branch, tracking origin if needed."""
-    if branch_needs_tracking(checkout, branch):
+    if branch_needs_tracking(bare, branch):
         run_git(
             ["worktree", "add", "--track", "-b", branch, target, f"origin/{branch}"],
-            cwd=checkout,
+            cwd=bare,
         )
         return
-    run_git(["worktree", "add", target, branch], cwd=checkout)
+    run_git(["worktree", "add", target, branch], cwd=bare)
 
 
-def switch_to_branch(checkout: Path, target: Path, branch: str) -> None:
-    """Reuse an existing worktree by switching it to branch."""
-    if branch_needs_tracking(checkout, branch):
-        run_git(["switch", "--track", f"origin/{branch}"], cwd=target)
-        return
-    run_git(["switch", branch], cwd=target)
-
-
-def wt_create(branch: str, name: str | None) -> None:
-    """Create or update a worktree under the repo's `wt` directory."""
-    checkout = current_checkout()
-    container = repo_container(checkout)
-    wt_root = container / WORKTREE_DIR
-    branch = branch_name_from_input(branch)
-    target_name = name or worktree_name_from_ref(branch)
-    validate_path_name("worktree", target_name)
-
-    target = wt_root / target_name
-    if target.exists():
-        if not target.is_dir() or not is_git_worktree(target):
-            fail(f"cannot use '{target}' because it is not a Git worktree")
-        log(f"Switching '{target}' to '{branch}'")
-        switch_to_branch(checkout, target, branch)
-        log(f"updated '{target}'", GREEN)
-        return
-
-    wt_root.mkdir(exist_ok=True)
-    log(f"Creating worktree '{target}' for branch '{branch}'")
-    add_attached_worktree(checkout, target, branch)
-    log(f"created '{target}'", GREEN)
+def init_submodules(worktree: Path) -> None:
+    if (worktree / ".gitmodules").is_file():
+        log(f"Initializing submodules in '{worktree}'")
+        run_git(["submodule", "update", "--init", "--recursive"], cwd=worktree)
 
 
 # ---------------------------------------------------------------------------
-# clean command
+# start command
+# ---------------------------------------------------------------------------
+
+
+def start(branch_input: str | None, root: Path, no_tmux: bool) -> None:
+    """Create a new worktree with a fresh random name."""
+    container = find_container(Path.cwd())
+    if not container:
+        fail(
+            "gra start must be run from inside a repository under the gra root;\n"
+            "use 'gra ls' to see repositories or 'gra clone URL' to add one"
+        )
+    bare = bare_dir(container)
+    word = pick_worktree_name(root)
+    target = container / word
+
+    if branch_input:
+        branch = branch_name_from_input(branch_input)
+        log(f"Creating worktree '{target}' for branch '{branch}'")
+        add_attached_worktree(bare, target, branch)
+    else:
+        ref = remote_default_branch(bare)
+        if not ref:
+            fail("cannot find origin's default branch; pass a branch to 'gra start'")
+        log(f"Creating worktree '{target}' detached at '{ref}'")
+        run_git(["worktree", "add", "--detach", target, ref], cwd=bare)
+
+    init_submodules(target)
+    log(f"created '{target}'", GREEN)
+
+    if not no_tmux and inside_tmux():
+        run_tmux(["new-window", "-n", word, "-c", target])
+        log(f"created tmux window '{word}'", GREEN)
+
+
+# ---------------------------------------------------------------------------
+# switch command
+# ---------------------------------------------------------------------------
+
+
+def switch(branch_input: str) -> None:
+    """Switch the current worktree to another branch."""
+    container, worktree = current_gra_worktree("switch")
+    bare = bare_dir(container)
+    branch = branch_name_from_input(branch_input)
+
+    if worktree_status_output(worktree):
+        fail(
+            f"'{worktree}' has uncommitted changes; commit or stash them before switching"
+        )
+
+    log(f"Switching '{worktree}' to '{branch}'")
+    if branch_needs_tracking(bare, branch):
+        run_git(["switch", "--track", f"origin/{branch}"], cwd=worktree)
+    else:
+        run_git(["switch", branch], cwd=worktree)
+    log(f"'{worktree.name}' is now on '{branch}'", GREEN)
+
+
+# ---------------------------------------------------------------------------
+# Merge state probes shared by done and clean
 # ---------------------------------------------------------------------------
 
 
@@ -883,35 +944,96 @@ def has_patch_equivalent_changes_in(path: Path, ref: str) -> bool:
     return bool(lines) and all(line.startswith("-") for line in lines)
 
 
-def fetch_repository(checkout: Path) -> None:
+def delete_merged_branch(bare: Path, branch: str) -> None:
+    """Delete a local branch whose changes were verified to be in origin.
+
+    Uses -D because the merged/patch-equivalent verification already happened;
+    plain -d cannot recognize squash or cherry-pick merges.
+    """
+    deleted = subprocess.run(
+        ["git", "branch", "-D", branch],
+        cwd=bare,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if deleted.returncode == 0:
+        log(f"deleted branch '{branch}'", GREEN)
+
+
+# ---------------------------------------------------------------------------
+# done command
+# ---------------------------------------------------------------------------
+
+
+def done(force: bool) -> None:
+    """Remove the current worktree once its work is safely in origin."""
+    container, worktree = current_gra_worktree("done")
+    bare = bare_dir(container)
+    word = worktree.name
+
+    status_output = worktree_status_output(worktree)
+    if status_output and not force:
+        fail(f"'{worktree}' has uncommitted changes; commit them or use --force")
+
+    branch = git_output(["branch", "--show-current"], cwd=worktree)
+    default_ref = remote_default_branch(bare)
+    merged = bool(default_ref) and (
+        is_merged_into(worktree, default_ref)
+        or has_patch_equivalent_changes_in(worktree, default_ref)
+    )
+    if not merged and not force:
+        fail(
+            f"'{worktree}' has commits not in {default_ref or 'origin'}; "
+            "push and merge them first, or use --force"
+        )
+
+    log(f"Removing worktree '{worktree}'")
+    remove_args: list[str | Path] = ["worktree", "remove"]
+    if force:
+        remove_args.append("--force")
+    remove_args.append(worktree)
+    run_git(remove_args, cwd=bare)
+
+    if branch and merged:
+        delete_merged_branch(bare, branch)
+    elif branch:
+        log(f"kept branch '{branch}'")
+
+    log(f"removed '{word}'", GREEN)
+    kill_tmux_windows(word)
+
+
+# ---------------------------------------------------------------------------
+# clean command
+# ---------------------------------------------------------------------------
+
+
+def fetch_repository(bare: Path) -> None:
     subprocess.run(
         ["git", "fetch", "--prune", "origin"],
-        cwd=checkout,
+        cwd=bare,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
     )
 
 
-def fetch_repositories(repositories: list[tuple[Path, Path]]) -> None:
-    checkouts = [checkout for _container, checkout in repositories]
-    if not checkouts:
+def fetch_repositories(bares: list[Path]) -> None:
+    if not bares:
         return
-    with ThreadPoolExecutor(max_workers=min(8, len(checkouts))) as executor:
-        list(executor.map(fetch_repository, checkouts))
+    with ThreadPoolExecutor(max_workers=min(8, len(bares))) as executor:
+        list(executor.map(fetch_repository, bares))
 
 
 def classify_worktree(
     path: Path,
-    default_path: Path | None,
     default_ref: str | None,
     status_output: str | None = None,
 ) -> tuple[str, str]:
     """Return (verdict, reason) for a worktree path. Verdict is keep/remove/prune."""
     if not path.exists():
         return ("prune", "missing path")
-    if default_path and path.resolve() == default_path.resolve():
-        return ("keep", "default checkout")
     if (path / GRAKEEP_FILE).is_file():
         return ("keep", f"{GRAKEEP_FILE} marker")
     if status_output is None:
@@ -928,10 +1050,10 @@ def classify_worktree(
 
 
 def clean_worktree_entry(
-    container: Path, path: Path, default_path: Path | None, default_ref: str | None
+    container: Path, path: Path, default_ref: str | None
 ) -> tuple[Path, Path, str, str, str, str]:
     status_output = worktree_status_output(path) if path.exists() else ""
-    verdict, reason = classify_worktree(path, default_path, default_ref, status_output)
+    verdict, reason = classify_worktree(path, default_ref, status_output)
     return (
         container,
         path,
@@ -942,28 +1064,27 @@ def clean_worktree_entry(
     )
 
 
-def clean_repository_entries(
-    container: Path, checkout: Path
-) -> list[tuple[Path, Path, str, str, str, str]]:
+def clean_repository_entries(container: Path) -> list[tuple[Path, Path, str, str, str, str]]:
     """Classify worktrees in one repository.
 
     Returns rows of (container, path, ref_label, status, verdict, reason).
     """
-    default_path = default_checkout(container)
-    default_ref = remote_default_branch(checkout)
-    paths = worktree_paths(checkout)
+    bare = bare_dir(container)
+    default_ref = remote_default_branch(bare)
+    paths = worktree_paths(bare)
     if len(paths) <= 1:
-        return [clean_worktree_entry(container, path, default_path, default_ref) for path in paths]
+        return [clean_worktree_entry(container, path, default_ref) for path in paths]
 
     def entry_for_path(path: Path) -> tuple[Path, Path, str, str, str, str]:
-        return clean_worktree_entry(container, path, default_path, default_ref)
+        return clean_worktree_entry(container, path, default_ref)
 
     with ThreadPoolExecutor(max_workers=min(8, len(paths))) as executor:
         return list(executor.map(entry_for_path, paths))
 
 
-def apply_clean(checkout: Path, entries: list[tuple[Path, Path, str, str, str, str]]) -> None:
+def apply_clean(container: Path, entries: list[tuple[Path, Path, str, str, str, str]]) -> None:
     """Remove removable worktrees and prune missing entries for one repository."""
+    bare = bare_dir(container)
     has_missing = False
     for _container, path, _ref, _status, verdict, _reason in entries:
         if verdict == "prune":
@@ -973,25 +1094,18 @@ def apply_clean(checkout: Path, entries: list[tuple[Path, Path, str, str, str, s
             continue
         branch = git_output(["branch", "--show-current"], cwd=path)
         log(f"Removing worktree '{path}'")
-        run_git(["worktree", "remove", path], cwd=checkout)
-        if branch and local_branch_exists(checkout, branch):
-            deleted = subprocess.run(
-                ["git", "branch", "-d", branch],
-                cwd=checkout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            if deleted.returncode == 0:
-                log(f"deleted branch '{branch}'", GREEN)
+        run_git(["worktree", "remove", path], cwd=bare)
+        if branch and local_branch_exists(bare, branch):
+            delete_merged_branch(bare, branch)
+        kill_tmux_windows(path.name)
     if has_missing:
-        log(f"Pruning missing worktree entries in '{checkout}'")
-        run_git(["worktree", "prune"], cwd=checkout)
+        log(f"Pruning missing worktree entries in '{container.name}'")
+        run_git(["worktree", "prune"], cwd=bare)
 
 
 def clean(root: Path, yes: bool, fetch: bool) -> None:
     """Report cleanable worktrees across every gra repository under root."""
-    repositories = repository_checkouts(root)
+    repositories = containers(root)
     print(f"Root: {root}")
     if not repositories:
         print("No repositories found.")
@@ -999,20 +1113,19 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
 
     if fetch:
         log(f"Fetching origin for {len(repositories)} repositories")
-        fetch_repositories(repositories)
+        fetch_repositories([bare_dir(container) for container in repositories])
 
     repo_entries = [
-        (checkout, clean_repository_entries(container, checkout))
-        for container, checkout in repositories
+        (container, clean_repository_entries(container)) for container in repositories
     ]
 
     rows = []
-    for _checkout, entries in repo_entries:
+    for _container, entries in repo_entries:
         for index, (container, path, ref_label, status, verdict, reason) in enumerate(entries):
             rows.append(
                 [
                     container.name if index == 0 else "",
-                    relative_worktree_path(container, path),
+                    path.name,
                     ref_label,
                     status,
                     verdict,
@@ -1027,9 +1140,7 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
 
     print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
     print()
-    print_table(
-        ["REPOSITORY", "WORKTREE", "REF", "STATUS", "VERDICT", "REASON"], rows
-    )
+    print_table(["REPOSITORY", "WORKTREE", "BRANCH", "STATUS", "VERDICT", "REASON"], rows)
 
     print()
     if not total_removable and not total_missing:
@@ -1046,9 +1157,9 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
         log(f"Dry run. Re-run with --yes to {' and '.join(actions)}.", YELLOW)
         return
 
-    for checkout, entries in repo_entries:
+    for container, entries in repo_entries:
         if any(e[4] in {"remove", "prune"} for e in entries):
-            apply_clean(checkout, entries)
+            apply_clean(container, entries)
 
     print()
     log(
@@ -1079,17 +1190,15 @@ def parse_args() -> argparse.Namespace:
     clone_parser = subparsers.add_parser(
         "clone",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="clone a remote repository",
-        description=f"Clone a repository into '{root}/<name>/<default-branch>'.",
+        help="clone a remote repository as a bare checkout",
+        description=(
+            f"Clone a repository into '{root}/<owner>-<repo>/{BARE_DIR}'.\n"
+            "No branch is checked out; use 'gra start' to create a worktree."
+        ),
     )
     clone_parser.add_argument("url", help="git repository URL to clone")
     clone_parser.add_argument("--name", help="local repository name under the gra root")
-    clone_parser.add_argument(
-        "--no-submodules", action="store_true", help="skip fetching submodules"
-    )
-    clone_parser.set_defaults(
-        handler=lambda args: clone(args.url, args.name, args.root, not args.no_submodules)
-    )
+    clone_parser.set_defaults(handler=lambda args: clone(args.url, args.name, args.root))
 
     ls_parser = subparsers.add_parser(
         "ls",
@@ -1099,16 +1208,64 @@ def parse_args() -> argparse.Namespace:
     )
     ls_parser.set_defaults(handler=lambda args: print_repositories(args.root))
 
+    start_parser = subparsers.add_parser(
+        "start",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="create a new worktree with a fresh random name",
+        description=(
+            "Create a new worktree named after a random unused word.\n"
+            "With BRANCH, check it out (creating and pushing it when missing);\n"
+            "without, start detached at origin's default branch.\n"
+            "Inside tmux, a window named after the worktree is opened."
+        ),
+    )
+    start_parser.add_argument("branch", nargs="?", help="branch to check out")
+    start_parser.add_argument(
+        "--no-tmux", action="store_true", help="do not open a tmux window"
+    )
+    start_parser.set_defaults(
+        handler=lambda args: start(args.branch, args.root, args.no_tmux)
+    )
+
+    switch_parser = subparsers.add_parser(
+        "switch",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="switch the current worktree to another branch",
+        description=(
+            "Switch the current worktree to BRANCH, creating and pushing the\n"
+            "branch when it does not exist. Refuses when the worktree is dirty."
+        ),
+    )
+    switch_parser.add_argument("branch", help="branch to switch to")
+    switch_parser.set_defaults(handler=lambda args: switch(args.branch))
+
+    done_parser = subparsers.add_parser(
+        "done",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="remove the current worktree when its work is in origin",
+        description=(
+            "Remove the current worktree and its tmux window.\n"
+            "Refuses when the worktree is dirty or has commits that are not\n"
+            "merged into origin's default branch; --force overrides both.\n"
+            "The branch is deleted only when its changes are in origin."
+        ),
+    )
+    done_parser.add_argument(
+        "--force", action="store_true", help="remove even when dirty or unmerged"
+    )
+    done_parser.set_defaults(handler=lambda args: done(args.force))
+
     cd_parser = subparsers.add_parser(
         "cd",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="select a worktree path with fzf",
+        help="print a worktree path, by name or with fzf",
         description=(
-            "Select a worktree under the gra root with fzf and print its path.\n"
+            "Print the path of a worktree, chosen by NAME or with fzf.\n"
             "Use 'eval \"$(gra shell bash)\"' to make 'gra cd' change directories."
         ),
     )
-    cd_parser.set_defaults(handler=lambda args: print_cd_target(args.root))
+    cd_parser.add_argument("name", nargs="?", help="worktree name, for example 'wolf'")
+    cd_parser.set_defaults(handler=lambda args: print_cd_target(args.root, args.name))
 
     code_parser = subparsers.add_parser(
         "code",
@@ -1150,31 +1307,21 @@ def parse_args() -> argparse.Namespace:
     tmux_parser = subparsers.add_parser(
         "tmux",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="select a worktree and open it in tmux",
+        help="open a worktree in tmux, by name or with fzf",
         description=(
-            "Select a worktree under the gra root with fzf and open it in tmux.\n"
-            "The window starts in its worktree root and is named '<repo>/<worktree>'."
+            "Open a worktree in a tmux window named after the worktree.\n"
+            "Choose the worktree by NAME or with fzf."
         ),
     )
+    tmux_parser.add_argument("name", nargs="?", help="worktree name, for example 'wolf'")
     tmux_parser.add_argument(
         "--session",
         default=DEFAULT_TMUX_SESSION,
         help=f"tmux session name to create or update (default: {DEFAULT_TMUX_SESSION})",
     )
-    tmux_parser.set_defaults(handler=lambda args: open_tmux_window(args.root, args.session))
-
-    wt_parser = subparsers.add_parser(
-        "wt",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="create or update a worktree under the repository wt directory",
-        description=(
-            "Create or update a worktree under '<repo>/wt'.\n"
-            "Use --name for a reusable worktree folder such as 'review'."
-        ),
+    tmux_parser.set_defaults(
+        handler=lambda args: open_tmux_window(args.root, args.session, args.name)
     )
-    wt_parser.add_argument("branch", help="branch to check out")
-    wt_parser.add_argument("--name", help="folder name under the repository wt directory")
-    wt_parser.set_defaults(handler=lambda args: wt_create(args.branch, args.name))
 
     clean_parser = subparsers.add_parser(
         "clean",
@@ -1182,7 +1329,7 @@ def parse_args() -> argparse.Namespace:
         help="report or remove clean merged worktrees",
         description=(
             f"Classify worktrees in every repository under '{root}':\n"
-            "  keep  - default checkout, .grakeep marker, dirty, or has commits not in origin's default branch\n"
+            "  keep  - .grakeep marker, dirty, or has commits not in origin's default branch\n"
             "  remove - clean and merged or patch-equivalent in origin's default branch\n"
             "  prune - the worktree path no longer exists on disk\n"
             "Without --yes, only prints the table."
