@@ -188,17 +188,17 @@ def test_clean_repository_entries_builds_worktree_entries_in_parallel(
     )
 
     def fake_clean_worktree_entry(
-        container: Path, path: Path, default_ref: str
-    ) -> tuple[Path, Path, str, str, str, str]:
+        path: Path, default_ref: str
+    ) -> tuple[Path, str, str, str, str]:
         with lock:
             calls.append(path)
             if len(calls) == 2:
                 both_started.set()
         assert both_started.wait(1)
-        return (container, path, path.name, "✓ clean", "keep", default_ref)
+        return (path, path.name, "✓ clean", "keep", default_ref)
 
     monkeypatch.setattr(gra, "clean_worktree_entry", fake_clean_worktree_entry)
 
     entries = gra.clean_repository_entries(Path("repo"))
 
-    assert [entry[1] for entry in entries] == [Path("repo/wolf"), Path("repo/lynx")]
+    assert [entry[0] for entry in entries] == [Path("repo/wolf"), Path("repo/lynx")]
