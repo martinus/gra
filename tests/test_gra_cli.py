@@ -1,4 +1,4 @@
-"""CLI tests for the gra clone command."""
+"""CLI tests for the gra commands."""
 
 import json
 import os
@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GRA = REPO_ROOT / "gra"
+BARE_DIR = ".bare"
 
 
 def run_cli(
@@ -20,6 +21,7 @@ def run_cli(
     env_extra: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    env.pop("TMUX", None)
     env.update(
         {
             "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
@@ -47,6 +49,11 @@ def git_output(args: list[str], cwd: Path | None = None) -> str:
     return subprocess.check_output(["git", *args], cwd=cwd, encoding="utf-8").strip()
 
 
+def git_fails(args: list[str], cwd: Path | None = None) -> bool:
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return result.returncode != 0
+
+
 def make_repo(tmp_path: Path, name: str, branch: str = "main") -> Path:
     repo = tmp_path / name
     git(["init", "--initial-branch", branch, str(repo)])
@@ -58,314 +65,45 @@ def make_repo(tmp_path: Path, name: str, branch: str = "main") -> Path:
     return repo
 
 
-def test_clone_creates_flat_default_branch_checkout(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-
-    result = run_cli(["clone", str(source), "--no-submodules"], home)
-
-    assert result.returncode == 0, result.stderr
-    checkout = home / "git" / "project" / "main"
-    assert (checkout / ".git").is_dir()
-    assert (home / "git" / "project" / "wt").is_dir()
-    assert (checkout / "README.md").read_text() == "# project\n"
-    exclude = (checkout / ".git" / "info" / "exclude").read_text()
-    assert ".claude/worktrees/" in exclude
-    assert ".grakeep" in exclude
-
-
-def test_clone_supports_custom_name(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-
-    result = run_cli(["clone", str(source), "--name", "project-local", "--no-submodules"], home)
-
-    assert result.returncode == 0, result.stderr
-    assert (home / "git" / "project-local" / "main" / ".git").is_dir()
-
-
-def test_wt_creates_branch_named_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature/search"], cwd=source)
+def add_feature_branch(source: Path, branch: str = "feature", base: str = "main") -> None:
+    git(["switch", "-c", branch], cwd=source)
     (source / "README.md").write_text("# feature\n")
     git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
+    git(["switch", base], cwd=source)
 
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
 
-    result = run_cli(["wt", "feature/search"], home, cwd=checkout)
-
+def clone_repo(home: Path, source: Path, name: str | None = None) -> Path:
+    args = ["clone", str(source)]
+    if name:
+        args += ["--name", name]
+    result = run_cli(args, home)
     assert result.returncode == 0, result.stderr
-    feature = home / "git" / "project" / "wt" / "feature-search"
-    assert (feature / ".git").is_file()
-    assert (feature / "README.md").read_text() == "# feature\n"
-    assert git_output(["branch", "--show-current"], cwd=feature) == "feature/search"
+    return home / "gra" / (name or source.name)
 
 
-def test_wt_creates_reusable_named_review_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    first_branch = "feature/OA-65510-implement-gcp-support-for-serialid"
-    second_branch = "feature/OA-65511-review-followup"
-    git(["switch", "-c", first_branch], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "-c", second_branch], cwd=source)
-    (source / "README.md").write_text("# followup\n")
-    git(["commit", "-am", "followup"], cwd=source)
-    git(["switch", "main"], cwd=source)
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    container = home / "git" / "project"
-
-    create_result = run_cli(["wt", "--name", "review", first_branch], home, cwd=container)
-
-    assert create_result.returncode == 0, create_result.stderr
-    review = home / "git" / "project" / "wt" / "review"
-    assert (review / ".git").is_file()
-    assert (review / "README.md").read_text() == "# feature\n"
-    assert git_output(["branch", "--show-current"], cwd=review) == first_branch
-
-    switch_result = run_cli(["wt", "--name", "review", second_branch], home, cwd=container / "wt")
-
-    assert switch_result.returncode == 0, switch_result.stderr
-    assert (review / "README.md").read_text() == "# followup\n"
-    assert git_output(["branch", "--show-current"], cwd=review) == second_branch
-
-
-def test_wt_requires_branch(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-
-    result = run_cli(["wt"], home)
-
-    assert result.returncode == 2
-    assert "the following arguments are required: branch" in result.stderr
-
-
-def test_wt_missing_branch_can_be_declined(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-
-    result = run_cli(
-        ["wt", "NOISSUE-fix-fedora-headless"], home, cwd=checkout, input_text="n\n"
+def worktree_dirs(container: Path) -> list[Path]:
+    return sorted(
+        child for child in container.iterdir() if child.is_dir() and child.name != BARE_DIR
     )
 
-    assert result.returncode == 1
-    assert (
-        "Branch 'NOISSUE-fix-fedora-headless' does not exist. Create it from 'origin/main'?"
-        in result.stderr
-    )
-    assert "branch 'NOISSUE-fix-fedora-headless' was not created" in result.stderr
 
-
-def test_wt_missing_branch_name_is_sanitized_before_creation(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    raw_branch = "mla/OA-61238 OneAgent Research Linux sources"
-    branch = "mla/OA-61238-OneAgent-Research-Linux-sources"
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-
-    result = run_cli(["wt", raw_branch], home, cwd=checkout, input_text="yes\n")
-
+def start_worktree(
+    home: Path, container: Path, branch: str | None = None
+) -> Path:
+    args = ["start"]
+    if branch:
+        args.append(branch)
+    before = set(worktree_dirs(container))
+    result = run_cli(args, home, cwd=container)
     assert result.returncode == 0, result.stderr
-    worktree = home / "git" / "project" / "wt" / "mla-OA-61238-OneAgent-Research-Linux-sources"
-    assert (worktree / ".git").is_file()
-    assert git_output(["branch", "--show-current"], cwd=worktree) == branch
-    assert git_output(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"], cwd=worktree) == f"origin/{branch}"
+    created = set(worktree_dirs(container)) - before
+    assert len(created) == 1, result.stdout
+    return created.pop()
 
 
-def test_wt_missing_branch_can_be_created_from_repo_folder(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project", branch="trunk")
-    branch = "NOISSUE-fix-fedora-headless"
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    container = home / "git" / "project"
-
-    result = run_cli(
-        ["wt", branch],
-        home,
-        cwd=container,
-        input_text="y\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert (
-        "Branch 'NOISSUE-fix-fedora-headless' does not exist. Create it from 'origin/trunk'?"
-        in result.stderr
-    )
-    worktree = container / "wt" / "NOISSUE-fix-fedora-headless"
-    assert (worktree / ".git").is_file()
-    assert git_output(["branch", "--show-current"], cwd=worktree) == branch
-    assert git_output(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"], cwd=worktree) == f"origin/{branch}"
-    git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=source)
-    assert (worktree / "README.md").read_text() == "# project\n"
-
-
-def test_wt_missing_named_branch_can_be_created_from_wt_folder(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project", branch="master")
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    container = home / "git" / "project"
-
-    result = run_cli(
-        ["wt", "--name", "review", "NOISSUE-fix-fedora-headless"],
-        home,
-        cwd=container / "wt",
-        input_text="yes\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert (
-        "Branch 'NOISSUE-fix-fedora-headless' does not exist. Create it from 'origin/master'?"
-        in result.stderr
-    )
-    review = container / "wt" / "review"
-    assert (review / ".git").is_file()
-    assert git_output(["branch", "--show-current"], cwd=review) == "NOISSUE-fix-fedora-headless"
-    assert (review / "README.md").read_text() == "# project\n"
-
-
-def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    project = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=project)
-    (project / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=project)
-    git(["switch", "main"], cwd=project)
-    library = make_repo(tmp_path, "library")
-
-    project_clone = run_cli(["clone", str(project), "--no-submodules"], home)
-    assert project_clone.returncode == 0, project_clone.stderr
-    library_clone = run_cli(["clone", str(library), "--no-submodules"], home)
-    assert library_clone.returncode == 0, library_clone.stderr
-
-    project_checkout = home / "git" / "project" / "main"
-    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=project_checkout)
-    assert review_result.returncode == 0, review_result.stderr
-    review = home / "git" / "project" / "wt" / "review"
-    (review / "scratch.txt").write_text("local change\n")
-
-    result = run_cli(["ls"], home, cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert f"Root: {home / 'git'}" in result.stdout
-    assert "Repositories: 2" in result.stdout
-    assert "Worktrees: 3" in result.stdout
-    assert "REPOSITORY" in result.stdout
-    assert "REMOTE" in result.stdout
-    assert "library" in result.stdout
-    assert "project" in result.stdout
-    assert str(library) in result.stdout
-    assert str(project) in result.stdout
-    assert "WORKTREE" in result.stdout
-    assert "REF" in result.stdout
-    assert "STATUS" in result.stdout
-    assert "main" in result.stdout
-    assert "wt/review" in result.stdout
-    assert "feature" in result.stdout
-    assert "✓ clean" in result.stdout
-    assert "● dirty" in result.stdout
-
-
-def test_clean_treats_squash_merged_worktree_as_removable(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
-    assert review_result.returncode == 0, review_result.stderr
-
-    git(["merge", "--squash", "feature"], cwd=source)
-    git(["commit", "-m", "squash feature"], cwd=source)
-
-    result = run_cli(["clean"], home, cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert "wt/review" in result.stdout
-    assert "remove" in result.stdout
-    assert "Dry run. Re-run with --yes to remove 1 worktree(s)." in result.stdout
-
-
-def test_clean_keeps_grakeep_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
-    assert review_result.returncode == 0, review_result.stderr
-    review = home / "git" / "project" / "wt" / "review"
-    (review / ".grakeep").write_text("")
-
-    assert git_output(["status", "--porcelain", "--", ".grakeep"], cwd=review) == ""
-
-    git(["merge", "--squash", "feature"], cwd=source)
-    git(["commit", "-m", "squash feature"], cwd=source)
-
-    result = run_cli(["clean"], home, cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert "wt/review" in result.stdout
-    assert ".grakeep marker" in result.stdout
-    assert "Nothing to clean." in result.stdout
-    assert "Dry run. Re-run" not in result.stdout
-
-
-def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
-    assert review_result.returncode == 0, review_result.stderr
-
+def write_fzf_mock(tmp_path: Path, *, select_line: int = 1) -> tuple[Path, Path, Path]:
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     fzf = bin_dir / "fzf"
     fzf_input = tmp_path / "fzf-input"
     fzf_args = tmp_path / "fzf-args"
@@ -373,9 +111,456 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
         "#!/bin/sh\n"
         "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
         "cat > \"$FZF_INPUT\"\n"
-        "sed -n '2p' \"$FZF_INPUT\"\n"
+        f"sed -n '{select_line}p' \"$FZF_INPUT\"\n"
     )
     fzf.chmod(0o755)
+    return bin_dir, fzf_input, fzf_args
+
+
+def test_clone_creates_bare_repository(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+
+    container = clone_repo(home, source)
+
+    bare = container / BARE_DIR
+    assert bare.is_dir()
+    assert (bare / "HEAD").is_file()
+    assert worktree_dirs(container) == []
+    # tracks origin like a normal clone: remote refs only, no local branches
+    assert (
+        git_output(["config", "--get", "remote.origin.fetch"], cwd=bare)
+        == "+refs/heads/*:refs/remotes/origin/*"
+    )
+    assert git_output(["config", "--get", "core.logAllRefUpdates"], cwd=bare) == "true"
+    assert git_output(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=bare) == (
+        "refs/remotes/origin/main"
+    )
+    git(["rev-parse", "--verify", "refs/remotes/origin/main"], cwd=bare)
+    assert git_output(["branch", "--list"], cwd=bare) == ""
+    exclude = (bare / "info" / "exclude").read_text()
+    assert ".claude/worktrees/" in exclude
+    assert ".grakeep" in exclude
+
+
+def test_clone_derives_owner_name_for_remote_urls(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    owner_dir = tmp_path / "martinus"
+    owner_dir.mkdir()
+    source = make_repo(owner_dir, "oans")
+
+    result = run_cli(["clone", f"file://{source}"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert (home / "gra" / "martinus-oans" / BARE_DIR).is_dir()
+
+
+def test_clone_supports_custom_name(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+
+    container = clone_repo(home, source, name="project-local")
+
+    assert container == home / "gra" / "project-local"
+    assert (container / BARE_DIR).is_dir()
+
+
+def test_clone_reports_collision_with_name_suggestion(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    clone_repo(home, source)
+
+    result = run_cli(["clone", str(source)], home)
+
+    assert result.returncode == 1
+    assert "local repository name 'project' already exists" in result.stderr
+    assert f"origin: {source}" in result.stderr
+    assert "--name project-2" in result.stderr
+
+
+def test_start_creates_random_worktree_for_branch(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "feature/search")
+    container = clone_repo(home, source)
+
+    worktree = start_worktree(home, container, "feature/search")
+
+    assert len(worktree.name) == 4
+    assert worktree.name.isalpha()
+    assert (worktree / ".git").is_file()
+    assert (worktree / "README.md").read_text() == "# feature\n"
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature/search"
+    assert (
+        git_output(["rev-parse", "--abbrev-ref", "feature/search@{upstream}"], cwd=worktree)
+        == "origin/feature/search"
+    )
+
+
+def test_start_without_branch_is_detached_at_origin_head(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    worktree = start_worktree(home, container)
+
+    assert git_output(["branch", "--show-current"], cwd=worktree) == ""
+    assert git_output(["rev-parse", "HEAD"], cwd=worktree) == git_output(
+        ["rev-parse", "origin/main"], cwd=container / BARE_DIR
+    )
+
+
+def test_start_worktree_names_are_unique(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    first = start_worktree(home, container)
+    second = start_worktree(home, container)
+
+    assert first.name != second.name
+    assert len(first.name) == len(second.name) == 4
+
+
+def test_start_missing_branch_can_be_created(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project", branch="trunk")
+    container = clone_repo(home, source)
+    branch = "NOISSUE-fix-fedora-headless"
+
+    result = run_cli(["start", branch], home, cwd=container, input_text="y\n")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"Branch '{branch}' does not exist. Create it from 'origin/trunk'?" in result.stderr
+    )
+    worktrees = worktree_dirs(container)
+    assert len(worktrees) == 1
+    worktree = worktrees[0]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == branch
+    assert (
+        git_output(["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"], cwd=worktree)
+        == f"origin/{branch}"
+    )
+    git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=source)
+
+
+def test_start_missing_branch_can_be_declined(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    result = run_cli(["start", "nope-branch"], home, cwd=container, input_text="n\n")
+
+    assert result.returncode == 1
+    assert "branch 'nope-branch' was not created" in result.stderr
+    assert worktree_dirs(container) == []
+
+
+def test_start_outside_repository_fails(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = run_cli(["start"], home, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "must be run from inside a repository" in result.stderr
+
+
+def test_start_opens_tmux_window_when_inside_tmux(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    tmux = bin_dir / "tmux"
+    tmux_args = tmp_path / "tmux-args"
+    tmux.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
+        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n"
+    )
+    tmux.chmod(0o755)
+
+    result = run_cli(
+        ["start", "main"],
+        home,
+        cwd=container,
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TMUX": "/tmp/tmux-1000/default,1234,0",
+            "TMUX_ARGS": str(tmux_args),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert tmux_args.read_text().splitlines() == [
+        "new-window",
+        "-n",
+        worktree.name,
+        "-c",
+        str(worktree),
+        "---",
+    ]
+    assert f"created tmux window '{worktree.name}'" in result.stdout
+
+
+def test_switch_changes_branch_in_place(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+
+    result = run_cli(["switch", "feature"], home, cwd=worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
+    assert (worktree / "README.md").read_text() == "# feature\n"
+
+
+def test_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+    (worktree / "README.md").write_text("# local edit\n")
+
+    result = run_cli(["switch", "feature"], home, cwd=worktree)
+
+    assert result.returncode == 1
+    assert "uncommitted changes" in result.stderr
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
+
+
+def test_done_removes_merged_worktree_and_branch(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+    bare = container / BARE_DIR
+
+    result = run_cli(["done"], home, cwd=worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert not worktree.exists()
+    assert git_fails(["show-ref", "--verify", "--quiet", "refs/heads/main"], cwd=bare)
+    assert f"removed '{worktree.name}'" in result.stdout
+
+
+def test_done_refuses_dirty_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+    (worktree / "scratch.txt").write_text("wip\n")
+
+    result = run_cli(["done"], home, cwd=worktree)
+
+    assert result.returncode == 1
+    assert "uncommitted changes" in result.stderr
+    assert worktree.exists()
+
+
+def test_done_refuses_unmerged_branch_but_force_keeps_it(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "feature")
+    bare = container / BARE_DIR
+
+    refused = run_cli(["done"], home, cwd=worktree)
+
+    assert refused.returncode == 1
+    assert "commits not in origin/main" in refused.stderr
+    assert worktree.exists()
+
+    forced = run_cli(["done", "--force"], home, cwd=worktree)
+
+    assert forced.returncode == 0, forced.stderr
+    assert not worktree.exists()
+    git(["show-ref", "--verify", "--quiet", "refs/heads/feature"], cwd=bare)
+    assert "kept branch 'feature'" in forced.stdout
+
+
+def test_done_kills_matching_tmux_window(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    tmux = bin_dir / "tmux"
+    tmux_args = tmp_path / "tmux-args"
+    tmux.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
+        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n"
+        "if [ \"$1\" = list-windows ]; then printf '@7\\t%s\\n' \"$TMUX_WORD\"; fi\n"
+    )
+    tmux.chmod(0o755)
+
+    result = run_cli(
+        ["done"],
+        home,
+        cwd=worktree,
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TMUX_ARGS": str(tmux_args),
+            "TMUX_WORD": worktree.name,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = tmux_args.read_text().splitlines()
+    assert lines == [
+        "list-windows",
+        "-a",
+        "-F",
+        "#{window_id}\t#{window_name}",
+        "---",
+        "kill-window",
+        "-t",
+        "@7",
+        "---",
+    ]
+
+
+def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    project = make_repo(tmp_path, "project")
+    add_feature_branch(project)
+    library = make_repo(tmp_path, "library")
+
+    project_container = clone_repo(home, project)
+    clone_repo(home, library)
+    worktree = start_worktree(home, project_container, "feature")
+    (worktree / "scratch.txt").write_text("local change\n")
+
+    result = run_cli(["ls"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert f"Root: {home / 'gra'}" in result.stdout
+    assert "Repositories: 2" in result.stdout
+    assert "Worktrees: 1" in result.stdout
+    assert "REPOSITORY" in result.stdout
+    assert "WORKTREE" in result.stdout
+    assert "BRANCH" in result.stdout
+    assert "STATUS" in result.stdout
+    assert "REMOTE" in result.stdout
+    assert "library" in result.stdout
+    assert "project" in result.stdout
+    assert str(library) in result.stdout
+    assert str(project) in result.stdout
+    assert worktree.name in result.stdout
+    assert "feature" in result.stdout
+    assert "● dirty" in result.stdout
+
+
+def test_clean_treats_squash_merged_worktree_as_removable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "feature")
+    bare = container / BARE_DIR
+
+    git(["merge", "--squash", "feature"], cwd=source)
+    git(["commit", "-m", "squash feature"], cwd=source)
+
+    dry_run = run_cli(["clean"], home, cwd=tmp_path)
+
+    assert dry_run.returncode == 0, dry_run.stderr
+    assert worktree.name in dry_run.stdout
+    assert "remove" in dry_run.stdout
+    assert "Dry run. Re-run with --yes to remove 1 worktree(s)." in dry_run.stdout
+
+    apply_run = run_cli(["clean", "--yes"], home, cwd=tmp_path)
+
+    assert apply_run.returncode == 0, apply_run.stderr
+    assert not worktree.exists()
+    assert git_fails(["show-ref", "--verify", "--quiet", "refs/heads/feature"], cwd=bare)
+
+
+def test_clean_keeps_grakeep_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "feature")
+    (worktree / ".grakeep").write_text("")
+
+    assert git_output(["status", "--porcelain", "--", ".grakeep"], cwd=worktree) == ""
+
+    git(["merge", "--squash", "feature"], cwd=source)
+    git(["commit", "-m", "squash feature"], cwd=source)
+
+    result = run_cli(["clean"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert worktree.name in result.stdout
+    assert ".grakeep marker" in result.stdout
+    assert "Nothing to clean." in result.stdout
+    assert "Dry run. Re-run" not in result.stdout
+
+
+def test_cd_with_name_prints_worktree_path(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+
+    result = run_cli(["cd", worktree.name], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{worktree}\n"
+
+
+def test_cd_with_unknown_name_fails(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    clone_repo(home, source)
+
+    result = run_cli(["cd", "zzzz"], home, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "no worktree named 'zzzz'" in result.stderr
+
+
+def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
+
+    bin_dir, fzf_input, fzf_args = write_fzf_mock(tmp_path)
 
     result = run_cli(
         ["cd"],
@@ -389,71 +574,12 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{home / 'git' / 'project' / 'wt' / 'review'}\n"
+    assert result.stdout == f"{worktree}\n"
     args = fzf_args.read_text().splitlines()
     assert "--tiebreak=begin,index" in args
-    assert "--no-sort" not in args
-    assert "--exact" not in args
-    assert "--nth=2" not in args
-    assert fzf_input.read_text().splitlines() == [
-        f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
-        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
-    ]
-
-
-def test_code_opens_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
-    assert review_result.returncode == 0, review_result.stderr
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fzf = bin_dir / "fzf"
-    code = bin_dir / "code"
-    fzf_input = tmp_path / "fzf-input"
-    fzf_args = tmp_path / "fzf-args"
-    code_args = tmp_path / "code-args"
-    fzf.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
-        "cat > \"$FZF_INPUT\"\n"
-        "sed -n '2p' \"$FZF_INPUT\"\n"
-    )
-    fzf.chmod(0o755)
-    code.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CODE_ARGS\"\n")
-    code.chmod(0o755)
-
-    result = run_cli(
-        ["code"],
-        home,
-        cwd=tmp_path,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "FZF_ARGS": str(fzf_args),
-            "FZF_INPUT": str(fzf_input),
-            "CODE_ARGS": str(code_args),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{code} {home / 'git' / 'project' / 'wt' / 'review'}\n"
-    args = fzf_args.read_text().splitlines()
-    assert "--prompt=gra code> " in args
     assert "--with-nth=2" in args
-    assert code_args.read_text() == f"{home / 'git' / 'project' / 'wt' / 'review'}\n"
     assert fzf_input.read_text().splitlines() == [
-        f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
-        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
+        f"{worktree}\tproject  {worktree.name}  main",
     ]
 
 
@@ -461,54 +587,31 @@ def test_code_worktrees_json_prints_picker_rows(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
-    assert review_result.returncode == 0, review_result.stderr
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
 
     result = run_cli(["code", "--worktrees-json"], home, cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [
-        [str(home / "git" / "project" / "main"), ["project", "main", "main"]],
-        [
-            str(home / "git" / "project" / "wt" / "review"),
-            ["project", "wt/review", "feature"],
-        ],
+        [str(worktree), ["project", worktree.name, "main"]],
     ]
 
 
 def test_code_opens_selected_remote_worktree_path_from_fzf(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir, fzf_input, fzf_args = write_fzf_mock(tmp_path, select_line=2)
     ssh = bin_dir / "ssh"
-    fzf = bin_dir / "fzf"
     code = bin_dir / "code"
     ssh_args = tmp_path / "ssh-args"
-    fzf_input = tmp_path / "fzf-input"
-    fzf_args = tmp_path / "fzf-args"
     code_args = tmp_path / "code-args"
     ssh.write_text(
         "#!/bin/sh\n"
         "printf '%s\n' \"$@\" > \"$SSH_ARGS\"\n"
-        "printf '%s\n' '[[\"/home/remote/git/project/main\",[\"project\",\"main\",\"main\"]],[\"/home/remote/git/project/wt/review\",[\"project\",\"wt/review\",\"feature\"]]]'\n"
+        "printf '%s\n' '[[\"/home/remote/gra/project/wolf\",[\"project\",\"wolf\",\"main\"]],[\"/home/remote/gra/project/lynx\",[\"project\",\"lynx\",\"feature\"]]]'\n"
     )
     ssh.chmod(0o755)
-    fzf.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
-        "cat > \"$FZF_INPUT\"\n"
-        "sed -n '2p' \"$FZF_INPUT\"\n"
-    )
-    fzf.chmod(0o755)
     code.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CODE_ARGS\"\n")
     code.chmod(0o755)
 
@@ -528,55 +631,35 @@ def test_code_opens_selected_remote_worktree_path_from_fzf(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
         f"{code} --remote ssh-remote+martinleitnerankerl@10.102.7.17 "
-        "/home/remote/git/project/wt/review\n"
+        "/home/remote/gra/project/lynx\n"
     )
     assert ssh_args.read_text().splitlines() == [
         "-T",
         "martinleitnerankerl@10.102.7.17",
         'PATH="$HOME/.local/bin:$PATH"; export PATH; exec gra code --worktrees-json',
     ]
-    args = fzf_args.read_text().splitlines()
-    assert "--prompt=gra code> " in args
     assert code_args.read_text().splitlines() == [
         "--remote",
         "ssh-remote+martinleitnerankerl@10.102.7.17",
-        "/home/remote/git/project/wt/review",
+        "/home/remote/gra/project/lynx",
     ]
     assert fzf_input.read_text().splitlines() == [
-        "/home/remote/git/project/main\tproject  main       main",
-        "/home/remote/git/project/wt/review\tproject  wt/review  feature",
+        "/home/remote/gra/project/wolf\tproject  wolf  main",
+        "/home/remote/gra/project/lynx\tproject  lynx  feature",
     ]
 
 
-def test_tmux_creates_window_for_selected_worktree(tmp_path: Path) -> None:
+def test_tmux_with_name_creates_window_for_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
-    git(["switch", "-c", "feature"], cwd=source)
-    (source / "README.md").write_text("# feature\n")
-    git(["commit", "-am", "feature"], cwd=source)
-    git(["switch", "main"], cwd=source)
-
-    clone_result = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert clone_result.returncode == 0, clone_result.stderr
-    checkout = home / "git" / "project" / "main"
-    review_result = run_cli(["wt", "--name", "review", "feature"], home, cwd=checkout)
-    assert review_result.returncode == 0, review_result.stderr
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fzf = bin_dir / "fzf"
     tmux = bin_dir / "tmux"
-    fzf_input = tmp_path / "fzf-input"
-    fzf_args = tmp_path / "fzf-args"
     tmux_args = tmp_path / "tmux-args"
-    fzf.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
-        "cat > \"$FZF_INPUT\"\n"
-        "sed -n '2p' \"$FZF_INPUT\"\n"
-    )
-    fzf.chmod(0o755)
     tmux.write_text(
         "#!/bin/sh\n"
         "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
@@ -586,26 +669,19 @@ def test_tmux_creates_window_for_selected_worktree(tmp_path: Path) -> None:
     tmux.chmod(0o755)
 
     result = run_cli(
-        ["tmux"],
+        ["tmux", worktree.name],
         home,
         cwd=tmp_path,
         env_extra={
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "FZF_ARGS": str(fzf_args),
-            "FZF_INPUT": str(fzf_input),
             "TMUX_ARGS": str(tmux_args),
         },
     )
 
     assert result.returncode == 0, result.stderr
-    assert "created tmux session 'main' with window 'project/wt/review'" in result.stdout
-    args = fzf_args.read_text().splitlines()
-    assert "--prompt=gra tmux> " in args
-    assert "--with-nth=2" in args
-    assert fzf_input.read_text().splitlines() == [
-        f"{home / 'git' / 'project' / 'main'}\tproject  main       main",
-        f"{home / 'git' / 'project' / 'wt' / 'review'}\tproject  wt/review  feature",
-    ]
+    assert (
+        f"created tmux session 'main' with window '{worktree.name}'" in result.stdout
+    )
     assert tmux_args.read_text().splitlines() == [
         "has-session",
         "-t",
@@ -616,9 +692,9 @@ def test_tmux_creates_window_for_selected_worktree(tmp_path: Path) -> None:
         "-s",
         "main",
         "-n",
-        "project/wt/review",
+        worktree.name,
         "-c",
-        str(home / "git" / "project" / "wt" / "review"),
+        str(worktree),
         "---",
     ]
 
@@ -633,6 +709,7 @@ def test_shell_bash_prints_shell_helper(tmp_path: Path) -> None:
     assert "gra() {" in result.stdout
     assert 'target="$(command gra cd "$@")" || return' in result.stdout
     assert "command gra \"$@\"" in result.stdout
+    assert "done)" in result.stdout
 
     syntax = subprocess.run(
         ["bash", "-n"],
@@ -643,26 +720,37 @@ def test_shell_bash_prints_shell_helper(tmp_path: Path) -> None:
     assert syntax.returncode == 0, syntax.stderr
 
 
-def test_clone_reports_collision_with_name_suggestion(tmp_path: Path) -> None:
+def test_shell_bash_done_leaves_removed_directory(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    source = make_repo(tmp_path, "AFLplusplus")
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = start_worktree(home, container, "main")
 
-    first = run_cli(["clone", str(source), "--no-submodules"], home)
-    assert first.returncode == 0, first.stderr
+    init = run_cli(["shell", "bash"], home)
+    assert init.returncode == 0, init.stderr
 
-    result = run_cli(
-        ["clone", "git@github.com:martinus/AFLplusplus.git", "--no-submodules"],
-        home,
+    env = os.environ.copy()
+    env.pop("TMUX", None)
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": str(home),
+        }
+    )
+    script = (
+        f"gra() {{ :; }}\n{init.stdout}\n"
+        f'command() {{ shift; "{sys.executable}" "{GRA}" "$@"; }}\n'
+        f'cd "{worktree}"\ngra done >/dev/null 2>&1\npwd\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, env=env
     )
 
-    assert result.returncode == 1
-    assert "local repository name 'AFLplusplus' already exists" in result.stderr
-    assert f"origin: {source}" in result.stderr
-    assert (
-        "gra clone git@github.com:martinus/AFLplusplus.git --name AFLplusplus-martinus"
-        in result.stderr
-    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(container)
+    assert not worktree.exists()
 
 
 def test_unknown_command_is_rejected(tmp_path: Path) -> None:
