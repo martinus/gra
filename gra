@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import Callable, NamedTuple, NoReturn, TypeVar
 from urllib.parse import urlparse
 
 
@@ -138,14 +138,29 @@ def git_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None
         return None
 
 
+T = TypeVar("T")
+U = TypeVar("U")
+
+
+def parallel_map(fn: Callable[[T], U], items: list[T]) -> list[U]:
+    """Map fn over items with a bounded thread pool, preserving order."""
+    if len(items) <= 1:
+        return [fn(item) for item in items]
+    with ThreadPoolExecutor(max_workers=min(8, len(items))) as executor:
+        return list(executor.map(fn, items))
+
+
 # ---------------------------------------------------------------------------
 # Remote URL and local name helpers
 # ---------------------------------------------------------------------------
 
 
+SCP_LIKE_URL = re.compile(r"[^@/]+@[^:]+:(.+)$")
+
+
 def url_parts(url: str) -> list[str]:
     """Return path-like URL parts for HTTPS, SSH scp-like, and local paths."""
-    if match := re.match(r"[^@/]+@[^:]+:(.+)$", url):
+    if match := SCP_LIKE_URL.match(url):
         path = match.group(1)
     else:
         parsed = urlparse(url)
@@ -154,7 +169,7 @@ def url_parts(url: str) -> list[str]:
 
 
 def is_remote_url(url: str) -> bool:
-    return bool(re.match(r"[^@/]+@[^:]+:", url)) or bool(urlparse(url).scheme)
+    return bool(SCP_LIKE_URL.match(url)) or bool(urlparse(url).scheme)
 
 
 def local_name_from_url(url: str) -> str:
@@ -284,11 +299,15 @@ def remote_branch_exists(bare: Path, branch: str) -> bool:
     )
 
 
-def remote_default_branch(bare: Path) -> str | None:
-    origin_head = git_output(
-        ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
-        cwd=bare,
+def origin_head_ref(path: Path) -> str | None:
+    """Resolve origin/HEAD to its branch name, for example 'origin/main'."""
+    return git_output(
+        ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], cwd=path
     )
+
+
+def remote_default_branch(bare: Path) -> str | None:
+    origin_head = origin_head_ref(bare)
     if origin_head and git_output(
         ["rev-parse", "--verify", "--quiet", f"{origin_head}^{{commit}}"], cwd=bare
     ):
@@ -305,18 +324,11 @@ def worktree_paths(bare: Path) -> list[Path]:
     """Return registered worktree paths, excluding the bare repository itself."""
     output = git_output(["worktree", "list", "--porcelain"], cwd=bare) or ""
     paths: list[Path] = []
-    current: Path | None = None
-    current_is_bare = False
-    for line in [*output.splitlines(), ""]:
+    for line in output.splitlines():
         if line.startswith("worktree "):
-            current = Path(line.removeprefix("worktree "))
-            current_is_bare = False
+            paths.append(Path(line.removeprefix("worktree ")))
         elif line == "bare":
-            current_is_bare = True
-        elif not line:
-            if current and not current_is_bare:
-                paths.append(current)
-            current = None
+            paths.pop()
     return paths
 
 
@@ -332,11 +344,7 @@ def worktree_ref(path: Path) -> str:
     if exact:
         ref = exact.removeprefix("heads/").removeprefix("remotes/")
         if ref == "origin/HEAD":
-            resolved = git_output(
-                ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], cwd=path
-            )
-            if resolved:
-                ref = resolved
+            ref = origin_head_ref(path) or ref
         return ref
 
     short_head = git_output(["rev-parse", "--short", "HEAD"], cwd=path)
@@ -363,12 +371,13 @@ def fmt_worktree_status(path: Path, status_output: str | None = None) -> str:
 def taken_worktree_names(root: Path) -> set[str]:
     """Collect worktree names in use anywhere under the gra root."""
     names: set[str] = set()
-    for container in containers(root):
+    repositories = containers(root)
+    for container in repositories:
         for child in container.iterdir():
             if child.name != BARE_DIR and child.is_dir():
                 names.add(child.name)
-        for path in worktree_paths(bare_dir(container)):
-            names.add(path.name)
+    for paths in parallel_map(lambda c: worktree_paths(bare_dir(c)), repositories):
+        names.update(path.name for path in paths)
     return names
 
 
@@ -513,30 +522,41 @@ def print_repositories(root: Path) -> None:
 
     active_worktree = git_toplevel(Path.cwd())
     current = active_worktree.resolve() if active_worktree else None
+    per_repo = parallel_map(
+        lambda container: (
+            origin_url(bare_dir(container)) or "-",
+            worktree_paths(bare_dir(container)),
+        ),
+        repositories,
+    )
+    all_paths = [path for _remote, paths in per_repo for path in paths]
+    path_info = dict(
+        zip(
+            all_paths,
+            parallel_map(lambda p: (worktree_ref(p), fmt_worktree_status(p)), all_paths),
+        )
+    )
+
     rows = []
-    worktree_count = 0
-    for container in repositories:
-        bare = bare_dir(container)
-        remote = origin_url(bare) or "-"
-        paths = worktree_paths(bare)
-        worktree_count += len(paths)
+    for container, (remote, paths) in zip(repositories, per_repo):
         if not paths:
             rows.append(["", container.name, "-", "-", "-", remote])
             continue
         for index, path in enumerate(paths):
             marker = "▶" if current and path.resolve() == current else ""
+            ref, status = path_info[path]
             rows.append(
                 [
                     marker,
                     container.name if index == 0 else "",
                     path.name,
-                    worktree_ref(path),
-                    fmt_worktree_status(path),
+                    ref,
+                    status,
                     remote if index == 0 else "",
                 ]
             )
 
-    print(f"Repositories: {len(repositories)}  Worktrees: {worktree_count}")
+    print(f"Repositories: {len(repositories)}  Worktrees: {len(all_paths)}")
     print()
     print_table(["", "REPOSITORY", "WORKTREE", "BRANCH", "STATUS", "REMOTE"], rows)
 
@@ -546,36 +566,46 @@ def print_repositories(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def local_worktree_picker_rows(root: Path) -> list[tuple[str, list[str]]]:
+class WorktreeRow(NamedTuple):
+    """One worktree in pickers and machine-readable listings."""
+
+    path: str
+    repo: str
+    word: str
+    ref: str
+
+    def values(self) -> list[str]:
+        return [self.repo, self.word, self.ref]
+
+
+def local_worktree_picker_rows(root: Path) -> list[WorktreeRow]:
     """Return local worktree picker rows under the gra root."""
-    return [
-        (str(path), [container.name, path.name, worktree_ref(path)])
+    entries = [
+        (container.name, path)
         for container in containers(root)
         for path in worktree_paths(bare_dir(container))
         if path.is_dir()
+    ]
+    refs = parallel_map(lambda entry: worktree_ref(entry[1]), entries)
+    return [
+        WorktreeRow(str(path), repo, path.name, ref)
+        for (repo, path), ref in zip(entries, refs)
     ]
 
 
 PICKER_HEADERS = ["REPOSITORY", "WORKTREE", "BRANCH"]
 
 
-def worktree_picker_choices(rows: list[tuple[str, list[str]]]) -> tuple[list[str], str]:
+def worktree_picker_choices(rows: list[WorktreeRow]) -> tuple[list[str], str]:
     """Return fzf input lines and an aligned header."""
-    widths = column_widths(PICKER_HEADERS, [values for _, values in rows], include_headers=False)
-    choices = [f"{target}\t{padded_line(values, widths)}" for target, values in rows]
+    widths = column_widths(PICKER_HEADERS, [row.values() for row in rows], include_headers=False)
+    choices = [f"{row.path}\t{padded_line(row.values(), widths)}" for row in rows]
     return choices, padded_line(PICKER_HEADERS, widths)
 
 
-def select_worktree_from_rows(
-    rows: list[tuple[str, list[str]]], command: str, source: str
-) -> str:
-    """Select a worktree with fzf and return the selected absolute path."""
-    return select_worktree_row_from_rows(rows, command, source)[0]
-
-
 def select_worktree_row_from_rows(
-    rows: list[tuple[str, list[str]]], command: str, source: str
-) -> tuple[str, list[str]]:
+    rows: list[WorktreeRow], command: str, source: str
+) -> WorktreeRow:
     """Select a worktree with fzf and return its picker row."""
     choices, header = worktree_picker_choices(rows)
     if not choices:
@@ -608,21 +638,27 @@ def select_worktree_row_from_rows(
     if not selected:
         sys.exit(1)
     target = selected.split("\t", 1)[0]
-    for row_target, values in rows:
-        if row_target == target:
-            return row_target, values
+    for row in rows:
+        if row.path == target:
+            return row
     fail(f"invalid worktree selection '{target}'")
 
 
-def resolve_worktree_name(root: Path, name: str) -> tuple[str, list[str]]:
-    """Resolve a worktree name like 'wolf' to its picker row."""
-    for target, values in local_worktree_picker_rows(root):
-        if values[1] == name:
-            return target, values
+def resolve_worktree_name(root: Path, name: str) -> WorktreeRow:
+    """Resolve a worktree name like 'wolf' to its row.
+
+    Names are unique across all repositories and worktrees always live directly
+    under their container, so a filesystem probe finds the worktree without
+    querying Git in every repository.
+    """
+    for container in containers(root):
+        path = container / name
+        if name != BARE_DIR and path.is_dir():
+            return WorktreeRow(str(path), container.name, name, worktree_ref(path))
     fail(f"no worktree named '{name}' under '{root}'")
 
 
-def pick_worktree_row(root: Path, command: str, name: str | None) -> tuple[str, list[str]]:
+def pick_worktree_row(root: Path, command: str, name: str | None = None) -> WorktreeRow:
     """Resolve a worktree by name, or select one with fzf."""
     if name:
         return resolve_worktree_name(root, name)
@@ -633,12 +669,13 @@ def pick_worktree_row(root: Path, command: str, name: str | None) -> tuple[str, 
 
 def print_cd_target(root: Path, name: str | None) -> None:
     """Print the path of a worktree chosen by name or with fzf."""
-    print(pick_worktree_row(root, "cd", name)[0])
+    print(pick_worktree_row(root, "cd", name).path)
 
 
 def print_worktree_picker_rows(root: Path) -> None:
     """Print local worktree picker rows as JSON for remote gra callers."""
-    print(json.dumps(local_worktree_picker_rows(root)))
+    rows = local_worktree_picker_rows(root)
+    print(json.dumps([[row.path, row.values()] for row in rows]))
 
 
 REMOTE_GRA_WORKTREES_COMMAND = (
@@ -646,7 +683,7 @@ REMOTE_GRA_WORKTREES_COMMAND = (
 )
 
 
-def remote_worktree_picker_rows(ssh_target: str) -> list[tuple[str, list[str]]]:
+def remote_worktree_picker_rows(ssh_target: str) -> list[WorktreeRow]:
     """Return worktree picker rows from gra installed on a remote SSH target."""
     if not ssh_target or ssh_target.startswith("-"):
         fail(f"invalid SSH target '{ssh_target}'")
@@ -665,7 +702,7 @@ def remote_worktree_picker_rows(ssh_target: str) -> list[tuple[str, list[str]]]:
         fail(f"ssh to '{ssh_target}' failed" + (f": {detail}" if detail else ""))
 
     try:
-        return [(path, values) for path, values in json.loads(result.stdout)]
+        return [WorktreeRow(path, *values) for path, values in json.loads(result.stdout)]
     except json.JSONDecodeError as error:
         fail(f"could not parse worktrees from '{ssh_target}': {error}")
     except (TypeError, ValueError):
@@ -679,12 +716,12 @@ def open_code_target(root: Path, ssh_target: str | None) -> None:
         fail("code is required for 'gra code'")
 
     if ssh_target:
-        target = select_worktree_from_rows(
+        target = select_worktree_row_from_rows(
             remote_worktree_picker_rows(ssh_target), "code", f"on '{ssh_target}'"
-        )
+        ).path
         command = [code, "--remote", f"ssh-remote+{ssh_target}", target]
     else:
-        target = pick_worktree_row(root, "code", None)[0]
+        target = pick_worktree_row(root, "code").path
         command = [code, target]
     log(shlex.join(command))
     result = subprocess.run(command, check=False)
@@ -695,6 +732,9 @@ def open_code_target(root: Path, ssh_target: str | None) -> None:
 # ---------------------------------------------------------------------------
 # tmux helpers and command
 # ---------------------------------------------------------------------------
+
+
+TMUX_WINDOW_LIST_FORMAT = "#{window_name}\t#{window_id}"
 
 
 def tmux_window_name(container_name: str, word: str) -> str:
@@ -717,7 +757,7 @@ def tmux_session_exists(session: str) -> bool:
 
 def tmux_window_targets(session: str) -> dict[str, str]:
     result = subprocess.run(
-        ["tmux", "list-windows", "-t", session, "-F", "#{window_name}\t#{window_id}"],
+        ["tmux", "list-windows", "-t", session, "-F", TMUX_WINDOW_LIST_FORMAT],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         encoding="utf-8",
@@ -737,8 +777,16 @@ def inside_tmux() -> bool:
     return bool(os.environ.get("TMUX")) and bool(shutil.which("tmux"))
 
 
-def open_tmux_window_for_worktree(session: str, name: str, target: str) -> None:
-    """Open or select a tmux window named after the worktree."""
+def open_tmux_window_for_worktree(session: str | None, name: str, target: str | Path) -> None:
+    """Open or select a tmux window named after the worktree.
+
+    With session=None, the window opens in the current tmux session.
+    """
+    if session is None:
+        run_tmux(["new-window", "-n", name, "-c", target])
+        log(f"created tmux window '{name}'", GREEN)
+        return
+
     if tmux_session_exists(session):
         if existing_target := tmux_window_targets(session).get(name):
             run_tmux(["select-window", "-t", existing_target])
@@ -759,8 +807,8 @@ def open_tmux_window(root: Path, session: str, name: str | None) -> None:
     if not shutil.which("tmux"):
         fail("tmux is required for 'gra tmux'")
 
-    target, values = pick_worktree_row(root, "tmux", name)
-    open_tmux_window_for_worktree(session, tmux_window_name(values[0], values[1]), target)
+    row = pick_worktree_row(root, "tmux", name)
+    open_tmux_window_for_worktree(session, tmux_window_name(row.repo, row.word), row.path)
 
 
 def kill_tmux_windows(name: str) -> None:
@@ -768,7 +816,7 @@ def kill_tmux_windows(name: str) -> None:
     if not shutil.which("tmux"):
         return
     result = subprocess.run(
-        ["tmux", "list-windows", "-a", "-F", "#{window_id}\t#{window_name}"],
+        ["tmux", "list-windows", "-a", "-F", TMUX_WINDOW_LIST_FORMAT],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         encoding="utf-8",
@@ -777,7 +825,7 @@ def kill_tmux_windows(name: str) -> None:
     if result.returncode != 0:
         return
     for line in result.stdout.splitlines():
-        window_id, _, window_name = line.partition("\t")
+        window_name, _, window_id = line.partition("\t")
         if window_name == name:
             log(f"killing tmux window '{name}'")
             subprocess.run(["tmux", "kill-window", "-t", window_id], check=False)
@@ -894,9 +942,7 @@ def start(branch_input: str | None, root: Path, no_tmux: bool) -> None:
     log(f"created '{target}'", GREEN)
 
     if not no_tmux and inside_tmux():
-        window = tmux_window_name(container.name, word)
-        run_tmux(["new-window", "-n", window, "-c", target])
-        log(f"created tmux window '{window}'", GREEN)
+        open_tmux_window_for_worktree(None, tmux_window_name(container.name, word), target)
 
 
 # ---------------------------------------------------------------------------
@@ -955,15 +1001,29 @@ def delete_merged_branch(bare: Path, branch: str) -> None:
     Uses -D because the merged/patch-equivalent verification already happened;
     plain -d cannot recognize squash or cherry-pick merges.
     """
-    deleted = subprocess.run(
-        ["git", "branch", "-D", branch],
-        cwd=bare,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    if deleted.returncode == 0:
+    if git_output(["branch", "-D", branch], cwd=bare) is not None:
         log(f"deleted branch '{branch}'", GREEN)
+
+
+def remove_worktree(container: Path, worktree: Path, *, force: bool, branch_merged: bool) -> None:
+    """Remove a worktree, delete its merged branch, and kill its tmux window."""
+    bare = bare_dir(container)
+    branch = git_output(["branch", "--show-current"], cwd=worktree)
+
+    log(f"Removing worktree '{worktree}'")
+    remove_args: list[str | Path] = ["worktree", "remove"]
+    if force:
+        remove_args.append("--force")
+    remove_args.append(worktree)
+    run_git(remove_args, cwd=bare)
+
+    if branch and branch_merged:
+        delete_merged_branch(bare, branch)
+    elif branch:
+        log(f"kept branch '{branch}'")
+
+    log(f"removed '{worktree.name}'", GREEN)
+    kill_tmux_windows(tmux_window_name(container.name, worktree.name))
 
 
 # ---------------------------------------------------------------------------
@@ -975,13 +1035,10 @@ def done(force: bool) -> None:
     """Remove the current worktree once its work is safely in origin."""
     container, worktree = current_gra_worktree("done")
     bare = bare_dir(container)
-    word = worktree.name
 
-    status_output = worktree_status_output(worktree)
-    if status_output and not force:
+    if worktree_status_output(worktree) and not force:
         fail(f"'{worktree}' has uncommitted changes; commit them or use --force")
 
-    branch = git_output(["branch", "--show-current"], cwd=worktree)
     default_ref = remote_default_branch(bare)
     merged = bool(default_ref) and (
         is_merged_into(worktree, default_ref)
@@ -993,20 +1050,7 @@ def done(force: bool) -> None:
             "push and merge them first, or use --force"
         )
 
-    log(f"Removing worktree '{worktree}'")
-    remove_args: list[str | Path] = ["worktree", "remove"]
-    if force:
-        remove_args.append("--force")
-    remove_args.append(worktree)
-    run_git(remove_args, cwd=bare)
-
-    if branch and merged:
-        delete_merged_branch(bare, branch)
-    elif branch:
-        log(f"kept branch '{branch}'")
-
-    log(f"removed '{word}'", GREEN)
-    kill_tmux_windows(tmux_window_name(container.name, word))
+    remove_worktree(container, worktree, force=force, branch_merged=merged)
 
 
 # ---------------------------------------------------------------------------
@@ -1025,10 +1069,7 @@ def fetch_repository(bare: Path) -> None:
 
 
 def fetch_repositories(bares: list[Path]) -> None:
-    if not bares:
-        return
-    with ThreadPoolExecutor(max_workers=min(8, len(bares))) as executor:
-        list(executor.map(fetch_repository, bares))
+    parallel_map(fetch_repository, bares)
 
 
 def classify_worktree(
@@ -1054,13 +1095,18 @@ def classify_worktree(
     return ("keep", f"has commits not in {default_ref}")
 
 
-def clean_worktree_entry(
-    container: Path, path: Path, default_ref: str | None
-) -> tuple[Path, Path, str, str, str, str]:
+class CleanEntry(NamedTuple):
+    path: Path
+    ref: str
+    status: str
+    verdict: str
+    reason: str
+
+
+def clean_worktree_entry(path: Path, default_ref: str | None) -> CleanEntry:
     status_output = worktree_status_output(path) if path.exists() else ""
     verdict, reason = classify_worktree(path, default_ref, status_output)
-    return (
-        container,
+    return CleanEntry(
         path,
         worktree_ref(path),
         fmt_worktree_status(path, status_output),
@@ -1069,43 +1115,26 @@ def clean_worktree_entry(
     )
 
 
-def clean_repository_entries(container: Path) -> list[tuple[Path, Path, str, str, str, str]]:
-    """Classify worktrees in one repository.
-
-    Returns rows of (container, path, ref_label, status, verdict, reason).
-    """
+def clean_repository_entries(container: Path) -> list[CleanEntry]:
+    """Classify worktrees in one repository."""
     bare = bare_dir(container)
     default_ref = remote_default_branch(bare)
-    paths = worktree_paths(bare)
-    if len(paths) <= 1:
-        return [clean_worktree_entry(container, path, default_ref) for path in paths]
-
-    def entry_for_path(path: Path) -> tuple[Path, Path, str, str, str, str]:
-        return clean_worktree_entry(container, path, default_ref)
-
-    with ThreadPoolExecutor(max_workers=min(8, len(paths))) as executor:
-        return list(executor.map(entry_for_path, paths))
+    return parallel_map(
+        lambda path: clean_worktree_entry(path, default_ref), worktree_paths(bare)
+    )
 
 
-def apply_clean(container: Path, entries: list[tuple[Path, Path, str, str, str, str]]) -> None:
+def apply_clean(container: Path, entries: list[CleanEntry]) -> None:
     """Remove removable worktrees and prune missing entries for one repository."""
-    bare = bare_dir(container)
     has_missing = False
-    for _container, path, _ref, _status, verdict, _reason in entries:
-        if verdict == "prune":
+    for entry in entries:
+        if entry.verdict == "prune":
             has_missing = True
-            continue
-        if verdict != "remove":
-            continue
-        branch = git_output(["branch", "--show-current"], cwd=path)
-        log(f"Removing worktree '{path}'")
-        run_git(["worktree", "remove", path], cwd=bare)
-        if branch and local_branch_exists(bare, branch):
-            delete_merged_branch(bare, branch)
-        kill_tmux_windows(tmux_window_name(container.name, path.name))
+        elif entry.verdict == "remove":
+            remove_worktree(container, entry.path, force=False, branch_merged=True)
     if has_missing:
         log(f"Pruning missing worktree entries in '{container.name}'")
-        run_git(["worktree", "prune"], cwd=bare)
+        run_git(["worktree", "prune"], cwd=bare_dir(container))
 
 
 def clean(root: Path, yes: bool, fetch: bool) -> None:
@@ -1125,23 +1154,25 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
     ]
 
     rows = []
-    for _container, entries in repo_entries:
-        for index, (container, path, ref_label, status, verdict, reason) in enumerate(entries):
+    for container, entries in repo_entries:
+        for index, entry in enumerate(entries):
             rows.append(
                 [
                     container.name if index == 0 else "",
-                    path.name,
-                    ref_label,
-                    status,
-                    verdict,
-                    reason,
+                    entry.path.name,
+                    entry.ref,
+                    entry.status,
+                    entry.verdict,
+                    entry.reason,
                 ]
             )
 
     total_removable = sum(
-        1 for _c, entries in repo_entries for e in entries if e[4] == "remove"
+        1 for _c, entries in repo_entries for e in entries if e.verdict == "remove"
     )
-    total_missing = sum(1 for _c, entries in repo_entries for e in entries if e[4] == "prune")
+    total_missing = sum(
+        1 for _c, entries in repo_entries for e in entries if e.verdict == "prune"
+    )
 
     print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
     print()
@@ -1163,7 +1194,7 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
         return
 
     for container, entries in repo_entries:
-        if any(e[4] in {"remove", "prune"} for e in entries):
+        if any(e.verdict in {"remove", "prune"} for e in entries):
             apply_clean(container, entries)
 
     print()

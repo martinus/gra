@@ -12,14 +12,7 @@ GRA = REPO_ROOT / "gra"
 BARE_DIR = ".bare"
 
 
-def run_cli(
-    args: list[str],
-    home: Path,
-    *,
-    cwd: Path | None = None,
-    input_text: str | None = None,
-    env_extra: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
+def cli_env(home: Path) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("TMUX", None)
     env.update(
@@ -29,6 +22,18 @@ def run_cli(
             "HOME": str(home),
         }
     )
+    return env
+
+
+def run_cli(
+    args: list[str],
+    home: Path,
+    *,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    env_extra: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = cli_env(home)
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
@@ -115,6 +120,20 @@ def write_fzf_mock(tmp_path: Path, *, select_line: int = 1) -> tuple[Path, Path,
     )
     fzf.chmod(0o755)
     return bin_dir, fzf_input, fzf_args
+
+
+def write_tmux_mock(tmp_path: Path, extra_script: str = "") -> tuple[Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    tmux = bin_dir / "tmux"
+    tmux_args = tmp_path / "tmux-args"
+    tmux.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
+        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n" + extra_script
+    )
+    tmux.chmod(0o755)
+    return bin_dir, tmux_args
 
 
 def test_clone_creates_bare_repository(tmp_path: Path) -> None:
@@ -282,16 +301,7 @@ def test_start_opens_tmux_window_when_inside_tmux(tmp_path: Path) -> None:
     source = make_repo(tmp_path, "project")
     container = clone_repo(home, source)
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    tmux = bin_dir / "tmux"
-    tmux_args = tmp_path / "tmux-args"
-    tmux.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
-        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n"
-    )
-    tmux.chmod(0o755)
+    bin_dir, tmux_args = write_tmux_mock(tmp_path)
 
     result = run_cli(
         ["start", "main"],
@@ -409,17 +419,10 @@ def test_done_kills_matching_tmux_window(tmp_path: Path) -> None:
     container = clone_repo(home, source)
     worktree = start_worktree(home, container, "main")
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    tmux = bin_dir / "tmux"
-    tmux_args = tmp_path / "tmux-args"
-    tmux.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
-        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n"
-        "if [ \"$1\" = list-windows ]; then printf '@7\\t%s\\n' \"$TMUX_WORD\"; fi\n"
+    bin_dir, tmux_args = write_tmux_mock(
+        tmp_path,
+        "if [ \"$1\" = list-windows ]; then printf '%s\\t@7\\n' \"$TMUX_WORD\"; fi\n",
     )
-    tmux.chmod(0o755)
 
     result = run_cli(
         ["done"],
@@ -438,7 +441,7 @@ def test_done_kills_matching_tmux_window(tmp_path: Path) -> None:
         "list-windows",
         "-a",
         "-F",
-        "#{window_id}\t#{window_name}",
+        "#{window_name}\t#{window_id}",
         "---",
         "kill-window",
         "-t",
@@ -656,17 +659,9 @@ def test_tmux_with_name_creates_window_for_worktree(tmp_path: Path) -> None:
     container = clone_repo(home, source)
     worktree = start_worktree(home, container, "main")
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    tmux = bin_dir / "tmux"
-    tmux_args = tmp_path / "tmux-args"
-    tmux.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
-        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n"
-        "if [ \"$1\" = has-session ]; then exit 1; fi\n"
+    bin_dir, tmux_args = write_tmux_mock(
+        tmp_path, "if [ \"$1\" = has-session ]; then exit 1; fi\n"
     )
-    tmux.chmod(0o755)
 
     result = run_cli(
         ["tmux", worktree.name],
@@ -731,15 +726,7 @@ def test_shell_bash_done_leaves_removed_directory(tmp_path: Path) -> None:
     init = run_cli(["shell", "bash"], home)
     assert init.returncode == 0, init.stderr
 
-    env = os.environ.copy()
-    env.pop("TMUX", None)
-    env.update(
-        {
-            "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "HOME": str(home),
-        }
-    )
+    env = cli_env(home)
     script = (
         f"gra() {{ :; }}\n{init.stdout}\n"
         f'command() {{ shift; "{sys.executable}" "{GRA}" "$@"; }}\n'
