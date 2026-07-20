@@ -915,8 +915,33 @@ def init_submodules(worktree: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def start(branch_input: str | None, root: Path, no_tmux: bool) -> None:
-    """Create a new worktree with a fresh random name."""
+def switch_in_place(branch_input: str) -> None:
+    """Switch the current worktree to another branch."""
+    container, worktree = current_gra_worktree("start --switch")
+    bare = bare_dir(container)
+    branch = branch_name_from_input(branch_input)
+
+    if worktree_status_output(worktree):
+        fail(
+            f"'{worktree}' has uncommitted changes; commit or stash them before switching"
+        )
+
+    log(f"Switching '{worktree}' to '{branch}'")
+    if branch_needs_tracking(bare, branch):
+        run_git(["switch", "--track", f"origin/{branch}"], cwd=worktree)
+    else:
+        run_git(["switch", branch], cwd=worktree)
+    log(f"'{worktree.name}' is now on '{branch}'", GREEN)
+
+
+def start(branch_input: str | None, root: Path, no_tmux: bool, switch: bool) -> None:
+    """Create a new worktree with a fresh random name, or switch the current one."""
+    if switch:
+        if not branch_input:
+            fail("gra start --switch requires a branch")
+        switch_in_place(branch_input)
+        return
+
     container = find_container(Path.cwd())
     if not container:
         fail(
@@ -943,30 +968,6 @@ def start(branch_input: str | None, root: Path, no_tmux: bool) -> None:
 
     if not no_tmux and inside_tmux():
         open_tmux_window_for_worktree(None, tmux_window_name(container.name, word), target)
-
-
-# ---------------------------------------------------------------------------
-# switch command
-# ---------------------------------------------------------------------------
-
-
-def switch(branch_input: str) -> None:
-    """Switch the current worktree to another branch."""
-    container, worktree = current_gra_worktree("switch")
-    bare = bare_dir(container)
-    branch = branch_name_from_input(branch_input)
-
-    if worktree_status_output(worktree):
-        fail(
-            f"'{worktree}' has uncommitted changes; commit or stash them before switching"
-        )
-
-    log(f"Switching '{worktree}' to '{branch}'")
-    if branch_needs_tracking(bare, branch):
-        run_git(["switch", "--track", f"origin/{branch}"], cwd=worktree)
-    else:
-        run_git(["switch", branch], cwd=worktree)
-    log(f"'{worktree.name}' is now on '{branch}'", GREEN)
 
 
 # ---------------------------------------------------------------------------
@@ -1247,33 +1248,28 @@ def parse_args() -> argparse.Namespace:
     start_parser = subparsers.add_parser(
         "start",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="create a new worktree with a fresh random name",
+        help="start work on a branch, in a new or the current worktree",
         description=(
             "Create a new worktree named after a random unused word.\n"
             "With BRANCH, check it out (creating and pushing it when missing);\n"
             "without, start detached at origin's default branch.\n"
-            "Inside tmux, a window named after the worktree is opened."
+            "Inside tmux, a window named after the worktree is opened.\n"
+            "With --switch, reuse the current worktree instead: switch it to\n"
+            "BRANCH with the same branch resolution. Refuses when dirty."
         ),
     )
     start_parser.add_argument("branch", nargs="?", help="branch to check out")
     start_parser.add_argument(
+        "--switch",
+        action="store_true",
+        help="switch the current worktree to BRANCH instead of creating one",
+    )
+    start_parser.add_argument(
         "--no-tmux", action="store_true", help="do not open a tmux window"
     )
     start_parser.set_defaults(
-        handler=lambda args: start(args.branch, args.root, args.no_tmux)
+        handler=lambda args: start(args.branch, args.root, args.no_tmux, args.switch)
     )
-
-    switch_parser = subparsers.add_parser(
-        "switch",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="switch the current worktree to another branch",
-        description=(
-            "Switch the current worktree to BRANCH, creating and pushing the\n"
-            "branch when it does not exist. Refuses when the worktree is dirty."
-        ),
-    )
-    switch_parser.add_argument("branch", help="branch to switch to")
-    switch_parser.set_defaults(handler=lambda args: switch(args.branch))
 
     done_parser = subparsers.add_parser(
         "done",

@@ -38,7 +38,7 @@ def test_words_are_short_unique_and_safe() -> None:
     assert len(set(gra.WORDS)) == len(gra.WORDS)
     assert all(len(word) == 4 for word in gra.WORDS)
     assert all(word.isalpha() and word.islower() for word in gra.WORDS)
-    commands = {"clone", "ls", "cd", "code", "shell", "tmux", "start", "done", "clean", "switch"}
+    commands = {"clone", "ls", "cd", "code", "shell", "tmux", "start", "done", "clean"}
     assert not commands & set(gra.WORDS)
     assert not {"main", "bare", "root"} & set(gra.WORDS)
 
