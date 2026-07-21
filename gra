@@ -804,7 +804,9 @@ def new_tmux_window(name: str, target: Path) -> str:
     ).strip()
 
 
-def run_setup_hook(container: Path, worktree: Path, word: str, window_id: str) -> None:
+def run_setup_hook(
+    container: Path, worktree: Path, word: str, branch: str, window_id: str
+) -> None:
     """Run the container's .tmux-setup hook for a new worktree window.
 
     The hook is skipped unless it exists and is executable, so the commented
@@ -813,7 +815,6 @@ def run_setup_hook(container: Path, worktree: Path, word: str, window_id: str) -
     script = container / SETUP_FILE
     if not (script.is_file() and os.access(script, os.X_OK)):
         return
-    branch = git_output(["branch", "--show-current"], cwd=worktree) or ""
     env = {
         **os.environ,
         "GRA_WORKTREE": str(worktree),
@@ -826,12 +827,12 @@ def run_setup_hook(container: Path, worktree: Path, word: str, window_id: str) -
     subprocess.run([str(script)], cwd=worktree, env=env, check=False)
 
 
-def open_work_window(container: Path, worktree: Path, word: str) -> None:
+def open_work_window(container: Path, worktree: Path, word: str, branch: str) -> None:
     """Open a tmux window for a freshly created worktree and run its hook."""
     name = tmux_window_name(container.name, word)
     window_id = new_tmux_window(name, worktree)
     log(f"created tmux window '{name}'", GREEN)
-    run_setup_hook(container, worktree, word, window_id)
+    run_setup_hook(container, worktree, word, branch, window_id)
 
 
 def open_tmux_window(root: Path, session: str, name: str | None) -> None:
@@ -985,6 +986,7 @@ def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
         log(f"Creating worktree '{target}' for branch '{branch}'")
         add_attached_worktree(bare, target, branch)
     else:
+        branch = ""
         ref = remote_default_branch(bare)
         if not ref:
             fail("cannot find origin's default branch; pass a branch to 'gra work'")
@@ -995,7 +997,7 @@ def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
     log(f"created '{target}'", GREEN)
 
     if not no_tmux and inside_tmux():
-        open_work_window(container, target, word)
+        open_work_window(container, target, word, branch)
 
 
 # ---------------------------------------------------------------------------
