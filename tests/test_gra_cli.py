@@ -339,6 +339,23 @@ def write_tmux_window_mock(tmp_path: Path, window_id: str = "@5") -> Path:
     return bin_dir
 
 
+def work_inside_tmux(
+    home: Path, container: Path, tmp_path: Path, hook_out: Path
+) -> subprocess.CompletedProcess[str]:
+    """Run 'gra work main' inside a mocked tmux, exposing HOOK_OUT to the hook."""
+    bin_dir = write_tmux_window_mock(tmp_path)
+    return run_cli(
+        ["work", "main"],
+        home,
+        cwd=container,
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TMUX": "/tmp/tmux-1000/default,1234,0",
+            "HOOK_OUT": str(hook_out),
+        },
+    )
+
+
 def test_clone_writes_commented_setup_sample(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -369,17 +386,7 @@ def test_work_runs_executable_setup_hook(tmp_path: Path) -> None:
     )
     hook.chmod(0o755)
 
-    bin_dir = write_tmux_window_mock(tmp_path)
-    result = run_cli(
-        ["work", "main"],
-        home,
-        cwd=container,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TMUX": "/tmp/tmux-1000/default,1234,0",
-            "HOOK_OUT": str(hook_out),
-        },
-    )
+    result = work_inside_tmux(home, container, tmp_path, hook_out)
 
     assert result.returncode == 0, result.stderr
     worktree = worktree_dirs(container)[0]
@@ -403,17 +410,7 @@ def test_work_skips_non_executable_setup_hook(tmp_path: Path) -> None:
     hook = container / ".tmux-setup"
     hook.write_text('#!/bin/sh\necho ran > "$HOOK_OUT"\n')  # not executable
 
-    bin_dir = write_tmux_window_mock(tmp_path)
-    result = run_cli(
-        ["work", "main"],
-        home,
-        cwd=container,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TMUX": "/tmp/tmux-1000/default,1234,0",
-            "HOOK_OUT": str(hook_out),
-        },
-    )
+    result = work_inside_tmux(home, container, tmp_path, hook_out)
 
     assert result.returncode == 0, result.stderr
     assert not hook_out.exists()
