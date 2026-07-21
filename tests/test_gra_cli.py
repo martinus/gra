@@ -163,7 +163,7 @@ def test_clone_creates_bare_repository(tmp_path: Path) -> None:
     assert ".grakeep" in exclude
 
 
-def test_clone_derives_owner_name_for_remote_urls(tmp_path: Path) -> None:
+def test_clone_uses_repo_name_for_remote_urls(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     owner_dir = tmp_path / "martinus"
@@ -173,7 +173,7 @@ def test_clone_derives_owner_name_for_remote_urls(tmp_path: Path) -> None:
     result = run_cli(["clone", f"file://{source}"], home)
 
     assert result.returncode == 0, result.stderr
-    assert (home / "gra" / "martinus-oans" / BARE_DIR).is_dir()
+    assert (home / "gra" / "oans" / BARE_DIR).is_dir()
 
 
 def test_clone_supports_custom_name(tmp_path: Path) -> None:
