@@ -158,34 +158,32 @@ def parallel_map(fn: Callable[[T], U], items: list[T]) -> list[U]:
 SCP_LIKE_URL = re.compile(r"[^@/]+@[^:]+:(.+)$")
 
 
-def url_parts(url: str) -> list[str]:
-    """Return path-like URL parts for HTTPS, SSH scp-like, and local paths."""
+class RepoUrl(NamedTuple):
+    """A git URL classified once: remote flag, owner segment, repo name."""
+
+    remote: bool
+    owner: str | None
+    repo: str | None
+
+
+def parse_repo_url(url: str) -> RepoUrl:
+    """Classify a git URL (HTTPS, SSH scp-like, or local path) in one pass."""
     if match := SCP_LIKE_URL.match(url):
-        path = match.group(1)
+        remote, path = True, match.group(1)
     else:
         parsed = urlparse(url)
-        path = parsed.path if parsed.scheme else url
-    return [part for part in path.rstrip("/").removesuffix(".git").split("/") if part]
+        remote, path = bool(parsed.scheme), (parsed.path if parsed.scheme else url)
+    parts = [part for part in path.rstrip("/").removesuffix(".git").split("/") if part]
+    owner = parts[-2] if len(parts) >= 2 else None
+    return RepoUrl(remote, owner, parts[-1] if parts else None)
 
 
 def repo_name_from_url(url: str) -> str:
     """Derive the local repository name: the last path component of the URL."""
-    parts = url_parts(url)
-    if not parts:
+    repo = parse_repo_url(url).repo
+    if repo is None:
         raise ValueError(f"cannot derive repository name from '{url}'")
-    return parts[-1]
-
-
-def is_remote_url(url: str) -> bool:
-    return bool(SCP_LIKE_URL.match(url)) or bool(urlparse(url).scheme)
-
-
-def owner_from_url(url: str) -> str | None:
-    """Return the owner path component of a remote URL, or None."""
-    if not is_remote_url(url):
-        return None
-    parts = url_parts(url)
-    return parts[-2] if len(parts) >= 2 else None
+    return repo
 
 
 def suggest_clone_name(url: str, repo_name: str) -> str:
@@ -194,9 +192,9 @@ def suggest_clone_name(url: str, repo_name: str) -> str:
     Remote URLs disambiguate by owner (the common case: two owners with the
     same repository name); anything else falls back to a numeric suffix.
     """
-    owner = owner_from_url(url)
-    if owner and owner != repo_name:
-        return f"{repo_name}-{owner}"
+    parsed = parse_repo_url(url)
+    if parsed.remote and parsed.owner and parsed.owner != repo_name:
+        return f"{repo_name}-{parsed.owner}"
     return f"{repo_name}-2"
 
 
