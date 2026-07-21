@@ -6,7 +6,7 @@ next to them:
 
 ```text
 ~/gra
-└── martinus-oans
+└── oans
   ├── .bare
   ├── hare
   └── rose
@@ -40,9 +40,9 @@ git config --global gra.root ~/develop
 
 2. Create a worktree and symlink the script from it into your path:
   ```sh
-  cd ~/gra/martinus-gra
+  cd ~/gra/gra
   python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" work main --no-tmux
-  ln -s ~/gra/martinus-gra/*/gra ~/.local/bin/
+  ln -s ~/gra/gra/*/gra ~/.local/bin/
   ```
 
 3. Optional but recommended: enable the shell integration in `~/.bashrc` so
@@ -55,7 +55,7 @@ git config --global gra.root ~/develop
 
 ## clone - clone a remote repository
 
-Clones one repository as a bare checkout into `~/gra/<owner>-<repo>/.bare`:
+Clones one repository as a bare checkout into `~/gra/<repo>/.bare`:
 
 ```sh
 gra clone git@github.com:martinus/oans.git
@@ -64,16 +64,17 @@ gra clone git@github.com:martinus/oans.git
 This creates:
 
 ```text
-~/gra/martinus-oans
+~/gra/oans
 └── .bare
 ```
 
 No branch is checked out; use `gra work` to begin working. The local name is
-`<owner>-<repo>` for remote URLs and the repository name for local paths. Use
-`--name` to override it:
+the repository name (`oans` above). If that name is already taken, `gra` stops
+and suggests a distinct one; use `--name` to choose it - for two owners of the
+same repository, disambiguating by owner works well:
 
 ```sh
-gra clone git@github.com:martinus/AFLplusplus.git --name AFLplusplus-martinus
+gra clone git@github.com:andreas/oans.git --name oans-andreas
 ```
 
 The bare checkout is set up to behave like a normal clone:
@@ -97,7 +98,7 @@ gra work feature/search
 ```
 
 ```text
-~/gra/martinus-oans
+~/gra/oans
 ├── .bare
 └── hare        <- checked out feature/search
 ```
@@ -119,7 +120,7 @@ gra work
 If the repository has submodules, they are initialized in the new worktree.
 
 When run inside tmux, `gra work` also opens a tmux window named
-`<repo>/<worktree>`, for example `martinus-oans/hare`, starting in the worktree
+`<repo>/<worktree>`, for example `oans/hare`, starting in the worktree
 directory. Use `--no-tmux` to skip that.
 
 Worktree names are unique across all repositories under the gra root: before
@@ -178,9 +179,9 @@ Example output:
 Root: /home/me/gra
 Repositories: 2  Worktrees: 2
 
-REPOSITORY     WORKTREE  BRANCH          STATUS   REMOTE
-martinus-gra   wolf      main            ✓ clean  git@github.com:martinus/gra
-martinus-oans  hare      feature/search  ● dirty  git@github.com:martinus/oans
+REPOSITORY  WORKTREE  BRANCH          STATUS   REMOTE
+gra         wolf      main            ✓ clean  git@github.com:martinus/gra
+oans        hare      feature/search  ● dirty  git@github.com:martinus/oans
 ```
 
 Because worktree names carry no meaning, the `BRANCH` column is the primary
@@ -202,9 +203,9 @@ Example output:
 Root: /home/me/gra
 Repositories: 2  Worktrees: 2
 
-REPOSITORY     WORKTREE  BRANCH   STATUS   VERDICT  REASON
-martinus-gra   wolf      feature  ● dirty  keep     uncommitted changes
-martinus-oans  hare      old-fix  ✓ clean  remove   merged into origin/main
+REPOSITORY  WORKTREE  BRANCH   STATUS   VERDICT  REASON
+gra         wolf      feature  ● dirty  keep     uncommitted changes
+oans        hare      old-fix  ✓ clean  remove   merged into origin/main
 
 Dry run. Re-run with --yes to remove 1 worktree(s).
 ```
@@ -298,7 +299,7 @@ gra tmux wolf   # open the worktree named wolf
 ```
 
 The window starts in the worktree root and is named `<repo>/<worktree>`, for
-example `martinus-oans/wolf`, so the window list shows at a glance which
+example `oans/wolf`, so the window list shows at a glance which
 repository each workspace belongs to. If a window with the same name already
 exists, `gra tmux` selects it instead of creating a duplicate.
 

@@ -6,8 +6,8 @@ A tiny worktree-first clone helper that puts repositories under a flat ~/gra
 layout. Each repository lives in a bare checkout, and work happens in
 short-named worktrees next to it:
 
-    ~/gra/<owner>-<repo>/.bare
-    ~/gra/<owner>-<repo>/<word>
+    ~/gra/<repo>/.bare
+    ~/gra/<repo>/<word>
 
 Worktree names are short random words, unique across all repositories, and
 unrelated to the branch they have checked out: switch branches freely inside a
@@ -168,18 +168,36 @@ def url_parts(url: str) -> list[str]:
     return [part for part in path.rstrip("/").removesuffix(".git").split("/") if part]
 
 
+def repo_name_from_url(url: str) -> str:
+    """Derive the local repository name: the last path component of the URL."""
+    parts = url_parts(url)
+    if not parts:
+        raise ValueError(f"cannot derive repository name from '{url}'")
+    return parts[-1]
+
+
 def is_remote_url(url: str) -> bool:
     return bool(SCP_LIKE_URL.match(url)) or bool(urlparse(url).scheme)
 
 
-def local_name_from_url(url: str) -> str:
-    """Derive `<owner>-<repo>` for remote URLs, `<repo>` for local paths."""
+def owner_from_url(url: str) -> str | None:
+    """Return the owner path component of a remote URL, or None."""
+    if not is_remote_url(url):
+        return None
     parts = url_parts(url)
-    if not parts:
-        raise ValueError(f"cannot derive repository name from '{url}'")
-    if is_remote_url(url) and len(parts) >= 2:
-        return f"{parts[-2]}-{parts[-1]}"
-    return parts[-1]
+    return parts[-2] if len(parts) >= 2 else None
+
+
+def suggest_clone_name(url: str, repo_name: str) -> str:
+    """Suggest a distinct name for a colliding clone.
+
+    Remote URLs disambiguate by owner (the common case: two owners with the
+    same repository name); anything else falls back to a numeric suffix.
+    """
+    owner = owner_from_url(url)
+    if owner and owner != repo_name:
+        return f"{repo_name}-{owner}"
+    return f"{repo_name}-2"
 
 
 def validate_path_name(kind: str, name: str) -> None:
@@ -210,7 +228,7 @@ def clone_collision_error(url: str, container: Path, local_name: str) -> None:
         f"  origin: {url}",
         "",
         "Use a distinct name, for example:",
-        f"  gra clone {url} --name {local_name}-2",
+        f"  gra clone {url} --name {suggest_clone_name(url, local_name)}",
     ]
     fail("\n".join(lines))
 
@@ -477,7 +495,7 @@ def add_local_excludes(bare: Path) -> None:
 def clone(url: str, name: str | None, root: Path) -> None:
     """Clone a repository into a bare checkout under the gra root."""
     try:
-        local_name = name or local_name_from_url(url)
+        local_name = name or repo_name_from_url(url)
     except ValueError as error:
         fail(str(error))
     validate_path_name("repository", local_name)
@@ -1223,7 +1241,8 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawTextHelpFormatter,
         help="clone a remote repository as a bare checkout",
         description=(
-            f"Clone a repository into '{root}/<owner>-<repo>/{BARE_DIR}'.\n"
+            f"Clone a repository into '{root}/<repo>/{BARE_DIR}'.\n"
+            "The local name is the repository name; use --name to override it.\n"
             "No branch is checked out; use 'gra work' to create a worktree."
         ),
     )

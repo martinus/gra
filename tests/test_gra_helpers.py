@@ -25,12 +25,17 @@ def load_gra() -> ModuleType:
 gra = load_gra()
 
 
-def test_local_name_from_url_uses_owner_for_remote_urls() -> None:
-    assert gra.local_name_from_url("https://github.com/martinus/gra.git") == "martinus-gra"
-    assert gra.local_name_from_url("git@github.com:martinus/oans.git") == "martinus-oans"
-    assert gra.local_name_from_url("ssh://git@host/team/tools.git") == "team-tools"
-    assert gra.local_name_from_url("/tmp/repos/local-project.git") == "local-project"
-    assert gra.local_name_from_url("file:///tmp/martinus/oans") == "martinus-oans"
+def test_repo_name_from_url_uses_last_path_component() -> None:
+    assert gra.repo_name_from_url("https://github.com/martinus/gra.git") == "gra"
+    assert gra.repo_name_from_url("git@github.com:martinus/oans.git") == "oans"
+    assert gra.repo_name_from_url("ssh://git@host/team/tools.git") == "tools"
+    assert gra.repo_name_from_url("/tmp/repos/local-project.git") == "local-project"
+    assert gra.repo_name_from_url("file:///tmp/martinus/oans") == "oans"
+
+
+def test_suggest_clone_name_prefers_owner() -> None:
+    assert gra.suggest_clone_name("git@github.com:martinus/oans.git", "oans") == "oans-martinus"
+    assert gra.suggest_clone_name("/tmp/repos/oans", "oans") == "oans-2"
 
 
 def test_words_are_short_unique_and_safe() -> None:
