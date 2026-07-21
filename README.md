@@ -144,6 +144,48 @@ or stash first. Git allows a branch to be checked out in only one worktree at a
 time, so switching to a branch that is already checked out elsewhere fails with
 Git's normal message.
 
+### The `.tmux-setup` hook
+
+After creating a worktree and its tmux window, `gra work` looks for a
+`.tmux-setup` file in the repository container (next to `.bare`) and runs it if
+it is executable. Use it to prepare the worktree (symlinks, build config) and
+to lay out tmux panes - both jobs in one script.
+
+`gra clone` drops a commented, non-executable sample there. Uncomment what you
+want and `chmod +x .tmux-setup` to activate it; it stays inert until then. The
+file lives in the container, not the repository, so it is personal and
+per-machine and is never committed or shared - which also means `gra` only ever
+runs a script you wrote yourself.
+
+The hook runs with the new worktree as the working directory and these
+variables:
+
+| Variable       | Value                                             |
+| -------------- | ------------------------------------------------- |
+| `GRA_WORKTREE` | absolute path to the new worktree (also the cwd)  |
+| `GRA_WINDOW`   | tmux window id, e.g. `@5`, to target with `tmux`  |
+| `GRA_REPO`     | repository name, e.g. `nanobench`                 |
+| `GRA_WORD`     | worktree name, e.g. `hare`                        |
+| `GRA_BRANCH`   | checked-out branch, or empty when detached        |
+
+A hook that symlinks a build file and splits the window into Claude, editor,
+and monitor panes:
+
+```sh
+#!/bin/sh
+ln -sf ../shared/compile_commands.json .
+
+tmux send-keys    -t "$GRA_WINDOW" 'claude' Enter
+tmux split-window -h -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
+tmux send-keys    -t "$GRA_WINDOW" 'hx .' Enter
+tmux split-window -v -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
+tmux send-keys    -t "$GRA_WINDOW" 'htop' Enter
+tmux select-pane  -t "$GRA_WINDOW".0
+```
+
+The hook runs only when `gra work` creates a worktree, and only inside tmux.
+`gra tmux` opens a plain window without re-running it.
+
 ## done - remove the current worktree
 
 Run `gra done` inside a worktree when the work in it is finished:
@@ -251,40 +293,6 @@ shell's directory, add this to `~/.bashrc` after `gra` is on your `PATH`:
 
 ```sh
 eval "$(gra shell bash)"
-```
-
-## code - open a worktree in Visual Studio Code
-
-Run `gra code` to choose any worktree under the gra root with the same `fzf`
-picker as `gra cd`, then open the selected directory in Visual Studio Code:
-
-```sh
-gra code
-```
-
-Pass an SSH target to choose from that machine's gra worktrees and open the
-selected folder with VS Code Remote SSH. The target can include a username:
-
-```sh
-gra code martinleitnerankerl@10.102.7.17
-```
-
-This expects `gra` to be installed on the remote host. `gra code` adds
-`~/.local/bin` to the remote `PATH` before invoking `gra`, so the usual symlink
-location works for non-interactive SSH sessions.
-
-When using `~/.ssh/config`, put the username in `User`, not in the `Host`
-pattern, then pass the `Host` value to `gra code`. This avoids VS Code Remote
-SSH combining the username twice:
-
-```sshconfig
-Host 10.102.7.17
-  HostName 10.102.7.17
-  User martinleitnerankerl
-```
-
-```sh
-gra code 10.102.7.17
 ```
 
 ## tmux - open a worktree in tmux

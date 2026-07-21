@@ -18,11 +18,9 @@ __version__ = "1.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-import json
 import os
 import random
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -41,6 +39,45 @@ DEFAULT_TMUX_SESSION = "main"
 CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
 GRAKEEP_FILE = ".grakeep"
 LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
+
+# Per-repository hook run after 'gra work' creates a worktree and its tmux
+# window. It lives in the container (next to `.bare`), so it is personal and
+# per-machine, not committed to the repository. It only runs when executable.
+SETUP_FILE = ".tmux-setup"
+SETUP_SAMPLE = """\
+#!/bin/sh
+# gra worktree setup hook.
+#
+# gra runs this script after 'gra work' creates a new worktree and opens its
+# tmux window. Use it to prepare the worktree (symlinks, build config) and to
+# lay out tmux panes. It is ignored until you make it executable:
+#
+#     chmod +x .tmux-setup
+#
+# It runs with the new worktree as the working directory and these variables:
+#
+#     GRA_WORKTREE   absolute path to the new worktree (also the cwd)
+#     GRA_WINDOW     tmux window id, e.g. @5, to target with tmux commands
+#     GRA_REPO       repository name, e.g. nanobench
+#     GRA_WORD       worktree name, e.g. hare
+#     GRA_BRANCH     checked-out branch, or empty when detached
+#
+# Everything below is commented out. Uncomment and adapt what you need.
+
+# --- prepare the worktree -------------------------------------------------
+# ln -sf ../.bare/../shared/compile_commands.json .
+# cp ../.env .
+
+# --- lay out tmux panes ---------------------------------------------------
+# The window already has one pane in the worktree; send it a command, then
+# split off more panes and send commands to those.
+# tmux send-keys    -t "$GRA_WINDOW" 'claude' Enter
+# tmux split-window -h -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
+# tmux send-keys    -t "$GRA_WINDOW" 'hx .' Enter
+# tmux split-window -v -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
+# tmux send-keys    -t "$GRA_WINDOW" 'htop' Enter
+# tmux select-pane  -t "$GRA_WINDOW".0
+"""
 
 # Worktree names come from this pool: short, memorable, all the same length,
 # and never colliding with a gra command name. A name is taken as long as any
@@ -490,6 +527,13 @@ def add_local_excludes(bare: Path) -> None:
                 file.write(f"{pattern}\n")
 
 
+def write_setup_sample(container: Path) -> None:
+    """Drop a commented, non-executable sample .tmux-setup in the container."""
+    script = container / SETUP_FILE
+    if not script.exists():
+        script.write_text(SETUP_SAMPLE, encoding="utf-8")
+
+
 def clone(url: str, name: str | None, root: Path) -> None:
     """Clone a repository into a bare checkout under the gra root."""
     try:
@@ -516,6 +560,7 @@ def clone(url: str, name: str | None, root: Path) -> None:
         run_git(["fetch", "--prune", "origin"], cwd=bare)
         run_git(["remote", "set-head", "origin", "--auto"], cwd=bare)
         add_local_excludes(bare)
+        write_setup_sample(container)
         log(f"created '{container}'; run 'gra work' inside it to begin working", GREEN)
     except Exception:
         if container.exists():
@@ -578,7 +623,7 @@ def print_repositories(root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Picker helpers (cd, code, tmux)
+# Picker helpers (cd, tmux)
 # ---------------------------------------------------------------------------
 
 
@@ -688,63 +733,6 @@ def print_cd_target(root: Path, name: str | None) -> None:
     print(pick_worktree_row(root, "cd", name).path)
 
 
-def print_worktree_picker_rows(root: Path) -> None:
-    """Print local worktree picker rows as JSON for remote gra callers."""
-    rows = local_worktree_picker_rows(root)
-    print(json.dumps([[row.path, row.values()] for row in rows]))
-
-
-REMOTE_GRA_WORKTREES_COMMAND = (
-    'PATH="$HOME/.local/bin:$PATH"; export PATH; exec gra code --worktrees-json'
-)
-
-
-def remote_worktree_picker_rows(ssh_target: str) -> list[WorktreeRow]:
-    """Return worktree picker rows from gra installed on a remote SSH target."""
-    if not ssh_target or ssh_target.startswith("-"):
-        fail(f"invalid SSH target '{ssh_target}'")
-    if not shutil.which("ssh"):
-        fail("ssh is required for 'gra code SSH_TARGET'")
-
-    result = subprocess.run(
-        ["ssh", "-T", ssh_target, REMOTE_GRA_WORKTREES_COMMAND],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip()
-        fail(f"ssh to '{ssh_target}' failed" + (f": {detail}" if detail else ""))
-
-    try:
-        return [WorktreeRow(path, *values) for path, values in json.loads(result.stdout)]
-    except json.JSONDecodeError as error:
-        fail(f"could not parse worktrees from '{ssh_target}': {error}")
-    except (TypeError, ValueError):
-        fail(f"invalid worktree data from '{ssh_target}'")
-
-
-def open_code_target(root: Path, ssh_target: str | None) -> None:
-    """Select a worktree with fzf and open it in Visual Studio Code."""
-    code = shutil.which("code")
-    if not code:
-        fail("code is required for 'gra code'")
-
-    if ssh_target:
-        target = select_worktree_row_from_rows(
-            remote_worktree_picker_rows(ssh_target), "code", f"on '{ssh_target}'"
-        ).path
-        command = [code, "--remote", f"ssh-remote+{ssh_target}", target]
-    else:
-        target = pick_worktree_row(root, "code").path
-        command = [code, target]
-    log(shlex.join(command))
-    result = subprocess.run(command, check=False)
-    if result.returncode != 0:
-        sys.exit(result.returncode)
-
-
 # ---------------------------------------------------------------------------
 # tmux helpers and command
 # ---------------------------------------------------------------------------
@@ -793,16 +781,8 @@ def inside_tmux() -> bool:
     return bool(os.environ.get("TMUX")) and bool(shutil.which("tmux"))
 
 
-def open_tmux_window_for_worktree(session: str | None, name: str, target: str | Path) -> None:
-    """Open or select a tmux window named after the worktree.
-
-    With session=None, the window opens in the current tmux session.
-    """
-    if session is None:
-        run_tmux(["new-window", "-n", name, "-c", target])
-        log(f"created tmux window '{name}'", GREEN)
-        return
-
+def open_tmux_window_for_worktree(session: str, name: str, target: str | Path) -> None:
+    """Open or select a tmux window named after the worktree, in a session."""
     if tmux_session_exists(session):
         if existing_target := tmux_window_targets(session).get(name):
             run_tmux(["select-window", "-t", existing_target])
@@ -814,6 +794,44 @@ def open_tmux_window_for_worktree(session: str | None, name: str, target: str | 
 
     run_tmux(["new-session", "-d", "-s", session, "-n", name, "-c", target])
     log(f"created tmux session '{session}' with window '{name}'", GREEN)
+
+
+def new_tmux_window(name: str, target: Path) -> str:
+    """Create a tmux window in the current session; return its window id."""
+    return subprocess.check_output(
+        ["tmux", "new-window", "-P", "-F", "#{window_id}", "-n", name, "-c", target],
+        encoding="utf-8",
+    ).strip()
+
+
+def run_setup_hook(container: Path, worktree: Path, word: str, window_id: str) -> None:
+    """Run the container's .tmux-setup hook for a new worktree window.
+
+    The hook is skipped unless it exists and is executable, so the commented
+    sample written by 'gra clone' stays inert until the user opts in.
+    """
+    script = container / SETUP_FILE
+    if not (script.is_file() and os.access(script, os.X_OK)):
+        return
+    branch = git_output(["branch", "--show-current"], cwd=worktree) or ""
+    env = {
+        **os.environ,
+        "GRA_WORKTREE": str(worktree),
+        "GRA_WINDOW": window_id,
+        "GRA_REPO": container.name,
+        "GRA_WORD": word,
+        "GRA_BRANCH": branch,
+    }
+    log(f"running '{script}'")
+    subprocess.run([str(script)], cwd=worktree, env=env, check=False)
+
+
+def open_work_window(container: Path, worktree: Path, word: str) -> None:
+    """Open a tmux window for a freshly created worktree and run its hook."""
+    name = tmux_window_name(container.name, word)
+    window_id = new_tmux_window(name, worktree)
+    log(f"created tmux window '{name}'", GREEN)
+    run_setup_hook(container, worktree, word, window_id)
 
 
 def open_tmux_window(root: Path, session: str, name: str | None) -> None:
@@ -977,7 +995,7 @@ def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
     log(f"created '{target}'", GREEN)
 
     if not no_tmux and inside_tmux():
-        open_tmux_window_for_worktree(None, tmux_window_name(container.name, word), target)
+        open_work_window(container, target, word)
 
 
 # ---------------------------------------------------------------------------
@@ -1264,7 +1282,8 @@ def parse_args() -> argparse.Namespace:
             "Create a new worktree named after a random unused word.\n"
             "With BRANCH, check it out (creating and pushing it when missing);\n"
             "without, start detached at origin's default branch.\n"
-            "Inside tmux, a window named after the worktree is opened.\n"
+            "Inside tmux, a window named after the worktree is opened; an\n"
+            f"executable '{SETUP_FILE}' in the repository then lays out panes.\n"
             "With --switch, reuse the current worktree instead: switch it to\n"
             "BRANCH with the same branch resolution. Refuses when dirty."
         ),
@@ -1316,34 +1335,6 @@ def parse_args() -> argparse.Namespace:
     )
     cd_parser.add_argument("name", nargs="?", help="worktree name, for example 'wolf'")
     cd_parser.set_defaults(handler=lambda args: print_cd_target(args.root, args.name))
-
-    code_parser = subparsers.add_parser(
-        "code",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="select a worktree with fzf and open it in Visual Studio Code",
-        description=(
-            "Select a worktree under the gra root with fzf and open it in Visual Studio Code.\n"
-            "Pass SSH_TARGET, such as HOST or USER@HOST, to open a remote worktree with VS Code Remote SSH."
-        ),
-    )
-    code_parser.add_argument(
-        "ssh_target",
-        nargs="?",
-        metavar="SSH_TARGET",
-        help="SSH target to query, for example HOST or USER@HOST",
-    )
-    code_parser.add_argument(
-        "--worktrees-json",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    code_parser.set_defaults(
-        handler=lambda args: (
-            print_worktree_picker_rows(args.root)
-            if args.worktrees_json
-            else open_code_target(args.root, args.ssh_target)
-        )
-    )
 
     shell_parser = subparsers.add_parser(
         "shell",
