@@ -1,6 +1,5 @@
 """CLI tests for the gra commands."""
 
-import json
 import os
 import subprocess
 import sys
@@ -318,6 +317,9 @@ def test_work_opens_tmux_window_when_inside_tmux(tmp_path: Path) -> None:
     worktree = worktree_dirs(container)[0]
     assert tmux_args.read_text().splitlines() == [
         "new-window",
+        "-P",
+        "-F",
+        "#{window_id}",
         "-n",
         f"project/{worktree.name}",
         "-c",
@@ -325,6 +327,96 @@ def test_work_opens_tmux_window_when_inside_tmux(tmp_path: Path) -> None:
         "---",
     ]
     assert f"created tmux window 'project/{worktree.name}'" in result.stdout
+
+
+def write_tmux_window_mock(tmp_path: Path, window_id: str = "@5") -> Path:
+    """tmux mock that returns a window id for 'new-window -P'."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    tmux = bin_dir / "tmux"
+    tmux.write_text(f"#!/bin/sh\nif [ \"$1\" = new-window ]; then echo '{window_id}'; fi\n")
+    tmux.chmod(0o755)
+    return bin_dir
+
+
+def test_clone_writes_commented_setup_sample(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    sample = container / ".tmux-setup"
+    assert sample.is_file()
+    assert not os.access(sample, os.X_OK)  # inert until the user opts in
+    text = sample.read_text()
+    for var in ("GRA_WORKTREE", "GRA_WINDOW", "GRA_REPO", "GRA_WORD", "GRA_BRANCH"):
+        assert var in text
+    assert "chmod +x" in text
+
+
+def test_work_runs_executable_setup_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    hook_out = tmp_path / "hook-out"
+    hook = container / ".tmux-setup"
+    hook.write_text(
+        "#!/bin/sh\n"
+        '{ echo "$GRA_REPO"; echo "$GRA_WORD"; echo "$GRA_BRANCH";'
+        ' echo "$GRA_WINDOW"; echo "$GRA_WORKTREE"; pwd; } > "$HOOK_OUT"\n'
+    )
+    hook.chmod(0o755)
+
+    bin_dir = write_tmux_window_mock(tmp_path)
+    result = run_cli(
+        ["work", "main"],
+        home,
+        cwd=container,
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TMUX": "/tmp/tmux-1000/default,1234,0",
+            "HOOK_OUT": str(hook_out),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert hook_out.read_text().splitlines() == [
+        "project",
+        worktree.name,
+        "main",
+        "@5",
+        str(worktree),
+        str(worktree),
+    ]
+
+
+def test_work_skips_non_executable_setup_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    hook_out = tmp_path / "hook-out"
+    hook = container / ".tmux-setup"
+    hook.write_text('#!/bin/sh\necho ran > "$HOOK_OUT"\n')  # not executable
+
+    bin_dir = write_tmux_window_mock(tmp_path)
+    result = run_cli(
+        ["work", "main"],
+        home,
+        cwd=container,
+        env_extra={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "TMUX": "/tmp/tmux-1000/default,1234,0",
+            "HOOK_OUT": str(hook_out),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not hook_out.exists()
 
 
 def test_work_switch_changes_branch_in_place(tmp_path: Path) -> None:
@@ -594,72 +686,6 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     assert "--with-nth=2" in args
     assert fzf_input.read_text().splitlines() == [
         f"{worktree}\tproject  {worktree.name}  main",
-    ]
-
-
-def test_code_worktrees_json_prints_picker_rows(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    result = run_cli(["code", "--worktrees-json"], home, cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == [
-        [str(worktree), ["project", worktree.name, "main"]],
-    ]
-
-
-def test_code_opens_selected_remote_worktree_path_from_fzf(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    bin_dir, fzf_input, fzf_args = write_fzf_mock(tmp_path, select_line=2)
-    ssh = bin_dir / "ssh"
-    code = bin_dir / "code"
-    ssh_args = tmp_path / "ssh-args"
-    code_args = tmp_path / "code-args"
-    ssh.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" > \"$SSH_ARGS\"\n"
-        "printf '%s\n' '[[\"/home/remote/gra/project/wolf\",[\"project\",\"wolf\",\"main\"]],[\"/home/remote/gra/project/lynx\",[\"project\",\"lynx\",\"feature\"]]]'\n"
-    )
-    ssh.chmod(0o755)
-    code.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CODE_ARGS\"\n")
-    code.chmod(0o755)
-
-    result = run_cli(
-        ["code", "martinleitnerankerl@10.102.7.17"],
-        home,
-        cwd=tmp_path,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "SSH_ARGS": str(ssh_args),
-            "FZF_ARGS": str(fzf_args),
-            "FZF_INPUT": str(fzf_input),
-            "CODE_ARGS": str(code_args),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == (
-        f"{code} --remote ssh-remote+martinleitnerankerl@10.102.7.17 "
-        "/home/remote/gra/project/lynx\n"
-    )
-    assert ssh_args.read_text().splitlines() == [
-        "-T",
-        "martinleitnerankerl@10.102.7.17",
-        'PATH="$HOME/.local/bin:$PATH"; export PATH; exec gra code --worktrees-json',
-    ]
-    assert code_args.read_text().splitlines() == [
-        "--remote",
-        "ssh-remote+martinleitnerankerl@10.102.7.17",
-        "/home/remote/gra/project/lynx",
-    ]
-    assert fzf_input.read_text().splitlines() == [
-        "/home/remote/gra/project/wolf\tproject  wolf  main",
-        "/home/remote/gra/project/lynx\tproject  lynx  feature",
     ]
 
 
