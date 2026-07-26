@@ -1,6 +1,5 @@
 """CLI tests for the gra commands."""
 
-import itertools
 import os
 import subprocess
 import sys
@@ -289,16 +288,17 @@ def test_further_worktrees_take_the_next_candidates(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source, work=True)
 
-    work_worktree(home, container)
+    container = clone_repo(home, source, work=True)
+    first = worktree_dirs(container)[0]
+    second = work_worktree(home, container)
 
     # A local path has no owner, so the repository name is the identity.
-    expected = list(itertools.islice(load_gra().name_candidates("project"), 2))
-    assert [path.name for path in worktree_dirs(container)] == sorted(expected)
+    preferred = load_gra().name_candidates("project")
+    assert [first.name, second.name] == preferred[:2]
 
 
-def test_work_creates_random_worktree_for_branch(tmp_path: Path) -> None:
+def test_work_creates_named_worktree_for_branch(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
