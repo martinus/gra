@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import load_gra
+from conftest import GRA, load_gra
 
 
 gra = load_gra()
@@ -269,13 +269,7 @@ def install_sources(
     monkeypatch: pytest.MonkeyPatch, local: bytes | None, remote: bytes | None
 ) -> None:
     monkeypatch.setattr(gra, "local_source", lambda: local)
-
-    def download() -> bytes:
-        if remote is None:
-            raise ConnectionError("cannot download: no network")
-        return remote
-
-    monkeypatch.setattr(gra, "download_source", download)
+    monkeypatch.setattr(gra, "download_source", lambda: remote)
 
 
 def test_gra_source_prefers_a_newer_remote(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,19 +278,15 @@ def test_gra_source_prefers_a_newer_remote(monkeypatch: pytest.MonkeyPatch) -> N
     assert gra.gra_source(check=True) == script("1.10.0")
 
 
-def test_gra_source_keeps_the_local_script_on_a_tie(
+def test_gra_source_keeps_the_local_script_unless_the_remote_is_newer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A checkout at the released version installs itself, edits and all.
     local = script("1.2.0") + b"# local edits\n"
     install_sources(monkeypatch, local, script("1.2.0"))
-
-    # A checkout at the released version installs itself, edits and all.
     assert gra.gra_source(check=True) == local
 
-
-def test_gra_source_ignores_an_older_remote(monkeypatch: pytest.MonkeyPatch) -> None:
     install_sources(monkeypatch, script("2.0.0"), script("1.2.0"))
-
     assert gra.gra_source(check=True) == script("2.0.0")
 
 
@@ -347,3 +337,13 @@ def test_install_reports_the_version_it_wrote(
     output = capsys.readouterr().out
     assert "upgrading gra 1.2.0 -> 1.10.0" in output
     assert "installed gra 1.10.0" in output
+
+
+def test_source_version_matches_this_script() -> None:
+    """Pin the regex to how gra actually writes __version__.
+
+    If the two ever drift, both sides of the comparison read as no version,
+    the tie keeps the local script, and 'gra install' silently stops
+    upgrading for good.
+    """
+    assert gra.source_version(Path(GRA).read_bytes()) == gra.__version__

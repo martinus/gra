@@ -962,13 +962,15 @@ def local_source() -> bytes | None:
     return Path(path).read_bytes() if path and Path(path).is_file() else None
 
 
-def download_source() -> bytes:
+def download_source() -> bytes | None:
+    """The script on main, or None when it cannot be fetched."""
     log(f"downloading {SOURCE_URL}")
     try:
         with urllib.request.urlopen(SOURCE_URL) as response:
             return response.read()
     except OSError as error:
-        raise ConnectionError(f"cannot download {SOURCE_URL}: {error}") from error
+        log(f"cannot download {SOURCE_URL}: {error}", YELLOW)
+        return None
 
 
 def source_version(source: bytes) -> str | None:
@@ -1002,25 +1004,25 @@ def gra_source(check: bool) -> bytes:
     local = local_source()
     if local is not None and not check:
         return local
-    try:
-        remote = download_source()
-    except ConnectionError as error:
-        if local is None:
-            fail(str(error))
-        log(f"{error}; installing the local version instead", YELLOW)
-        return local
 
+    remote = download_source()
+    if remote is None:
+        if local is None:
+            fail("nothing to install")
+        log("installing the local version instead", YELLOW)
+        return local
     if local is None:
         return remote
-    if version_key(source_version(remote)) <= version_key(source_version(local)):
+
+    local_version, remote_version = source_version(local), source_version(remote)
+    if version_key(remote_version) <= version_key(local_version):
         return local
-    log(f"upgrading gra {source_version(local)} -> {source_version(remote)}")
+    log(f"upgrading gra {local_version} -> {remote_version}")
     return remote
 
 
-def install_script(check: bool) -> tuple[Path, str | None]:
-    """Write the newest gra to the install directory and make it executable."""
-    source = gra_source(check)
+def install_script(source: bytes) -> Path:
+    """Write a gra script to the install directory and make it executable."""
     target = expand_path(INSTALL_DIR) / "gra"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1031,7 +1033,7 @@ def install_script(check: bool) -> tuple[Path, str | None]:
         target.chmod(0o755)
     except OSError as error:
         fail(f"cannot write '{target}': {error}")
-    return target, source_version(source)
+    return target
 
 
 def is_on_path(directory: Path) -> bool:
@@ -1049,10 +1051,10 @@ def shell_init_block(directory: Path) -> str:
 
 
 def install(check: bool = True) -> None:
-    # The version installed is not always this script's: report what was
-    # written, not what is running.
-    target, version = install_script(check)
-    log(f"installed gra {version} to '{target}'")
+    source = gra_source(check)
+    target = install_script(source)
+    # Not necessarily __version__: an upgrade installs bytes other than these.
+    log(f"installed gra {source_version(source)} to '{target}'")
 
     block = shell_init_block(target.parent)
     bashrc = expand_path("~/.bashrc")
@@ -1477,13 +1479,14 @@ def parse_args() -> argparse.Namespace:
             f"Install gra into '{INSTALL_DIR}/gra' and enable the bash\n"
             "integration in '~/.bashrc'.\n"
             "Installs the newer of this script and the one on main, so\n"
-            "re-running upgrades; --no-check installs this one either way."
+            "re-running upgrades. Run from a file, --no-check installs that\n"
+            "file without looking online."
         ),
     )
     install_parser.add_argument(
         "--no-check",
         action="store_true",
-        help="do not look for a newer version online",
+        help="install this script without looking for a newer one",
     )
     install_parser.set_defaults(handler=lambda args: install(check=not args.no_check))
 
