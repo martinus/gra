@@ -88,9 +88,12 @@ that checkout. Run through `python3 -c` there is nothing local, so the download
 is what gets installed - that is the one-liner above.
 
 If the lookup fails - no network, GitHub down - `gra` says so and installs the
-local script anyway; a failed check never costs you a working install. Use
-`--no-check` to skip the lookup entirely, which is also what you want when
-installing an older branch on purpose.
+local script anyway; a failed check never costs you a working install.
+
+Run from a file, `--no-check` installs that file without looking online, which
+is what you want offline or when installing an older branch on purpose.
+Through `python3 -c` it changes nothing: with no local script the download is
+the only thing there is to install.
 
 ## clone - clone a remote repository
 
@@ -394,7 +397,8 @@ python3 -m pip install -r requirements-dev.txt
 python3 -m pytest -q
 ```
 
-To use your working copy, run `./gra install` from the checkout.
+To use your working copy, run `./gra install --no-check` from the checkout.
+Without the flag a checkout behind `main` installs `main` instead.
 
 # Alternatives
 
