@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple, NoReturn, TypeVar
 from urllib.parse import urlparse
@@ -867,6 +868,85 @@ def kill_tmux_windows(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# install command
+# ---------------------------------------------------------------------------
+
+
+SOURCE_URL = "https://raw.githubusercontent.com/martinus/gra/main/gra"
+INSTALL_DIR = "~/.local/bin"
+SHELL_INIT_LINE = 'eval "$(gra shell bash)"'
+
+
+def gra_source() -> bytes:
+    """Return this script's own source.
+
+    Running from a file - a checkout or an earlier install - copies that file,
+    so 'gra install' from a checkout installs the checkout. Under
+    'python3 -c' there is no file to copy, so the source is downloaded.
+    """
+    path = globals().get("__file__")
+    if path and Path(path).is_file():
+        return Path(path).read_bytes()
+    log(f"downloading {SOURCE_URL}")
+    try:
+        with urllib.request.urlopen(SOURCE_URL) as response:
+            return response.read()
+    except OSError as error:
+        fail(f"cannot download {SOURCE_URL}: {error}")
+
+
+def install_script() -> Path:
+    """Write this script to the install directory and make it executable."""
+    source = gra_source()
+    target = expand_path(INSTALL_DIR) / "gra"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Unlink first: an earlier install may have left a symlink here, and
+        # writing through it would modify whatever it points at.
+        target.unlink(missing_ok=True)
+        target.write_bytes(source)
+        target.chmod(0o755)
+    except OSError as error:
+        fail(f"cannot write '{target}': {error}")
+    return target
+
+
+def is_on_path(directory: Path) -> bool:
+    entries = os.environ.get("PATH", "").split(os.pathsep)
+    return any(entry and expand_path(entry) == directory for entry in entries)
+
+
+def shell_init_block(directory: Path) -> str:
+    """Bash lines that put gra on the PATH and enable 'gra cd' and 'gra done'."""
+    lines = ["", "# gra"]
+    if not is_on_path(directory):
+        lines.append(f'export PATH="{INSTALL_DIR.replace("~", "$HOME")}:$PATH"')
+    lines.append(SHELL_INIT_LINE)
+    return "\n".join(lines) + "\n"
+
+
+def install() -> None:
+    target = install_script()
+    log(f"installed gra {__version__} to '{target}'")
+
+    block = shell_init_block(target.parent)
+    bashrc = expand_path("~/.bashrc")
+    if not bashrc.is_file():
+        log(f"no '{bashrc}'; add this to your shell configuration:")
+        print(block, end="")
+        return
+    if SHELL_INIT_LINE in bashrc.read_text():
+        log(f"shell integration already in '{bashrc}'")
+        return
+    try:
+        with bashrc.open("a") as handle:
+            handle.write(block)
+    except OSError as error:
+        fail(f"cannot write '{bashrc}': {error}")
+    log(f"added shell integration to '{bashrc}'; restart your shell")
+
+
+# ---------------------------------------------------------------------------
 # shell command
 # ---------------------------------------------------------------------------
 
@@ -1254,6 +1334,17 @@ def parse_args() -> argparse.Namespace:
     )
 
     subparsers = parser.add_subparsers(required=True, dest="cmd", title="commands")
+    install_parser = subparsers.add_parser(
+        "install",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help=f"install gra into '{INSTALL_DIR}'",
+        description=(
+            f"Copy this script to '{INSTALL_DIR}/gra' and enable the bash\n"
+            "integration in '~/.bashrc'. Re-run to upgrade."
+        ),
+    )
+    install_parser.set_defaults(handler=lambda args: install())
+
     clone_parser = subparsers.add_parser(
         "clone",
         formatter_class=argparse.RawTextHelpFormatter,
