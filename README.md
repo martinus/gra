@@ -33,25 +33,42 @@ git config --global gra.root ~/develop
 
 # Installation
 
-1. Clone `gra`.
-  ```sh
-  python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" clone git@github.com:martinus/gra.git
-  ```
+```sh
+python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" install
+```
 
-2. Create a worktree and symlink the script from it into your path:
-  ```sh
-  cd ~/gra/gra
-  python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" work main --no-tmux
-  ln -s ~/gra/gra/*/gra ~/.local/bin/
-  ```
+That is the whole installation. It writes the script to `~/.local/bin/gra` and
+appends this block to `~/.bashrc`, so that `gra` is on your `PATH` and the shell
+integration makes `gra cd` change directories and `gra done` leave the removed
+directory:
 
-3. Optional but recommended: enable the shell integration in `~/.bashrc` so
-  `gra cd` changes directories and `gra done` leaves the removed directory:
-  ```sh
-  eval "$(gra shell bash)"
-  ```
+```sh
+# gra
+export PATH="$HOME/.local/bin:$PATH"
+eval "$(gra shell bash)"
+```
+
+Restart your shell afterwards.
 
 # Commands
+
+## install - install or upgrade gra
+
+```sh
+gra install
+```
+
+Copies `gra` to `~/.local/bin/gra` and makes it executable, replacing whatever
+is there - including a symlink left by an older installation. The `PATH` line
+is added only when `~/.local/bin` is not on your `PATH` already, and the
+`~/.bashrc` block is added only once, so re-running the command upgrades `gra`
+without touching anything else.
+
+When there is no `~/.bashrc` - `gra shell` only speaks bash - nothing is
+written and the lines to add are printed instead.
+
+Run from a checkout, `gra install` installs that checkout. Run through
+`python3 -c` there is no file to copy, so the script is downloaded from `main`.
 
 ## clone - clone a remote repository
 
@@ -338,6 +355,8 @@ Install test dependencies and run the suite with:
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest -q
 ```
+
+To use your working copy, run `./gra install` from the checkout.
 
 # Alternatives
 

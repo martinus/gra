@@ -775,6 +775,85 @@ def test_shell_bash_done_leaves_removed_directory(tmp_path: Path) -> None:
     assert not worktree.exists()
 
 
+def install_home(tmp_path: Path, *, bashrc: str | None = "# existing\n") -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    if bashrc is not None:
+        (home / ".bashrc").write_text(bashrc)
+    return home
+
+
+def test_install_writes_an_executable_copy(tmp_path: Path) -> None:
+    home = install_home(tmp_path)
+
+    result = run_cli(["install"], home)
+
+    assert result.returncode == 0, result.stderr
+    installed = home / ".local" / "bin" / "gra"
+    assert installed.read_bytes() == GRA.read_bytes()
+    assert os.access(installed, os.X_OK)
+
+
+def test_install_adds_shell_integration(tmp_path: Path) -> None:
+    home = install_home(tmp_path)
+
+    result = run_cli(["install"], home)
+
+    assert result.returncode == 0, result.stderr
+    bashrc = (home / ".bashrc").read_text()
+    assert bashrc.startswith("# existing\n")
+    assert 'eval "$(gra shell bash)"' in bashrc
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in bashrc
+
+
+def test_install_is_idempotent(tmp_path: Path) -> None:
+    home = install_home(tmp_path)
+
+    run_cli(["install"], home)
+    result = run_cli(["install"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert (home / ".bashrc").read_text().count('eval "$(gra shell bash)"') == 1
+
+
+def test_install_replaces_a_symlink(tmp_path: Path) -> None:
+    home = install_home(tmp_path)
+    other = tmp_path / "checkout-gra"
+    other.write_text("#!/bin/sh\necho old\n")
+    installed = home / ".local" / "bin" / "gra"
+    installed.parent.mkdir(parents=True)
+    installed.symlink_to(other)
+
+    result = run_cli(["install"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert not installed.is_symlink()
+    assert installed.read_bytes() == GRA.read_bytes()
+    assert other.read_text() == "#!/bin/sh\necho old\n"
+
+
+def test_install_skips_the_path_export_when_already_on_path(tmp_path: Path) -> None:
+    home = install_home(tmp_path)
+    path = os.pathsep.join([str(home / ".local" / "bin"), os.environ.get("PATH", "")])
+
+    result = run_cli(["install"], home, env_extra={"PATH": path})
+
+    assert result.returncode == 0, result.stderr
+    bashrc = (home / ".bashrc").read_text()
+    assert "export PATH" not in bashrc
+    assert 'eval "$(gra shell bash)"' in bashrc
+
+
+def test_install_without_bashrc_only_prints_instructions(tmp_path: Path) -> None:
+    home = install_home(tmp_path, bashrc=None)
+
+    result = run_cli(["install"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert not (home / ".bashrc").exists()
+    assert 'eval "$(gra shell bash)"' in result.stdout
+
+
 def test_unknown_command_is_rejected(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
