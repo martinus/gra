@@ -15,7 +15,7 @@ checked out: switch branches freely inside a worktree, or start a new one and
 remove it when done.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
