@@ -378,20 +378,19 @@ def test_work_outside_repository_fails(tmp_path: Path) -> None:
     assert "must be run from inside a repository" in result.stderr
 
 
-def recorder(destination: str = "$HOOK_OUT") -> str:
-    """A hook that writes its environment and working directory to a file."""
+def recorder() -> str:
+    """A hook that writes its environment and working directory to HOOK_OUT."""
     return (
         "#!/bin/sh\n"
         '{ echo "$GRA_REPO"; echo "$GRA_WORD"; echo "$GRA_BRANCH";'
-        ' echo "$GRA_WORKTREE"; pwd; } > "' + destination + '"\n'
+        ' echo "$GRA_WORKTREE"; pwd; } > "$HOOK_OUT"\n'
     )
 
 
-def write_hook(container: Path, name: str, body: str, *, executable: bool = True) -> Path:
+def write_hook(container: Path, name: str, body: str, *, executable: bool = True) -> None:
     hook = container / name
     hook.write_text(body)
     hook.chmod(0o755 if executable else 0o644)
-    return hook
 
 
 def test_clone_writes_both_hooks_ready_to_run(tmp_path: Path) -> None:
