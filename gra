@@ -953,27 +953,74 @@ INSTALL_DIR = "~/.local/bin"
 SHELL_INIT_LINE = 'eval "$(gra shell bash)"'
 
 
-def gra_source() -> bytes:
-    """Return this script's own source.
+VERSION_LINE = re.compile(rb'^__version__ = "([^"]+)"', re.MULTILINE)
 
-    Running from a file - a checkout or an earlier install - copies that file,
-    so 'gra install' from a checkout installs the checkout. Under
-    'python3 -c' there is no file to copy, so the source is downloaded.
-    """
+
+def local_source() -> bytes | None:
+    """This script's own bytes, or None when running from 'python3 -c'."""
     path = globals().get("__file__")
-    if path and Path(path).is_file():
-        return Path(path).read_bytes()
+    return Path(path).read_bytes() if path and Path(path).is_file() else None
+
+
+def download_source() -> bytes:
     log(f"downloading {SOURCE_URL}")
     try:
         with urllib.request.urlopen(SOURCE_URL) as response:
             return response.read()
     except OSError as error:
-        fail(f"cannot download {SOURCE_URL}: {error}")
+        raise ConnectionError(f"cannot download {SOURCE_URL}: {error}") from error
 
 
-def install_script() -> Path:
-    """Write this script to the install directory and make it executable."""
-    source = gra_source()
+def source_version(source: bytes) -> str | None:
+    """Read a gra script's version without executing it.
+
+    Deciding whether to trust a download by running it would be backwards, so
+    the version is read out of the text.
+    """
+    match = VERSION_LINE.search(source)
+    return match.group(1).decode() if match else None
+
+
+def version_key(version: str | None) -> tuple[int, ...]:
+    """Order dotted versions numerically, so 1.10.0 beats 1.9.0."""
+    if not version:
+        return ()
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return ()
+
+
+def gra_source(check: bool) -> bytes:
+    """Return the newest gra source available, preferring the local one on ties.
+
+    Running from a file - a checkout or an earlier install - copies that file,
+    so 'gra install' from a checkout installs the checkout. A newer version on
+    main wins, which is how an installed gra upgrades itself. Under
+    'python3 -c' there is nothing local, so the download is all there is.
+    """
+    local = local_source()
+    if local is not None and not check:
+        return local
+    try:
+        remote = download_source()
+    except ConnectionError as error:
+        if local is None:
+            fail(str(error))
+        log(f"{error}; installing the local version instead", YELLOW)
+        return local
+
+    if local is None:
+        return remote
+    if version_key(source_version(remote)) <= version_key(source_version(local)):
+        return local
+    log(f"upgrading gra {source_version(local)} -> {source_version(remote)}")
+    return remote
+
+
+def install_script(check: bool) -> tuple[Path, str | None]:
+    """Write the newest gra to the install directory and make it executable."""
+    source = gra_source(check)
     target = expand_path(INSTALL_DIR) / "gra"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -984,7 +1031,7 @@ def install_script() -> Path:
         target.chmod(0o755)
     except OSError as error:
         fail(f"cannot write '{target}': {error}")
-    return target
+    return target, source_version(source)
 
 
 def is_on_path(directory: Path) -> bool:
@@ -1001,9 +1048,11 @@ def shell_init_block(directory: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def install() -> None:
-    target = install_script()
-    log(f"installed gra {__version__} to '{target}'")
+def install(check: bool = True) -> None:
+    # The version installed is not always this script's: report what was
+    # written, not what is running.
+    target, version = install_script(check)
+    log(f"installed gra {version} to '{target}'")
 
     block = shell_init_block(target.parent)
     bashrc = expand_path("~/.bashrc")
@@ -1425,11 +1474,18 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawTextHelpFormatter,
         help=f"install gra into '{INSTALL_DIR}'",
         description=(
-            f"Copy this script to '{INSTALL_DIR}/gra' and enable the bash\n"
-            "integration in '~/.bashrc'. Re-run to upgrade."
+            f"Install gra into '{INSTALL_DIR}/gra' and enable the bash\n"
+            "integration in '~/.bashrc'.\n"
+            "Installs the newer of this script and the one on main, so\n"
+            "re-running upgrades; --no-check installs this one either way."
         ),
     )
-    install_parser.set_defaults(handler=lambda args: install())
+    install_parser.add_argument(
+        "--no-check",
+        action="store_true",
+        help="do not look for a newer version online",
+    )
+    install_parser.set_defaults(handler=lambda args: install(check=not args.no_check))
 
     clone_parser = subparsers.add_parser(
         "clone",

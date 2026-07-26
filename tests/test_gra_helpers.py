@@ -246,3 +246,104 @@ def test_clean_repository_entries_builds_worktree_entries_in_parallel(
     entries = gra.clean_repository_entries(Path("repo"))
 
     assert [entry[0] for entry in entries] == [Path("repo/wolf"), Path("repo/lynx")]
+
+
+def script(version: str) -> bytes:
+    return f'#!/usr/bin/env python3\n__version__ = "{version}"\n'.encode()
+
+
+def test_version_key_orders_numerically() -> None:
+    assert gra.version_key("1.10.0") > gra.version_key("1.9.0")
+    assert gra.version_key("1.2.0") == gra.version_key("1.2.0")
+    # An unreadable version must never look newer than a real one.
+    assert gra.version_key("1.2.0-dev") < gra.version_key("0.0.1")
+    assert gra.version_key(None) < gra.version_key("0.0.1")
+
+
+def test_source_version_reads_without_executing() -> None:
+    assert gra.source_version(script("4.5.6")) == "4.5.6"
+    assert gra.source_version(b"no version here") is None
+
+
+def install_sources(
+    monkeypatch: pytest.MonkeyPatch, local: bytes | None, remote: bytes | None
+) -> None:
+    monkeypatch.setattr(gra, "local_source", lambda: local)
+
+    def download() -> bytes:
+        if remote is None:
+            raise ConnectionError("cannot download: no network")
+        return remote
+
+    monkeypatch.setattr(gra, "download_source", download)
+
+
+def test_gra_source_prefers_a_newer_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_sources(monkeypatch, script("1.2.0"), script("1.10.0"))
+
+    assert gra.gra_source(check=True) == script("1.10.0")
+
+
+def test_gra_source_keeps_the_local_script_on_a_tie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local = script("1.2.0") + b"# local edits\n"
+    install_sources(monkeypatch, local, script("1.2.0"))
+
+    # A checkout at the released version installs itself, edits and all.
+    assert gra.gra_source(check=True) == local
+
+
+def test_gra_source_ignores_an_older_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_sources(monkeypatch, script("2.0.0"), script("1.2.0"))
+
+    assert gra.gra_source(check=True) == script("2.0.0")
+
+
+def test_gra_source_downloads_when_there_is_nothing_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_sources(monkeypatch, None, script("1.2.0"))
+
+    assert gra.gra_source(check=True) == script("1.2.0")
+
+
+def test_gra_source_falls_back_to_local_when_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_sources(monkeypatch, script("1.2.0"), None)
+
+    # A failed check must not turn a working install into a failure.
+    assert gra.gra_source(check=True) == script("1.2.0")
+
+
+def test_gra_source_fails_when_offline_with_nothing_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_sources(monkeypatch, None, None)
+
+    with pytest.raises(SystemExit):
+        gra.gra_source(check=True)
+
+
+def test_gra_source_skips_the_check_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gra, "local_source", lambda: script("1.2.0"))
+    monkeypatch.setattr(gra, "download_source", lambda: pytest.fail("no request"))
+
+    assert gra.gra_source(check=False) == script("1.2.0")
+
+
+def test_install_reports_the_version_it_wrote(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    install_sources(monkeypatch, script("1.2.0"), script("1.10.0"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".bashrc").write_text("# rc\n")
+
+    gra.install()
+
+    installed = tmp_path / ".local" / "bin" / "gra"
+    assert installed.read_bytes() == script("1.10.0")
+    output = capsys.readouterr().out
+    assert "upgrading gra 1.2.0 -> 1.10.0" in output
+    assert "installed gra 1.10.0" in output
