@@ -15,7 +15,7 @@ checked out: switch branches freely inside a worktree, or start a new one and
 remove it when done.
 """
 
-__version__ = "1.2.0"
+__version__ = "2.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -46,7 +46,6 @@ if sys.version_info < MINIMUM_PYTHON:
 FALLBACK_ROOT = "~/gra"
 BARE_DIR = ".bare"
 VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
-DEFAULT_TMUX_SESSION = "main"
 
 # Claude may create its own temporary worktrees inside a checkout. Keep those
 # local-only directories out of `git status` without changing tracked files.
@@ -54,43 +53,69 @@ CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
 GRAKEEP_FILE = ".grakeep"
 LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
 
-# Per-repository hook run after 'gra work' creates a worktree and its tmux
-# window. It lives in the container (next to `.bare`), so it is personal and
-# per-machine, not committed to the repository. It only runs when executable.
-SETUP_FILE = ".tmux-setup"
-SETUP_SAMPLE = """\
-#!/bin/sh
-# gra worktree setup hook.
+# Per-repository hooks, run when a worktree is created and before one is
+# removed. They live in the container (next to `.bare`), so they are personal
+# and per-machine, never committed. gra itself knows nothing about tmux: the
+# samples below do, and they are yours to change or delete.
 #
-# gra runs this script after 'gra work' creates a new worktree and opens its
-# tmux window. Use it to prepare the worktree (symlinks, build config) and to
-# lay out tmux panes. It is ignored until you make it executable:
+# Both are written executable, so they work from the start; chmod -x disables
+# one. Both receive:
 #
-#     chmod +x .tmux-setup
+#     GRA_WORKTREE   absolute path to the worktree
+#     GRA_REPO       repository name, e.g. nanobench
+#     GRA_WORD       worktree name, e.g. hare
+#     GRA_BRANCH     checked-out branch, or empty when detached
+HOOK_ENV_COMMENT = """\
+# gra runs this with these variables set:
 #
-# It runs with the new worktree as the working directory and these variables:
-#
-#     GRA_WORKTREE   absolute path to the new worktree (also the cwd)
-#     GRA_WINDOW     tmux window id, e.g. @5, to target with tmux commands
+#     GRA_WORKTREE   absolute path to the worktree
 #     GRA_REPO       repository name, e.g. nanobench
 #     GRA_WORD       worktree name, e.g. hare
 #     GRA_BRANCH     checked-out branch, or empty when detached
 #
-# Everything below is commented out. Uncomment and adapt what you need.
+# It is personal to this machine and never committed. Edit it freely; gra
+# only runs it. 'chmod -x' turns it off.
+"""
+
+WORK_HOOK = "work.sh"
+WORK_SAMPLE = f"""\
+#!/bin/sh
+# Runs after 'gra work' or 'gra clone' creates a worktree, from inside it.
+#
+{HOOK_ENV_COMMENT}
+[ -n "$TMUX" ] || exit 0
+
+window=$(tmux new-window -P -F '#{{window_id}}' \\
+    -n "$GRA_REPO/$GRA_WORD" -c "$GRA_WORKTREE")
 
 # --- prepare the worktree -------------------------------------------------
-# ln -sf ../.bare/../shared/compile_commands.json .
+# ln -sf ../shared/compile_commands.json .
 # cp ../.env .
 
-# --- lay out tmux panes ---------------------------------------------------
-# The window already has one pane in the worktree; send it a command, then
-# split off more panes and send commands to those.
-# tmux send-keys    -t "$GRA_WINDOW" 'claude' Enter
-# tmux split-window -h -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
-# tmux send-keys    -t "$GRA_WINDOW" 'hx .' Enter
-# tmux split-window -v -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
-# tmux send-keys    -t "$GRA_WINDOW" 'htop' Enter
-# tmux select-pane  -t "$GRA_WINDOW".0
+# --- lay out panes --------------------------------------------------------
+# The window has one pane in the worktree; send it a command, then split off
+# more panes and send commands to those.
+# tmux send-keys    -t "$window" 'claude' Enter
+# tmux split-window -h -t "$window" -c "$GRA_WORKTREE"
+# tmux send-keys    -t "$window" 'hx .' Enter
+# tmux split-window -v -t "$window" -c "$GRA_WORKTREE"
+# tmux send-keys    -t "$window" 'htop' Enter
+# tmux select-pane  -t "$window".0
+"""
+
+DONE_HOOK = "done.sh"
+DONE_SAMPLE = f"""\
+#!/bin/sh
+# Runs before 'gra done' or 'gra clean' removes a worktree, from the
+# repository directory. The worktree still exists while this runs.
+#
+{HOOK_ENV_COMMENT}
+[ -n "$TMUX" ] || exit 0
+
+# Kill the window 'work.sh' opened, in whichever session it ended up in.
+tmux list-windows -a -F '#{{window_name}} #{{window_id}}' | while read -r name id; do
+    [ "$name" = "$GRA_REPO/$GRA_WORD" ] && tmux kill-window -t "$id"
+done
 """
 
 # Worktree names come from this pool: short, memorable, all the same length,
@@ -584,15 +609,21 @@ def add_local_excludes(bare: Path) -> None:
                 file.write(f"{pattern}\n")
 
 
-def write_setup_sample(container: Path) -> None:
-    """Drop a commented, non-executable sample .tmux-setup in the container."""
-    script = container / SETUP_FILE
-    if not script.exists():
-        script.write_text(SETUP_SAMPLE, encoding="utf-8")
+def write_hook_samples(container: Path) -> None:
+    """Drop working work.sh and done.sh hooks in the container.
+
+    Executable, so a fresh clone opens and closes tmux windows without any
+    setup - that behaviour lives in these scripts now, not in gra.
+    """
+    for name, sample in ((WORK_HOOK, WORK_SAMPLE), (DONE_HOOK, DONE_SAMPLE)):
+        script = container / name
+        if not script.exists():
+            script.write_text(sample, encoding="utf-8")
+            script.chmod(0o755)
 
 
 def clone(
-    url: str, name: str | None, root: Path, *, no_work: bool, no_tmux: bool
+    url: str, name: str | None, root: Path, *, no_work: bool, no_hook: bool
 ) -> None:
     """Clone into a bare checkout under the gra root, with a worktree on it."""
     try:
@@ -621,7 +652,7 @@ def clone(
         # clone, and remote_default_branch falls back to main/master anyway.
         git_output(["remote", "set-head", "origin", "--auto"], cwd=bare)
         add_local_excludes(bare)
-        write_setup_sample(container)
+        write_hook_samples(container)
     except Exception:
         if container.exists():
             shutil.rmtree(container)
@@ -642,7 +673,7 @@ def clone(
             YELLOW,
         )
         return
-    create_worktree(container, root, ref.removeprefix("origin/"), no_tmux=no_tmux)
+    create_worktree(container, root, ref.removeprefix("origin/"), no_hook=no_hook)
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +731,7 @@ def print_repositories(root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Picker helpers (cd, tmux)
+# Picker helpers (cd)
 # ---------------------------------------------------------------------------
 
 
@@ -811,136 +842,29 @@ def print_cd_target(root: Path, name: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# tmux helpers and command
+# Worktree hooks
 # ---------------------------------------------------------------------------
 
 
-TMUX_WINDOW_LIST_FORMAT = "#{window_name}\t#{window_id}"
+def run_hook(name: str, container: Path, worktree: Path, branch: str, cwd: Path) -> None:
+    """Run one of the container's hooks, if it is there and executable.
 
-
-def tmux_window_name(container_name: str, word: str) -> str:
-    return f"{container_name}/{word}"
-
-
-def run_tmux(args: list[str | Path]) -> None:
-    subprocess.run(["tmux", *args], check=True)
-
-
-def tmux_session_exists(session: str) -> bool:
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", session],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def tmux_window_targets(session: str) -> dict[str, str]:
-    result = subprocess.run(
-        ["tmux", "list-windows", "-t", session, "-F", TMUX_WINDOW_LIST_FORMAT],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip()
-        fail(f"could not list tmux windows in '{session}'" + (f": {detail}" if detail else ""))
-    windows = {}
-    for line in result.stdout.splitlines():
-        name, window_id = line.split("\t", 1)
-        windows[name] = window_id
-    return windows
-
-
-def inside_tmux() -> bool:
-    return bool(os.environ.get("TMUX")) and bool(shutil.which("tmux"))
-
-
-def open_tmux_window_for_worktree(session: str, name: str, target: str | Path) -> None:
-    """Open or select a tmux window named after the worktree, in a session."""
-    if tmux_session_exists(session):
-        if existing_target := tmux_window_targets(session).get(name):
-            run_tmux(["select-window", "-t", existing_target])
-            log(f"selected tmux window '{name}' in session '{session}'", GREEN)
-            return
-        run_tmux(["new-window", "-t", f"{session}:", "-n", name, "-c", target])
-        log(f"created tmux window '{name}' in session '{session}'", GREEN)
-        return
-
-    run_tmux(["new-session", "-d", "-s", session, "-n", name, "-c", target])
-    log(f"created tmux session '{session}' with window '{name}'", GREEN)
-
-
-def new_tmux_window(name: str, target: Path) -> str:
-    """Create a tmux window in the current session; return its window id."""
-    return subprocess.check_output(
-        ["tmux", "new-window", "-P", "-F", "#{window_id}", "-n", name, "-c", target],
-        encoding="utf-8",
-    ).strip()
-
-
-def run_setup_hook(
-    container: Path, worktree: Path, word: str, branch: str, window_id: str
-) -> None:
-    """Run the container's .tmux-setup hook for a new worktree window.
-
-    The hook is skipped unless it exists and is executable, so the commented
-    sample written by 'gra clone' stays inert until the user opts in.
+    gra does not care what is in it. Whatever a worktree needs opened, laid
+    out or torn down is the hook's business, which is why gra has no tmux in
+    it at all.
     """
-    script = container / SETUP_FILE
+    script = container / name
     if not (script.is_file() and os.access(script, os.X_OK)):
         return
     env = {
         **os.environ,
         "GRA_WORKTREE": str(worktree),
-        "GRA_WINDOW": window_id,
         "GRA_REPO": container.name,
-        "GRA_WORD": word,
+        "GRA_WORD": worktree.name,
         "GRA_BRANCH": branch,
     }
     log(f"running '{script}'")
-    subprocess.run([str(script)], cwd=worktree, env=env, check=False)
-
-
-def open_work_window(container: Path, worktree: Path, word: str, branch: str) -> None:
-    """Open a tmux window for a freshly created worktree and run its hook."""
-    name = tmux_window_name(container.name, word)
-    window_id = new_tmux_window(name, worktree)
-    log(f"created tmux window '{name}'", GREEN)
-    run_setup_hook(container, worktree, word, branch, window_id)
-
-
-def open_tmux_window(root: Path, session: str, name: str | None) -> None:
-    """Choose a worktree by name or with fzf and open it in tmux."""
-    if not session or session.startswith("-"):
-        fail(f"invalid tmux session '{session}'")
-    if not shutil.which("tmux"):
-        fail("tmux is required for 'gra tmux'")
-
-    row = pick_worktree_row(root, "tmux", name)
-    open_tmux_window_for_worktree(session, tmux_window_name(row.repo, row.word), row.path)
-
-
-def kill_tmux_windows(name: str) -> None:
-    """Kill tmux windows named after a removed worktree, in any session."""
-    if not shutil.which("tmux"):
-        return
-    result = subprocess.run(
-        ["tmux", "list-windows", "-a", "-F", TMUX_WINDOW_LIST_FORMAT],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        encoding="utf-8",
-        check=False,
-    )
-    if result.returncode != 0:
-        return
-    for line in result.stdout.splitlines():
-        window_name, _, window_id = line.partition("\t")
-        if window_name == name:
-            log(f"killing tmux window '{name}'")
-            subprocess.run(["tmux", "kill-window", "-t", window_id], check=False)
+    subprocess.run([str(script)], cwd=cwd, env=env, check=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1153,7 +1077,7 @@ def init_submodules(worktree: Path) -> None:
 
 
 def create_worktree(
-    container: Path, root: Path, branch: str, *, no_tmux: bool
+    container: Path, root: Path, branch: str, *, no_hook: bool
 ) -> None:
     """Create a worktree named after the repository next to the bare checkout.
 
@@ -1177,8 +1101,8 @@ def create_worktree(
     init_submodules(target)
     log(f"created '{target}'", GREEN)
 
-    if not no_tmux and inside_tmux():
-        open_work_window(container, target, word, branch)
+    if not no_hook:
+        run_hook(WORK_HOOK, container, target, branch, cwd=target)
 
 
 # ---------------------------------------------------------------------------
@@ -1205,7 +1129,7 @@ def switch_in_place(branch_input: str) -> None:
     log(f"'{worktree.name}' is now on '{branch}'", GREEN)
 
 
-def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
+def work(branch_input: str | None, root: Path, no_hook: bool) -> None:
     """Create a new worktree named after the repository."""
     container = find_container(Path.cwd())
     if not container:
@@ -1214,7 +1138,7 @@ def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
             "use 'gra ls' to see repositories or 'gra clone URL' to add one"
         )
     branch = branch_name_from_input(branch_input) if branch_input else ""
-    create_worktree(container, root, branch, no_tmux=no_tmux)
+    create_worktree(container, root, branch, no_hook=no_hook)
 
 
 # ---------------------------------------------------------------------------
@@ -1254,9 +1178,13 @@ def delete_merged_branch(bare: Path, branch: str) -> None:
 
 
 def remove_worktree(container: Path, worktree: Path, *, force: bool, branch_merged: bool) -> None:
-    """Remove a worktree, delete its merged branch, and kill its tmux window."""
+    """Remove a worktree and delete its branch when it was merged."""
     bare = bare_dir(container)
     branch = git_output(["branch", "--show-current"], cwd=worktree)
+
+    # Before removal, so the hook can still look at the worktree, and from the
+    # container, so its working directory is not the one about to disappear.
+    run_hook(DONE_HOOK, container, worktree, branch or "", cwd=container)
 
     log(f"Removing worktree '{worktree}'")
     remove_args: list[str | Path] = ["worktree", "remove"]
@@ -1271,7 +1199,6 @@ def remove_worktree(container: Path, worktree: Path, *, force: bool, branch_merg
         log(f"kept branch '{branch}'")
 
     log(f"removed '{worktree.name}'", GREEN)
-    kill_tmux_windows(tmux_window_name(container.name, worktree.name))
 
 
 # ---------------------------------------------------------------------------
@@ -1508,11 +1435,11 @@ def parse_args() -> argparse.Namespace:
         "--no-work", action="store_true", help="clone only, without a worktree"
     )
     clone_parser.add_argument(
-        "--no-tmux", action="store_true", help="do not open a tmux window"
+        "--no-hook", action="store_true", help=f"do not run the '{WORK_HOOK}' hook"
     )
     clone_parser.set_defaults(
         handler=lambda args: clone(
-            args.url, args.name, args.root, no_work=args.no_work, no_tmux=args.no_tmux
+            args.url, args.name, args.root, no_work=args.no_work, no_hook=args.no_hook
         )
     )
 
@@ -1532,8 +1459,7 @@ def parse_args() -> argparse.Namespace:
             "Create a new worktree named after an unused word for the repository.\n"
             "With BRANCH, check it out (creating and pushing it when missing);\n"
             "without, start detached at origin's default branch.\n"
-            "Inside tmux, a window named after the worktree is opened; an\n"
-            f"executable '{SETUP_FILE}' in the repository then lays out panes.\n"
+            f"The repository's '{WORK_HOOK}' hook then runs inside it.\n"
             "With --switch, reuse the current worktree instead: switch it to\n"
             "BRANCH with the same branch resolution. Refuses when dirty."
         ),
@@ -1545,7 +1471,7 @@ def parse_args() -> argparse.Namespace:
         help="switch the current worktree to BRANCH instead of creating one",
     )
     work_parser.add_argument(
-        "--no-tmux", action="store_true", help="do not open a tmux window"
+        "--no-hook", action="store_true", help=f"do not run the '{WORK_HOOK}' hook"
     )
 
     def run_work(args: argparse.Namespace) -> None:
@@ -1554,7 +1480,7 @@ def parse_args() -> argparse.Namespace:
                 work_parser.error("--switch requires BRANCH")
             switch_in_place(args.branch)
         else:
-            work(args.branch, args.root, args.no_tmux)
+            work(args.branch, args.root, args.no_hook)
 
     work_parser.set_defaults(handler=run_work)
 
@@ -1563,7 +1489,8 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawTextHelpFormatter,
         help="remove the current worktree when its work is in origin",
         description=(
-            "Remove the current worktree and its tmux window.\n"
+            f"Run the repository's '{DONE_HOOK}' hook, then remove the\n"
+            "current worktree.\n"
             "Refuses when the worktree is dirty or has commits that are not\n"
             "merged into origin's default branch; --force overrides both.\n"
             "The branch is deleted only when its changes are in origin."
@@ -1594,25 +1521,6 @@ def parse_args() -> argparse.Namespace:
     )
     shell_parser.add_argument("shell", choices=["bash"], help="shell to initialize")
     shell_parser.set_defaults(handler=lambda args: print_shell_init(args.shell))
-
-    tmux_parser = subparsers.add_parser(
-        "tmux",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="open a worktree in tmux, by name or with fzf",
-        description=(
-            "Open a worktree in a tmux window named after the worktree.\n"
-            "Choose the worktree by NAME or with fzf."
-        ),
-    )
-    tmux_parser.add_argument("name", nargs="?", help="worktree name, for example 'wolf'")
-    tmux_parser.add_argument(
-        "--session",
-        default=DEFAULT_TMUX_SESSION,
-        help=f"tmux session name to create or update (default: {DEFAULT_TMUX_SESSION})",
-    )
-    tmux_parser.set_defaults(
-        handler=lambda args: open_tmux_window(args.root, args.session, args.name)
-    )
 
     clean_parser = subparsers.add_parser(
         "clean",
