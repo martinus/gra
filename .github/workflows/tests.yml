@@ -8,13 +8,18 @@ on:
 permissions:
   contents: read
 
+# Superseded pull request runs are pointless; runs on main are history.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # The oldest interpreter gra runs on, and the newest.
+        # The oldest interpreter gra runs on, and the one it is developed on.
         python-version: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v4
