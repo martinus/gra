@@ -33,6 +33,9 @@ git config --global gra.root ~/develop
 
 # Installation
 
+`gra` needs Git and Python 3.10 or newer; `fzf` is required for the pickers in
+`gra cd` and `gra tmux`, and `tmux` for the windows it opens.
+
 ```sh
 python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" install
 ```

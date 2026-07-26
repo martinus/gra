@@ -1,5 +1,6 @@
 """Focused tests for gra helper functions."""
 
+import sys
 import threading
 from pathlib import Path
 
@@ -9,6 +10,18 @@ from conftest import load_gra
 
 
 gra = load_gra()
+
+
+def test_older_python_is_rejected_with_a_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The version guard has to fire before any 'str | Path' annotation does."""
+    monkeypatch.setattr(sys, "version_info", (3, 9, 25, "final", 0))
+
+    with pytest.raises(SystemExit) as error:
+        load_gra()
+
+    assert "gra needs Python 3.10 or newer, but this is Python 3.9" in str(error.value)
 
 
 def test_repo_name_from_url_uses_last_path_component() -> None:

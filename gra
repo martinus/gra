@@ -30,6 +30,18 @@ from typing import Callable, NamedTuple, NoReturn, TypeVar
 from urllib.parse import urlparse
 
 
+# gra annotates with 'str | Path', which older interpreters raise a bare
+# TypeError on while defining the first function. Say what is wrong instead.
+# Keep this check free of any syntax those interpreters cannot parse.
+MINIMUM_PYTHON = (3, 10)
+if sys.version_info < MINIMUM_PYTHON:
+    raise SystemExit(
+        "gra needs Python {}.{} or newer, but this is Python {}.{}".format(
+            *MINIMUM_PYTHON, *sys.version_info[:2]
+        )
+    )
+
+
 FALLBACK_ROOT = "~/gra"
 BARE_DIR = ".bare"
 VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
