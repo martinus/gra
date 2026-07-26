@@ -1,5 +1,7 @@
 """CLI tests for the gra commands."""
 
+import importlib.machinery
+import importlib.util
 import os
 import subprocess
 import sys
@@ -8,6 +10,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GRA = REPO_ROOT / "gra"
+
+
+def gra_words() -> tuple[str, ...]:
+    """The worktree name pool, loaded from the script."""
+    loader = importlib.machinery.SourceFileLoader("gra_cli", str(GRA))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module.WORDS
 BARE_DIR = ".bare"
 
 
@@ -76,10 +88,15 @@ def add_feature_branch(source: Path, branch: str = "feature", base: str = "main"
     git(["switch", base], cwd=source)
 
 
-def clone_repo(home: Path, source: Path, name: str | None = None) -> Path:
+def clone_repo(
+    home: Path, source: Path, name: str | None = None, *, work: bool = False
+) -> Path:
+    """Clone for tests that create their own worktrees, so --no-work by default."""
     args = ["clone", str(source)]
     if name:
         args += ["--name", name]
+    if not work:
+        args.append("--no-work")
     result = run_cli(args, home)
     assert result.returncode == 0, result.stderr
     return home / "gra" / (name or source.name)
@@ -135,7 +152,7 @@ def write_tmux_mock(tmp_path: Path, extra_script: str = "") -> tuple[Path, Path]
     return bin_dir, tmux_args
 
 
-def test_clone_creates_bare_repository(tmp_path: Path) -> None:
+def test_clone_with_no_work_creates_only_the_bare_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -160,6 +177,71 @@ def test_clone_creates_bare_repository(tmp_path: Path) -> None:
     exclude = (bare / "info" / "exclude").read_text()
     assert ".claude/worktrees/" in exclude
     assert ".grakeep" in exclude
+
+
+def test_clone_checks_out_the_default_branch(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+
+    container = clone_repo(home, source, work=True)
+
+    worktrees = worktree_dirs(container)
+    assert len(worktrees) == 1
+    worktree = worktrees[0]
+    assert len(worktree.name) == 4
+    assert (worktree / "README.md").is_file()
+    assert git_output(["rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree) == "main"
+    assert git_output(["rev-parse", "--abbrev-ref", "main@{upstream}"], cwd=worktree) == (
+        "origin/main"
+    )
+
+
+def test_clone_checks_out_master_when_it_is_the_default(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project", branch="master")
+
+    container = clone_repo(home, source, work=True)
+
+    worktree = worktree_dirs(container)[0]
+    assert git_output(["rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree) == "master"
+
+
+def test_clone_keeps_the_clone_when_the_remote_has_no_commits(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = tmp_path / "empty"
+    git(["init", "--quiet", str(source)])
+
+    result = run_cli(["clone", str(source)], home)
+
+    assert result.returncode == 0, result.stderr
+    assert "has no default branch yet" in result.stdout
+    container = home / "gra" / "empty"
+    assert (container / BARE_DIR).is_dir()
+    assert worktree_dirs(container) == []
+
+
+def test_clone_keeps_the_clone_when_the_worktree_cannot_be_created(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    # Every worktree name is taken, so worktree creation fails after the clone.
+    taken = home / "gra" / "taken"
+    (taken / BARE_DIR).mkdir(parents=True)
+    for word in gra_words():
+        (taken / word).mkdir()
+
+    result = run_cli(["clone", str(source)], home)
+
+    assert result.returncode == 1
+    assert "all worktree names are taken" in result.stderr
+    container = home / "gra" / "project"
+    assert (container / BARE_DIR).is_dir()
+    assert worktree_dirs(container) == []
 
 
 def test_clone_uses_repo_name_for_remote_urls(tmp_path: Path) -> None:
