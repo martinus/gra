@@ -1,5 +1,6 @@
 """Focused tests for gra helper functions."""
 
+import itertools
 import sys
 import threading
 from pathlib import Path
@@ -51,14 +52,54 @@ def test_pick_worktree_name_skips_taken_names(monkeypatch: pytest.MonkeyPatch) -
     taken = set(gra.WORDS) - {"wolf"}
     monkeypatch.setattr(gra, "taken_worktree_names", lambda root: taken)
 
-    assert gra.pick_worktree_name(Path("root")) == "wolf"
+    assert gra.pick_worktree_name(Path("root"), "martinus/oans") == "wolf"
 
 
 def test_pick_worktree_name_fails_when_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gra, "taken_worktree_names", lambda root: set(gra.WORDS))
 
     with pytest.raises(SystemExit):
-        gra.pick_worktree_name(Path("root"))
+        gra.pick_worktree_name(Path("root"), "martinus/oans")
+
+
+def test_pick_worktree_name_prefers_the_repositorys_own_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gra, "taken_worktree_names", lambda root: set())
+    first, second = itertools.islice(gra.name_candidates("martinus/oans"), 2)
+
+    assert gra.pick_worktree_name(Path("root"), "martinus/oans") == first
+
+    # Taking a candidate shifts this repository to its next one, and nothing else.
+    monkeypatch.setattr(gra, "taken_worktree_names", lambda root: {first})
+    assert gra.pick_worktree_name(Path("root"), "martinus/oans") == second
+
+
+def test_name_candidates_are_stable_and_repository_specific() -> None:
+    oans = list(itertools.islice(gra.name_candidates("martinus/oans"), 5))
+    again = list(itertools.islice(gra.name_candidates("martinus/oans"), 5))
+    other = list(itertools.islice(gra.name_candidates("martinus/gra"), 5))
+
+    assert oans == again
+    assert oans != other
+    assert all(word in gra.WORDS for word in oans + other)
+
+
+def test_worktree_identity_normalizes_the_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls = {
+        "ssh": "git@github.com:martinus/oans.git",
+        "https": "https://github.com/martinus/oans.git",
+        "no-owner": "/srv/repos/oans",
+        "none": None,
+    }
+    monkeypatch.setattr(gra, "origin_url", lambda bare: urls[bare.parent.name])
+
+    assert gra.worktree_identity(Path("root/ssh")) == "martinus/oans"
+    assert gra.worktree_identity(Path("root/https")) == "martinus/oans"
+    assert gra.worktree_identity(Path("root/no-owner")) == "oans"
+    # Without a remote the container name is all there is, and it is enough:
+    # the same clone on another machine has the same directory name.
+    assert gra.worktree_identity(Path("root/none")) == "none"
 
 
 def test_worktree_paths_skips_bare_repository(monkeypatch: pytest.MonkeyPatch) -> None:

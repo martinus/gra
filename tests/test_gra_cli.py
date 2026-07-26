@@ -1,5 +1,6 @@
 """CLI tests for the gra commands."""
 
+import itertools
 import os
 import subprocess
 import sys
@@ -268,6 +269,33 @@ def test_clone_reports_collision_with_name_suggestion(tmp_path: Path) -> None:
     assert "local repository name 'project' already exists" in result.stderr
     assert f"origin: {source}" in result.stderr
     assert "--name project-2" in result.stderr
+
+
+def test_worktree_names_match_across_gra_roots(tmp_path: Path) -> None:
+    """Two machines cloning one repository land on the same worktree name."""
+    source = make_repo(tmp_path, "project")
+    laptop = tmp_path / "laptop"
+    desktop = tmp_path / "desktop"
+    laptop.mkdir()
+    desktop.mkdir()
+
+    on_laptop = clone_repo(laptop, source, work=True)
+    on_desktop = clone_repo(desktop, source, work=True)
+
+    assert worktree_dirs(on_laptop)[0].name == worktree_dirs(on_desktop)[0].name
+
+
+def test_further_worktrees_take_the_next_candidates(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source, work=True)
+
+    work_worktree(home, container)
+
+    # A local path has no owner, so the repository name is the identity.
+    expected = list(itertools.islice(load_gra().name_candidates("project"), 2))
+    assert [path.name for path in worktree_dirs(container)] == sorted(expected)
 
 
 def test_work_creates_random_worktree_for_branch(tmp_path: Path) -> None:
