@@ -24,8 +24,8 @@ both places. A worktree is just a workspace: create one with `gra work`,
 switch branches inside it with `gra work --switch`, and throw it away with
 `gra done`.
 Because names are globally unique, a word like `wolf` identifies one worktree
-across the whole machine - in `gra cd wolf`, in tmux window names, and in
-conversation.
+across the whole machine - in `gra cd wolf`, in the tmux window names the
+default hook gives them, and in conversation.
 
 The default root is `~/gra`. Configure a different root in `~/.gitconfig`:
 
@@ -207,10 +207,13 @@ Git's normal message.
 
 `gra` runs two scripts from the repository container, next to `.bare`:
 
-| Hook      | When                                                    | Working directory |
-| --------- | ------------------------------------------------------- | ----------------- |
-| `work.sh` | after `gra work` or `gra clone` creates a worktree       | the new worktree  |
-| `done.sh` | before `gra done` or `gra clean` removes one            | the container     |
+| Hook      | When                                                | Working directory |
+| --------- | --------------------------------------------------- | ----------------- |
+| `work.sh` | after `gra work` or `gra clone` creates a worktree   | the new worktree  |
+| `done.sh` | before `gra done` or `gra clean` removes one        | the container     |
+
+`gra work --switch` reuses the worktree you are in rather than creating one,
+so it runs neither.
 
 `gra` knows nothing about what is in them. It has no tmux code at all: opening
 a window, laying out panes and closing it again are things the hooks do,
@@ -225,11 +228,11 @@ Both receive:
 | `GRA_WORD`     | worktree name, e.g. `hare`                  |
 | `GRA_BRANCH`   | checked-out branch, or empty when detached  |
 
-`gra clone` writes both, executable and working: out of the box `work.sh`
-opens a tmux window for the new worktree and `done.sh` closes it again. They
-live in the container rather than the repository, so they are personal and
-per-machine and are never committed - which also means `gra` only ever runs a
-script you own.
+`gra clone` writes both, executable and working, and says so: out of the box
+`work.sh` opens a tmux window for the new worktree and `done.sh` closes it
+again. They live in the container rather than the repository, so they are
+personal and per-machine and are never committed. `gra` writes them once and
+never touches them afterwards - edit them and they stay edited.
 
 Edit them freely. `chmod -x work.sh` turns one off; deleting it does the same.
 `done.sh` runs while the worktree still exists, so it can look inside before it
@@ -254,16 +257,17 @@ tmux send-keys    -t "$window" 'htop' Enter
 tmux select-pane  -t "$window".0
 ```
 
-and the `done.sh` that closes what it opened:
+`done.sh` is the mirror image: it finds the window by the same name and kills
+it. Both scripts set `window_name` on their first line, which is the only thing
+they have to agree on.
 
-```sh
-#!/bin/sh
-[ -n "$TMUX" ] || exit 0
+### Upgrading from 1.x
 
-tmux list-windows -a -F '#{window_name} #{window_id}' | while read -r name id; do
-    [ "$name" = "$GRA_REPO/$GRA_WORD" ] && tmux kill-window -t "$id"
-done
-```
+`gra clone` writes the hooks, so repositories cloned with an older `gra` do not
+have them and will open no windows. Copy `work.sh` and `done.sh` from a freshly
+cloned repository, or write your own. A `.tmux-setup` file from 1.x is no
+longer read - it expects a `GRA_WINDOW` that no longer exists, so port it into
+`work.sh` rather than renaming it.
 
 ## done - remove the current worktree
 
@@ -376,9 +380,8 @@ eval "$(gra shell bash)"
 
 ## Opening a worktree in tmux
 
-`gra` used to have a `tmux` command for this. It does not any more - `gra` has
-no tmux code left. The `gra cd` picker prints a path, so a shell function does
-the same job and stays yours to change:
+There is no `gra tmux` command - `gra` has no tmux code. `gra cd` prints a
+path, so a shell function covers it:
 
 ```sh
 gratmux() {
