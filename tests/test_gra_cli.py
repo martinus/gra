@@ -884,7 +884,7 @@ def install_home(tmp_path: Path, *, bashrc: str | None = "# existing\n") -> Path
 def test_install_writes_an_executable_copy(tmp_path: Path) -> None:
     home = install_home(tmp_path)
 
-    result = run_cli(["install"], home)
+    result = run_cli(["install", "--no-check"], home)
 
     assert result.returncode == 0, result.stderr
     installed = home / ".local" / "bin" / "gra"
@@ -895,7 +895,7 @@ def test_install_writes_an_executable_copy(tmp_path: Path) -> None:
 def test_install_adds_shell_integration(tmp_path: Path) -> None:
     home = install_home(tmp_path)
 
-    result = run_cli(["install"], home)
+    result = run_cli(["install", "--no-check"], home)
 
     assert result.returncode == 0, result.stderr
     bashrc = (home / ".bashrc").read_text()
@@ -907,8 +907,8 @@ def test_install_adds_shell_integration(tmp_path: Path) -> None:
 def test_install_is_idempotent(tmp_path: Path) -> None:
     home = install_home(tmp_path)
 
-    run_cli(["install"], home)
-    result = run_cli(["install"], home)
+    run_cli(["install", "--no-check"], home)
+    result = run_cli(["install", "--no-check"], home)
 
     assert result.returncode == 0, result.stderr
     assert (home / ".bashrc").read_text().count('eval "$(gra shell bash)"') == 1
@@ -922,7 +922,7 @@ def test_install_replaces_a_symlink(tmp_path: Path) -> None:
     installed.parent.mkdir(parents=True)
     installed.symlink_to(other)
 
-    result = run_cli(["install"], home)
+    result = run_cli(["install", "--no-check"], home)
 
     assert result.returncode == 0, result.stderr
     assert not installed.is_symlink()
@@ -934,7 +934,7 @@ def test_install_skips_the_path_export_when_already_on_path(tmp_path: Path) -> N
     home = install_home(tmp_path)
     path = os.pathsep.join([str(home / ".local" / "bin"), os.environ.get("PATH", "")])
 
-    result = run_cli(["install"], home, env_extra={"PATH": path})
+    result = run_cli(["install", "--no-check"], home, env_extra={"PATH": path})
 
     assert result.returncode == 0, result.stderr
     bashrc = (home / ".bashrc").read_text()
@@ -945,7 +945,7 @@ def test_install_skips_the_path_export_when_already_on_path(tmp_path: Path) -> N
 def test_install_without_bashrc_only_prints_instructions(tmp_path: Path) -> None:
     home = install_home(tmp_path, bashrc=None)
 
-    result = run_cli(["install"], home)
+    result = run_cli(["install", "--no-check"], home)
 
     assert result.returncode == 0, result.stderr
     assert not (home / ".bashrc").exists()

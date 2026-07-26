@@ -63,17 +63,34 @@ Restart your shell afterwards.
 gra install
 ```
 
-Copies `gra` to `~/.local/bin/gra` and makes it executable, replacing whatever
+Writes `gra` to `~/.local/bin/gra` and makes it executable, replacing whatever
 is there - including a symlink left by an older installation. The `PATH` line
 is added only when `~/.local/bin` is not on your `PATH` already, and the
-`~/.bashrc` block is added only once, so re-running the command upgrades `gra`
-without touching anything else.
+`~/.bashrc` block is added only once, so re-running the command touches nothing
+else.
 
 When there is no `~/.bashrc` - `gra shell` only speaks bash - nothing is
 written and the lines to add are printed instead.
 
-Run from a checkout, `gra install` installs that checkout. Run through
-`python3 -c` there is no file to copy, so the script is downloaded from `main`.
+### Upgrading
+
+`gra install` compares itself against the version on `main` and installs
+whichever is newer, so re-running it is how you upgrade:
+
+```text
+downloading https://raw.githubusercontent.com/martinus/gra/main/gra
+upgrading gra 1.2.0 -> 1.3.0
+installed gra 1.3.0 to '/home/me/.local/bin/gra'
+```
+
+Ties go to the local script, so `./gra install` from a checkout still installs
+that checkout. Run through `python3 -c` there is nothing local, so the download
+is what gets installed - that is the one-liner above.
+
+If the lookup fails - no network, GitHub down - `gra` says so and installs the
+local script anyway; a failed check never costs you a working install. Use
+`--no-check` to skip the lookup entirely, which is also what you want when
+installing an older branch on purpose.
 
 ## clone - clone a remote repository
 
