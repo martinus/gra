@@ -33,12 +33,10 @@ Every repository therefore has an identity, not just GitHub-shaped ones.
 
 ### Candidates
 
-```python
-def name_candidates(identity: str) -> Iterator[str]:
-    for n in itertools.count():
-        digest = hashlib.sha256(f"{identity}#{n}".encode()).digest()
-        yield WORDS[int.from_bytes(digest[:8], "big") % len(WORDS)]
-```
+`name_candidates(identity)` sorts the entire word pool by the SHA-256 of
+`identity#word`: a shuffle of every name, private to that repository, best
+first. Because each name appears exactly once, the list can neither repeat
+itself nor run out.
 
 The hash must be SHA-256, not Python's built-in `hash()`: `hash()` is
 randomized per process for strings, so it would not be stable across two runs
@@ -46,18 +44,17 @@ on one machine, let alone two computers.
 
 ### Picking
 
-`pick_worktree_name(root, identity)` walks the candidates and returns the first
-word not taken by any worktree anywhere under the gra root. There is no stored
-counter: every pick starts at `n = 0`, so a repository's k-th worktree lands on
-roughly its k-th candidate as a consequence of the earlier ones being taken.
+`pick_worktree_name(root, identity)` returns the first name in that order not
+taken by any worktree anywhere under the gra root. There is no stored counter:
+every pick starts at the front, so a repository's k-th worktree lands on its
+k-th name as a consequence of the earlier ones being taken.
 
 A name being taken by this repository's own earlier worktree and by an
 unrelated repository are the same case, handled by the same rule. That single
 rule is the whole collision resolution.
 
-Probing stops after `4 * len(WORDS)` attempts and falls back to a random choice
-among the free names, so a nearly-full root cannot probe pathologically long.
-When no name is free at all, the existing failure is unchanged:
+Running off the end of the list means every name is in use, which keeps the
+existing failure:
 
     all worktree names are taken; run 'gra clean' or 'gra done' first
 
@@ -83,7 +80,8 @@ worktrees are never renamed.
 
 ## Documentation
 
-The README describes names as "short random words" in three places - the
-intro, the `work` section, and the uniqueness paragraph. All three become
-wrong and are reworded to describe names as derived from the repository and
-identical on every machine.
+"Random" becomes wrong everywhere it is asserted, which is more places than
+the README: its intro, `work` section and uniqueness paragraph, but also the
+script's module docstring, the `clone` and `work` help texts that users
+actually read, and two function docstrings. All of them are reworded to
+describe names as derived from the repository and identical on every machine.

@@ -9,9 +9,10 @@ short-named worktrees next to it:
     ~/gra/<repo>/.bare
     ~/gra/<repo>/<word>
 
-Worktree names are short random words, unique across all repositories, and
-unrelated to the branch they have checked out: switch branches freely inside a
-worktree, or start a new one and remove it when done.
+Worktree names are short words derived from the repository - the same on every
+machine - unique across all repositories, and unrelated to the branch they have
+checked out: switch branches freely inside a worktree, or start a new one and
+remove it when done.
 """
 
 __version__ = "1.1.0"
@@ -19,16 +20,14 @@ __version__ = "1.1.0"
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import itertools
 import os
-import random
 import re
 import shutil
 import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Callable, Iterator, NamedTuple, NoReturn, TypeVar
+from typing import Callable, NamedTuple, NoReturn, TypeVar
 from urllib.parse import urlparse
 
 
@@ -217,6 +216,15 @@ class RepoUrl(NamedTuple):
     owner: str | None
     repo: str | None
 
+    def owning_account(self) -> str | None:
+        """The owner when it identifies the repository.
+
+        A local path has an enclosing directory, not an owner: it says where
+        that machine keeps its clones, so it neither disambiguates a name nor
+        means anything on another machine.
+        """
+        return self.owner if self.remote else None
+
 
 def parse_repo_url(url: str) -> RepoUrl:
     """Classify a git URL (HTTPS, SSH scp-like, or local path) in one pass."""
@@ -244,9 +252,9 @@ def suggest_clone_name(url: str, repo_name: str) -> str:
     Remote URLs disambiguate by owner (the common case: two owners with the
     same repository name); anything else falls back to a numeric suffix.
     """
-    parsed = parse_repo_url(url)
-    if parsed.remote and parsed.owner and parsed.owner != repo_name:
-        return f"{repo_name}-{parsed.owner}"
+    owner = parse_repo_url(url).owning_account()
+    if owner and owner != repo_name:
+        return f"{repo_name}-{owner}"
     return f"{repo_name}-2"
 
 
@@ -453,9 +461,7 @@ def worktree_identity(container: Path) -> str:
     """The string a repository's worktree names are derived from.
 
     Normalized to 'owner/repo' so that a machine cloning over SSH and one
-    cloning over HTTPS derive the same names. A local path carries no owner -
-    its parent directory is wherever that machine keeps things - so only the
-    repository name is used, as in suggest_clone_name.
+    cloning over HTTPS derive the same names.
     """
     url = origin_url(bare_dir(container))
     if not url:
@@ -463,41 +469,33 @@ def worktree_identity(container: Path) -> str:
     parsed = parse_repo_url(url)
     if not parsed.repo:
         return container.name
-    if parsed.remote and parsed.owner:
-        return f"{parsed.owner}/{parsed.repo}"
-    return parsed.repo
+    owner = parsed.owning_account()
+    return f"{owner}/{parsed.repo}" if owner else parsed.repo
 
 
-def name_candidates(identity: str) -> Iterator[str]:
-    """Yield a repository's preferred worktree names, best first.
+def name_candidates(identity: str) -> list[str]:
+    """The repository's preference order over the whole word pool, best first.
 
-    SHA-256 rather than hash(), which is randomized per process for strings
-    and so would not even be stable between two runs on one machine.
+    A shuffle of every name rather than a stream of independent draws, so the
+    list cannot repeat itself or run out. SHA-256 rather than hash(), which is
+    randomized per process for strings and so would not even be stable between
+    two runs on one machine.
     """
-    for attempt in itertools.count():
-        digest = hashlib.sha256(f"{identity}#{attempt}".encode()).digest()
-        yield WORDS[int.from_bytes(digest[:8], "big") % len(WORDS)]
+    return sorted(WORDS, key=lambda word: hashlib.sha256(f"{identity}#{word}".encode()).digest())
 
 
 def pick_worktree_name(root: Path, identity: str) -> str:
     """Pick the repository's first name that no worktree anywhere is using.
 
-    Every pick starts at the first candidate, so a repository's k-th worktree
-    lands on roughly its k-th candidate without any counter being stored, and
-    a name freed by 'gra done' is reclaimed by the next 'gra work'.
+    Every pick starts at the front of the list, so a repository's k-th
+    worktree lands on its k-th name without any counter being stored, and a
+    name freed by 'gra done' is reclaimed by the next 'gra work'.
     """
     taken = taken_worktree_names(root)
-    for attempt, word in enumerate(name_candidates(identity)):
+    for word in name_candidates(identity):
         if word not in taken:
             return word
-        # A nearly full pool would keep drawing taken names; stop probing and
-        # take whatever is left instead.
-        if attempt >= 4 * len(WORDS):
-            break
-    available = sorted(set(WORDS) - taken)
-    if not available:
-        fail("all worktree names are taken; run 'gra clean' or 'gra done' first")
-    return random.choice(available)
+    fail("all worktree names are taken; run 'gra clean' or 'gra done' first")
 
 
 # ---------------------------------------------------------------------------
@@ -1106,7 +1104,7 @@ def init_submodules(worktree: Path) -> None:
 def create_worktree(
     container: Path, root: Path, branch: str, *, no_tmux: bool
 ) -> None:
-    """Create a worktree with a fresh random name next to the bare checkout.
+    """Create a worktree named after the repository next to the bare checkout.
 
     An empty branch starts the worktree detached at origin's default branch.
     Shared by 'gra clone' and 'gra work', so both produce the same workspace.
@@ -1157,7 +1155,7 @@ def switch_in_place(branch_input: str) -> None:
 
 
 def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
-    """Create a new worktree with a fresh random name."""
+    """Create a new worktree named after the repository."""
     container = find_container(Path.cwd())
     if not container:
         fail(
@@ -1440,8 +1438,9 @@ def parse_args() -> argparse.Namespace:
         description=(
             f"Clone a repository into '{root}/<repo>/{BARE_DIR}'.\n"
             "The local name is the repository name; use --name to override it.\n"
-            "A worktree named after a random unused word is created next to it,\n"
-            "checked out on origin's default branch; use --no-work to skip it."
+            "A worktree named after an unused word for the repository is\n"
+            "created next to it, checked out on origin's default branch;\n"
+            "use --no-work to skip it."
         ),
     )
     clone_parser.add_argument("url", help="git repository URL to clone")
@@ -1471,7 +1470,7 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawTextHelpFormatter,
         help="work on a branch, in a new or the current worktree",
         description=(
-            "Create a new worktree named after a random unused word.\n"
+            "Create a new worktree named after an unused word for the repository.\n"
             "With BRANCH, check it out (creating and pushing it when missing);\n"
             "without, start detached at origin's default branch.\n"
             "Inside tmux, a window named after the worktree is opened; an\n"

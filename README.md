@@ -154,20 +154,16 @@ directory. Use `--no-tmux` to skip that.
 
 ### How names are chosen
 
-Each repository has a preferred list of names, computed from a hash of its
-remote - `owner/repo`, so an SSH clone and an HTTPS clone of the same
-repository agree. `gra work` walks that list and takes the first name no
-worktree anywhere under the gra root is using.
+A hash of the repository's remote - `owner/repo`, so an SSH clone and an HTTPS
+clone agree - shuffles the whole word pool into an order private to that
+repository. `gra work` takes the first name in that order which no worktree
+anywhere under the gra root is using.
 
-There is no counter: every choice starts at the top of the list, so a
-repository's second worktree lands on its second name simply because the first
-one is occupied. A name held by another repository is skipped the same way, and
-`gra done` frees a name for the next `gra work` to reclaim.
-
-Two machines that clone the same repository therefore end up with the same
-worktree name, without knowing about each other. They only diverge when some
-other repository on one of them already claimed a contested name - and then
-just that repository shifts to its next name.
+Every choice starts at the front of the list, so a repository's second worktree
+gets its second name simply because the first one is occupied. A name held by
+another repository is skipped the same way, and `gra done` frees a name for the
+next `gra work` to reclaim. Machines only disagree when one of them let another
+repository claim a contested name first, and then only that repository shifts.
 
 To reuse the current worktree for other work instead of creating a new one,
 pass `--switch`:

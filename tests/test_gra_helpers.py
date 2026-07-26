@@ -1,6 +1,5 @@
 """Focused tests for gra helper functions."""
 
-import itertools
 import sys
 import threading
 from pathlib import Path
@@ -66,7 +65,7 @@ def test_pick_worktree_name_prefers_the_repositorys_own_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(gra, "taken_worktree_names", lambda root: set())
-    first, second = itertools.islice(gra.name_candidates("martinus/oans"), 2)
+    first, second = gra.name_candidates("martinus/oans")[:2]
 
     assert gra.pick_worktree_name(Path("root"), "martinus/oans") == first
 
@@ -75,14 +74,14 @@ def test_pick_worktree_name_prefers_the_repositorys_own_candidates(
     assert gra.pick_worktree_name(Path("root"), "martinus/oans") == second
 
 
-def test_name_candidates_are_stable_and_repository_specific() -> None:
-    oans = list(itertools.islice(gra.name_candidates("martinus/oans"), 5))
-    again = list(itertools.islice(gra.name_candidates("martinus/oans"), 5))
-    other = list(itertools.islice(gra.name_candidates("martinus/gra"), 5))
+def test_name_candidates_order_the_whole_pool_per_repository() -> None:
+    oans = gra.name_candidates("martinus/oans")
+    other = gra.name_candidates("martinus/gra")
 
-    assert oans == again
+    # Every name appears exactly once, so the list can neither repeat nor run
+    # out: no probe budget is needed, and the k-th worktree is the k-th name.
+    assert sorted(oans) == sorted(gra.WORDS)
     assert oans != other
-    assert all(word in gra.WORDS for word in oans + other)
 
 
 def test_worktree_identity_normalizes_the_remote(monkeypatch: pytest.MonkeyPatch) -> None:
