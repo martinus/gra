@@ -89,10 +89,9 @@ This creates:
 
 The worktree is ready to work in: it checks out origin's default branch as a
 local branch tracking `origin/<branch>`, and inside tmux it opens a window for
-it just like `gra work` does - the `.tmux-setup` sample written by the clone
-stays inert until you make it executable. Use `--no-work` for the bare checkout
-alone, or `--no-tmux` to skip the window. A remote without commits has no
-default branch to check out; `gra` says so and keeps the clone.
+it just like `gra work` does. Use `--no-work` for the bare checkout alone, or
+`--no-tmux` to skip the window. A remote without commits has no default branch
+to check out; `gra` says so and keeps the clone.
 
 The local name is the repository name (`oans` above). If that name is already
 taken, `gra` stops and suggests a distinct one; use `--name` to choose it - for

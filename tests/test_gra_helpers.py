@@ -1,25 +1,11 @@
 """Focused tests for gra helper functions."""
 
-import importlib.machinery
-import importlib.util
 import threading
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-GRA = REPO_ROOT / "gra"
-
-
-def load_gra() -> ModuleType:
-    loader = importlib.machinery.SourceFileLoader("gra_cli", str(GRA))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+from conftest import load_gra
 
 
 gra = load_gra()
