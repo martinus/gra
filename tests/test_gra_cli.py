@@ -126,20 +126,6 @@ def write_fzf_mock(tmp_path: Path, *, select_line: int = 1) -> tuple[Path, Path,
     return bin_dir, fzf_input, fzf_args
 
 
-def write_tmux_mock(tmp_path: Path, extra_script: str = "") -> tuple[Path, Path]:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    tmux = bin_dir / "tmux"
-    tmux_args = tmp_path / "tmux-args"
-    tmux.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\n' \"$@\" >> \"$TMUX_ARGS\"\n"
-        "printf '%s\n' '---' >> \"$TMUX_ARGS\"\n" + extra_script
-    )
-    tmux.chmod(0o755)
-    return bin_dir, tmux_args
-
-
 def test_clone_with_no_work_creates_only_the_bare_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -392,99 +378,52 @@ def test_work_outside_repository_fails(tmp_path: Path) -> None:
     assert "must be run from inside a repository" in result.stderr
 
 
-def test_work_opens_tmux_window_when_inside_tmux(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-
-    bin_dir, tmux_args = write_tmux_mock(tmp_path)
-
-    result = run_cli(
-        ["work", "main"],
-        home,
-        cwd=container,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TMUX": "/tmp/tmux-1000/default,1234,0",
-            "TMUX_ARGS": str(tmux_args),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    worktree = worktree_dirs(container)[0]
-    assert tmux_args.read_text().splitlines() == [
-        "new-window",
-        "-P",
-        "-F",
-        "#{window_id}",
-        "-n",
-        f"project/{worktree.name}",
-        "-c",
-        str(worktree),
-        "---",
-    ]
-    assert f"created tmux window 'project/{worktree.name}'" in result.stdout
-
-
-def write_tmux_window_mock(tmp_path: Path, window_id: str = "@5") -> Path:
-    """tmux mock that returns a window id for 'new-window -P'."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    tmux = bin_dir / "tmux"
-    tmux.write_text(f"#!/bin/sh\nif [ \"$1\" = new-window ]; then echo '{window_id}'; fi\n")
-    tmux.chmod(0o755)
-    return bin_dir
-
-
-def work_inside_tmux(
-    home: Path, container: Path, tmp_path: Path, hook_out: Path
-) -> subprocess.CompletedProcess[str]:
-    """Run 'gra work main' inside a mocked tmux, exposing HOOK_OUT to the hook."""
-    bin_dir = write_tmux_window_mock(tmp_path)
-    return run_cli(
-        ["work", "main"],
-        home,
-        cwd=container,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TMUX": "/tmp/tmux-1000/default,1234,0",
-            "HOOK_OUT": str(hook_out),
-        },
-    )
-
-
-def test_clone_writes_commented_setup_sample(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-
-    sample = container / ".tmux-setup"
-    assert sample.is_file()
-    assert not os.access(sample, os.X_OK)  # inert until the user opts in
-    text = sample.read_text()
-    for var in ("GRA_WORKTREE", "GRA_WINDOW", "GRA_REPO", "GRA_WORD", "GRA_BRANCH"):
-        assert var in text
-    assert "chmod +x" in text
-
-
-def test_work_runs_executable_setup_hook(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-
-    hook_out = tmp_path / "hook-out"
-    hook = container / ".tmux-setup"
-    hook.write_text(
+def recorder(destination: str = "$HOOK_OUT") -> str:
+    """A hook that writes its environment and working directory to a file."""
+    return (
         "#!/bin/sh\n"
         '{ echo "$GRA_REPO"; echo "$GRA_WORD"; echo "$GRA_BRANCH";'
-        ' echo "$GRA_WINDOW"; echo "$GRA_WORKTREE"; pwd; } > "$HOOK_OUT"\n'
+        ' echo "$GRA_WORKTREE"; pwd; } > "' + destination + '"\n'
     )
-    hook.chmod(0o755)
 
-    result = work_inside_tmux(home, container, tmp_path, hook_out)
+
+def write_hook(container: Path, name: str, body: str, *, executable: bool = True) -> Path:
+    hook = container / name
+    hook.write_text(body)
+    hook.chmod(0o755 if executable else 0o644)
+    return hook
+
+
+def test_clone_writes_both_hooks_ready_to_run(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+
+    container = clone_repo(home, source)
+
+    for name in ("work.sh", "done.sh"):
+        hook = container / name
+        assert hook.is_file()
+        # Executable from the start: the tmux behaviour gra used to provide
+        # itself now lives here, so a fresh clone must work without setup.
+        assert os.access(hook, os.X_OK)
+        text = hook.read_text()
+        for var in ("GRA_WORKTREE", "GRA_REPO", "GRA_WORD", "GRA_BRANCH"):
+            assert var in text
+        assert "tmux" in text
+
+
+def test_work_runs_the_work_hook_inside_the_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    hook_out = tmp_path / "hook-out"
+    write_hook(container, "work.sh", recorder())
+
+    result = run_cli(
+        ["work", "main"], home, cwd=container, env_extra={"HOOK_OUT": str(hook_out)}
+    )
 
     assert result.returncode == 0, result.stderr
     worktree = worktree_dirs(container)[0]
@@ -492,26 +431,90 @@ def test_work_runs_executable_setup_hook(tmp_path: Path) -> None:
         "project",
         worktree.name,
         "main",
-        "@5",
         str(worktree),
         str(worktree),
     ]
 
 
-def test_work_skips_non_executable_setup_hook(tmp_path: Path) -> None:
+def test_work_skips_a_non_executable_hook(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
     container = clone_repo(home, source)
-
     hook_out = tmp_path / "hook-out"
-    hook = container / ".tmux-setup"
-    hook.write_text('#!/bin/sh\necho ran > "$HOOK_OUT"\n')  # not executable
+    write_hook(container, "work.sh", recorder(), executable=False)
 
-    result = work_inside_tmux(home, container, tmp_path, hook_out)
+    result = run_cli(
+        ["work", "main"], home, cwd=container, env_extra={"HOOK_OUT": str(hook_out)}
+    )
 
     assert result.returncode == 0, result.stderr
     assert not hook_out.exists()
+
+
+def test_work_no_hook_skips_the_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    hook_out = tmp_path / "hook-out"
+    write_hook(container, "work.sh", recorder())
+
+    result = run_cli(
+        ["work", "--no-hook", "main"],
+        home,
+        cwd=container,
+        env_extra={"HOOK_OUT": str(hook_out)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not hook_out.exists()
+
+
+def test_done_runs_the_done_hook_before_removing_the_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    hook_out = tmp_path / "hook-out"
+    # The hook records whether the worktree is still there while it runs.
+    write_hook(
+        container,
+        "done.sh",
+        recorder() + '[ -d "$GRA_WORKTREE" ] && echo present >> "$HOOK_OUT"\n',
+    )
+
+    result = run_cli(["done"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)})
+
+    assert result.returncode == 0, result.stderr
+    assert not worktree.exists()
+    assert hook_out.read_text().splitlines() == [
+        "project",
+        worktree.name,
+        "main",
+        str(worktree),
+        str(container),
+        "present",
+    ]
+
+
+def test_clean_runs_the_done_hook_for_each_removed_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    first = work_worktree(home, container, "main")
+    second = work_worktree(home, container)
+    hook_out = tmp_path / "hook-out"
+    write_hook(container, "done.sh", '#!/bin/sh\necho "$GRA_WORD" >> "$HOOK_OUT"\n')
+
+    result = run_cli(
+        ["clean", "--yes", "--no-fetch"], home, env_extra={"HOOK_OUT": str(hook_out)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(hook_out.read_text().split()) == sorted([first.name, second.name])
 
 
 def test_work_switch_changes_branch_in_place(tmp_path: Path) -> None:
@@ -608,44 +611,6 @@ def test_done_refuses_unmerged_branch_but_force_keeps_it(tmp_path: Path) -> None
     assert not worktree.exists()
     git(["show-ref", "--verify", "--quiet", "refs/heads/feature"], cwd=bare)
     assert "kept branch 'feature'" in forced.stdout
-
-
-def test_done_kills_matching_tmux_window(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    bin_dir, tmux_args = write_tmux_mock(
-        tmp_path,
-        "if [ \"$1\" = list-windows ]; then printf '%s\\t@7\\n' \"$TMUX_WORD\"; fi\n",
-    )
-
-    result = run_cli(
-        ["done"],
-        home,
-        cwd=worktree,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TMUX_ARGS": str(tmux_args),
-            "TMUX_WORD": f"project/{worktree.name}",
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    lines = tmux_args.read_text().splitlines()
-    assert lines == [
-        "list-windows",
-        "-a",
-        "-F",
-        "#{window_name}\t#{window_id}",
-        "---",
-        "kill-window",
-        "-t",
-        "@7",
-        "---",
-    ]
 
 
 def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
@@ -781,49 +746,6 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     assert "--with-nth=2" in args
     assert fzf_input.read_text().splitlines() == [
         f"{worktree}\tproject  {worktree.name}  main",
-    ]
-
-
-def test_tmux_with_name_creates_window_for_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    bin_dir, tmux_args = write_tmux_mock(
-        tmp_path, "if [ \"$1\" = has-session ]; then exit 1; fi\n"
-    )
-
-    result = run_cli(
-        ["tmux", worktree.name],
-        home,
-        cwd=tmp_path,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "TMUX_ARGS": str(tmux_args),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert (
-        f"created tmux session 'main' with window 'project/{worktree.name}'"
-        in result.stdout
-    )
-    assert tmux_args.read_text().splitlines() == [
-        "has-session",
-        "-t",
-        "main",
-        "---",
-        "new-session",
-        "-d",
-        "-s",
-        "main",
-        "-n",
-        f"project/{worktree.name}",
-        "-c",
-        str(worktree),
-        "---",
     ]
 
 

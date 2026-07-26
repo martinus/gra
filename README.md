@@ -35,8 +35,9 @@ git config --global gra.root ~/develop
 
 # Installation
 
-`gra` needs Git and Python 3.10 or newer; `fzf` is required for the pickers in
-`gra cd` and `gra tmux`, and `tmux` for the windows it opens.
+`gra` needs Git and Python 3.10 or newer, and `fzf` for the `gra cd` picker.
+`gra` itself never calls `tmux`; the hooks it writes for you do, so `tmux` is
+only needed if you keep them.
 
 ```sh
 python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" install
@@ -113,10 +114,10 @@ This creates:
 ```
 
 The worktree is ready to work in: it checks out origin's default branch as a
-local branch tracking `origin/<branch>`, and inside tmux it opens a window for
-it just like `gra work` does. Use `--no-work` for the bare checkout alone, or
-`--no-tmux` to skip the window. A remote without commits has no default branch
-to check out; `gra` says so and keeps the clone.
+local branch tracking `origin/<branch>`, and runs the repository's `work.sh`
+hook just like `gra work` does. Use `--no-work` for the bare checkout alone, or
+`--no-hook` to skip the hook. A remote without commits has no default branch to
+check out; `gra` says so and keeps the clone.
 
 The local name is the repository name (`oans` above). If that name is already
 taken, `gra` stops and suggests a distinct one; use `--name` to choose it - for
@@ -168,9 +169,9 @@ gra work
 
 If the repository has submodules, they are initialized in the new worktree.
 
-When run inside tmux, `gra work` also opens a tmux window named
-`<repo>/<worktree>`, for example `oans/hare`, starting in the worktree
-directory. Use `--no-tmux` to skip that.
+`gra work` then runs the repository's `work.sh` hook inside the new worktree.
+As written by `gra clone` that opens a tmux window named `<repo>/<worktree>`,
+for example `oans/hare`. Use `--no-hook` to skip it.
 
 ### How names are chosen
 
@@ -202,47 +203,67 @@ or stash first. Git allows a branch to be checked out in only one worktree at a
 time, so switching to a branch that is already checked out elsewhere fails with
 Git's normal message.
 
-### The `.tmux-setup` hook
+### Hooks
 
-After creating a worktree and its tmux window, `gra work` looks for a
-`.tmux-setup` file in the repository container (next to `.bare`) and runs it if
-it is executable. Use it to prepare the worktree (symlinks, build config) and
-to lay out tmux panes - both jobs in one script.
+`gra` runs two scripts from the repository container, next to `.bare`:
 
-`gra clone` drops a commented, non-executable sample there. Uncomment what you
-want and `chmod +x .tmux-setup` to activate it; it stays inert until then. The
-file lives in the container, not the repository, so it is personal and
-per-machine and is never committed or shared - which also means `gra` only ever
-runs a script you wrote yourself.
+| Hook      | When                                                    | Working directory |
+| --------- | ------------------------------------------------------- | ----------------- |
+| `work.sh` | after `gra work` or `gra clone` creates a worktree       | the new worktree  |
+| `done.sh` | before `gra done` or `gra clean` removes one            | the container     |
 
-The hook runs with the new worktree as the working directory and these
-variables:
+`gra` knows nothing about what is in them. It has no tmux code at all: opening
+a window, laying out panes and closing it again are things the hooks do,
+which is why they are shell scripts and not options.
 
-| Variable       | Value                                             |
-| -------------- | ------------------------------------------------- |
-| `GRA_WORKTREE` | absolute path to the new worktree (also the cwd)  |
-| `GRA_WINDOW`   | tmux window id, e.g. `@5`, to target with `tmux`  |
-| `GRA_REPO`     | repository name, e.g. `nanobench`                 |
-| `GRA_WORD`     | worktree name, e.g. `hare`                        |
-| `GRA_BRANCH`   | checked-out branch, or empty when detached        |
+Both receive:
 
-A hook that symlinks a build file and splits the window into Claude, editor,
-and monitor panes:
+| Variable       | Value                                       |
+| -------------- | ------------------------------------------- |
+| `GRA_WORKTREE` | absolute path to the worktree               |
+| `GRA_REPO`     | repository name, e.g. `nanobench`           |
+| `GRA_WORD`     | worktree name, e.g. `hare`                  |
+| `GRA_BRANCH`   | checked-out branch, or empty when detached  |
+
+`gra clone` writes both, executable and working: out of the box `work.sh`
+opens a tmux window for the new worktree and `done.sh` closes it again. They
+live in the container rather than the repository, so they are personal and
+per-machine and are never committed - which also means `gra` only ever runs a
+script you own.
+
+Edit them freely. `chmod -x work.sh` turns one off; deleting it does the same.
+`done.sh` runs while the worktree still exists, so it can look inside before it
+goes.
+
+The `work.sh` you get, with the pane layout uncommented:
 
 ```sh
 #!/bin/sh
+[ -n "$TMUX" ] || exit 0
+
+window=$(tmux new-window -P -F '#{window_id}' \
+    -n "$GRA_REPO/$GRA_WORD" -c "$GRA_WORKTREE")
+
 ln -sf ../shared/compile_commands.json .
 
-tmux send-keys    -t "$GRA_WINDOW" 'claude' Enter
-tmux split-window -h -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
-tmux send-keys    -t "$GRA_WINDOW" 'hx .' Enter
-tmux split-window -v -t "$GRA_WINDOW" -c "$GRA_WORKTREE"
-tmux send-keys    -t "$GRA_WINDOW" 'htop' Enter
-tmux select-pane  -t "$GRA_WINDOW".0
+tmux send-keys    -t "$window" 'claude' Enter
+tmux split-window -h -t "$window" -c "$GRA_WORKTREE"
+tmux send-keys    -t "$window" 'hx .' Enter
+tmux split-window -v -t "$window" -c "$GRA_WORKTREE"
+tmux send-keys    -t "$window" 'htop' Enter
+tmux select-pane  -t "$window".0
 ```
 
-The hook runs only when `gra work` creates a worktree, and only inside tmux.
-`gra tmux` opens a plain window without re-running it.
+and the `done.sh` that closes what it opened:
+
+```sh
+#!/bin/sh
+[ -n "$TMUX" ] || exit 0
+
+tmux list-windows -a -F '#{window_name} #{window_id}' | while read -r name id; do
+    [ "$name" = "$GRA_REPO/$GRA_WORD" ] && tmux kill-window -t "$id"
+done
+```
 
 ## done - remove the current worktree
 
@@ -259,7 +280,7 @@ equivalence). `--force` overrides both checks. On removal:
 * the worktree directory is removed,
 * the local branch is deleted, but only when its changes were verified to be
   merged - with `--force` on an unmerged branch, the branch is kept,
-* any tmux window named after the worktree is killed.
+* `done.sh` runs first, while the worktree is still there.
 
 With the bash shell integration, `gra done` also moves your shell out of the
 removed directory into the repository folder.
@@ -333,8 +354,8 @@ repository. Use `--no-fetch` to skip that step.
 
 `gra clean --yes` deletes the local branch of each removed worktree - the
 merged or patch-equivalent verification already happened as part of the
-verdict. It also kills tmux windows named after removed worktrees. It never
-removes dirty worktrees.
+verdict. It runs each repository's `done.sh` before removing a worktree, like
+`gra done` does. It never removes dirty worktrees.
 
 ## cd - jump to a worktree
 
@@ -353,26 +374,20 @@ shell's directory, add this to `~/.bashrc` after `gra` is on your `PATH`:
 eval "$(gra shell bash)"
 ```
 
-## tmux - open a worktree in tmux
+## Opening a worktree in tmux
 
-Run `gra tmux` to choose a worktree with the same `fzf` picker as `gra cd`, or
-pass a worktree name directly, then open it in a tmux window. The default
-session is `main`; it is created when it does not exist:
-
-```sh
-gra tmux        # pick with fzf
-gra tmux wolf   # open the worktree named wolf
-```
-
-The window starts in the worktree root and is named `<repo>/<worktree>`, for
-example `oans/wolf`, so the window list shows at a glance which
-repository each workspace belongs to. If a window with the same name already
-exists, `gra tmux` selects it instead of creating a duplicate.
-
-Use `--session` for a different tmux session:
+`gra` used to have a `tmux` command for this. It does not any more - `gra` has
+no tmux code left. The `gra cd` picker prints a path, so a shell function does
+the same job and stays yours to change:
 
 ```sh
-gra tmux --session work
+gratmux() {
+    local path name
+    path="$(gra cd "$@")" || return
+    name="$(basename "$(dirname "$path")")/$(basename "$path")"
+    tmux select-window -t "$name" 2>/dev/null ||
+        tmux new-window -n "$name" -c "$path"
+}
 ```
 
 # Working with Claude
