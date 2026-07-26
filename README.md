@@ -72,7 +72,8 @@ Run from a checkout, `gra install` installs that checkout. Run through
 
 ## clone - clone a remote repository
 
-Clones one repository as a bare checkout into `~/gra/<repo>/.bare`:
+Clones one repository as a bare checkout into `~/gra/<repo>/.bare` and opens a
+worktree next to it:
 
 ```sh
 gra clone git@github.com:martinus/oans.git
@@ -82,13 +83,20 @@ This creates:
 
 ```text
 ~/gra/oans
-└── .bare
+├── .bare
+└── hare        <- checked out main
 ```
 
-No branch is checked out; use `gra work` to begin working. The local name is
-the repository name (`oans` above). If that name is already taken, `gra` stops
-and suggests a distinct one; use `--name` to choose it - for two owners of the
-same repository, disambiguating by owner works well:
+The worktree is ready to work in: it checks out origin's default branch as a
+local branch tracking `origin/<branch>`, and inside tmux it opens a window for
+it just like `gra work` does - the `.tmux-setup` sample written by the clone
+stays inert until you make it executable. Use `--no-work` for the bare checkout
+alone, or `--no-tmux` to skip the window. A remote without commits has no
+default branch to check out; `gra` says so and keeps the clone.
+
+The local name is the repository name (`oans` above). If that name is already
+taken, `gra` stops and suggests a distinct one; use `--name` to choose it - for
+two owners of the same repository, disambiguating by owner works well:
 
 ```sh
 gra clone git@github.com:andreas/oans.git --name oans-andreas

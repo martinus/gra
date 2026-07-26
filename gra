@@ -535,7 +535,7 @@ def write_setup_sample(container: Path) -> None:
         script.write_text(SETUP_SAMPLE, encoding="utf-8")
 
 
-def clone(url: str, name: str | None, root: Path) -> None:
+def clone(url: str, name: str | None, root: Path, no_work: bool, no_tmux: bool) -> None:
     """Clone a repository into a bare checkout under the gra root."""
     try:
         local_name = name or repo_name_from_url(url)
@@ -559,14 +559,32 @@ def clone(url: str, name: str | None, root: Path) -> None:
         # Bare repositories disable reflogs by default; keep them for safety.
         run_git(["config", "core.logAllRefUpdates", "true"], cwd=bare)
         run_git(["fetch", "--prune", "origin"], cwd=bare)
-        run_git(["remote", "set-head", "origin", "--auto"], cwd=bare)
+        # A remote without commits has no HEAD to resolve. That is not a failed
+        # clone, and remote_default_branch falls back to main/master anyway.
+        git_output(["remote", "set-head", "origin", "--auto"], cwd=bare)
         add_local_excludes(bare)
         write_setup_sample(container)
-        log(f"created '{container}'; run 'gra work' inside it to begin working", GREEN)
+        log(f"created '{container}'", GREEN)
     except Exception:
         if container.exists():
             shutil.rmtree(container)
         raise
+
+    # Past this point the clone itself succeeded, so it is kept whatever
+    # happens to the worktree: no cleanup here, and no failure for a remote
+    # that has nothing to check out yet.
+    if no_work:
+        log(f"run 'gra work' inside '{container}' to begin working", GREEN)
+        return
+    ref = remote_default_branch(bare)
+    if not ref:
+        log(
+            f"'{url}' has no default branch yet; "
+            "run 'gra work' once it has its first commit",
+            YELLOW,
+        )
+        return
+    create_worktree(container, root, ref.removeprefix("origin/"), no_tmux)
 
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1043,34 @@ def init_submodules(worktree: Path) -> None:
         run_git(["submodule", "update", "--init", "--recursive"], cwd=worktree)
 
 
+def create_worktree(container: Path, root: Path, branch: str, no_tmux: bool) -> Path:
+    """Create a worktree with a fresh random name next to the bare checkout.
+
+    An empty branch starts the worktree detached at origin's default branch.
+    Shared by 'gra clone' and 'gra work', so both produce the same workspace.
+    """
+    bare = bare_dir(container)
+    word = pick_worktree_name(root)
+    target = container / word
+
+    if branch:
+        log(f"Creating worktree '{target}' for branch '{branch}'")
+        add_attached_worktree(bare, target, branch)
+    else:
+        ref = remote_default_branch(bare)
+        if not ref:
+            fail("cannot find origin's default branch; pass a branch to 'gra work'")
+        log(f"Creating worktree '{target}' detached at '{ref}'")
+        run_git(["worktree", "add", "--detach", target, ref], cwd=bare)
+
+    init_submodules(target)
+    log(f"created '{target}'", GREEN)
+
+    if not no_tmux and inside_tmux():
+        open_work_window(container, target, word, branch)
+    return target
+
+
 # ---------------------------------------------------------------------------
 # work command
 # ---------------------------------------------------------------------------
@@ -1057,27 +1103,8 @@ def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
             "gra work must be run from inside a repository under the gra root;\n"
             "use 'gra ls' to see repositories or 'gra clone URL' to add one"
         )
-    bare = bare_dir(container)
-    word = pick_worktree_name(root)
-    target = container / word
-
-    if branch_input:
-        branch = branch_name_from_input(branch_input)
-        log(f"Creating worktree '{target}' for branch '{branch}'")
-        add_attached_worktree(bare, target, branch)
-    else:
-        branch = ""
-        ref = remote_default_branch(bare)
-        if not ref:
-            fail("cannot find origin's default branch; pass a branch to 'gra work'")
-        log(f"Creating worktree '{target}' detached at '{ref}'")
-        run_git(["worktree", "add", "--detach", target, ref], cwd=bare)
-
-    init_submodules(target)
-    log(f"created '{target}'", GREEN)
-
-    if not no_tmux and inside_tmux():
-        open_work_window(container, target, word, branch)
+    branch = branch_name_from_input(branch_input) if branch_input else ""
+    create_worktree(container, root, branch, no_tmux)
 
 
 # ---------------------------------------------------------------------------
@@ -1352,12 +1379,23 @@ def parse_args() -> argparse.Namespace:
         description=(
             f"Clone a repository into '{root}/<repo>/{BARE_DIR}'.\n"
             "The local name is the repository name; use --name to override it.\n"
-            "No branch is checked out; use 'gra work' to create a worktree."
+            "A worktree named after a random unused word is created next to it,\n"
+            "checked out on origin's default branch; use --no-work to skip it."
         ),
     )
     clone_parser.add_argument("url", help="git repository URL to clone")
     clone_parser.add_argument("--name", help="local repository name under the gra root")
-    clone_parser.set_defaults(handler=lambda args: clone(args.url, args.name, args.root))
+    clone_parser.add_argument(
+        "--no-work", action="store_true", help="clone only, without a worktree"
+    )
+    clone_parser.add_argument(
+        "--no-tmux", action="store_true", help="do not open a tmux window"
+    )
+    clone_parser.set_defaults(
+        handler=lambda args: clone(
+            args.url, args.name, args.root, args.no_work, args.no_tmux
+        )
+    )
 
     ls_parser = subparsers.add_parser(
         "ls",
