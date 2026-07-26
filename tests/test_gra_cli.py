@@ -1,25 +1,13 @@
 """CLI tests for the gra commands."""
 
-import importlib.machinery
-import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-GRA = REPO_ROOT / "gra"
+from conftest import GRA, load_gra
 
 
-def gra_words() -> tuple[str, ...]:
-    """The worktree name pool, loaded from the script."""
-    loader = importlib.machinery.SourceFileLoader("gra_cli", str(GRA))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module.WORDS
 BARE_DIR = ".bare"
 
 
@@ -232,7 +220,7 @@ def test_clone_keeps_the_clone_when_the_worktree_cannot_be_created(
     # Every worktree name is taken, so worktree creation fails after the clone.
     taken = home / "gra" / "taken"
     (taken / BARE_DIR).mkdir(parents=True)
-    for word in gra_words():
+    for word in load_gra().WORDS:
         (taken / word).mkdir()
 
     result = run_cli(["clone", str(source)], home)

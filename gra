@@ -167,7 +167,7 @@ def run_git(args: list[str | Path], *, cwd: Path | None = None) -> None:
 
 
 def git_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None:
-    """Run a quiet Git probe; return None when Git cannot answer it."""
+    """Run Git quietly; return its output, or None when the command fails."""
     try:
         return subprocess.check_output(
             ["git", *args], cwd=cwd, encoding="utf-8", stderr=subprocess.DEVNULL
@@ -535,8 +535,10 @@ def write_setup_sample(container: Path) -> None:
         script.write_text(SETUP_SAMPLE, encoding="utf-8")
 
 
-def clone(url: str, name: str | None, root: Path, no_work: bool, no_tmux: bool) -> None:
-    """Clone a repository into a bare checkout under the gra root."""
+def clone(
+    url: str, name: str | None, root: Path, *, no_work: bool, no_tmux: bool
+) -> None:
+    """Clone into a bare checkout under the gra root, with a worktree on it."""
     try:
         local_name = name or repo_name_from_url(url)
     except ValueError as error:
@@ -564,7 +566,6 @@ def clone(url: str, name: str | None, root: Path, no_work: bool, no_tmux: bool) 
         git_output(["remote", "set-head", "origin", "--auto"], cwd=bare)
         add_local_excludes(bare)
         write_setup_sample(container)
-        log(f"created '{container}'", GREEN)
     except Exception:
         if container.exists():
             shutil.rmtree(container)
@@ -574,8 +575,9 @@ def clone(url: str, name: str | None, root: Path, no_work: bool, no_tmux: bool) 
     # happens to the worktree: no cleanup here, and no failure for a remote
     # that has nothing to check out yet.
     if no_work:
-        log(f"run 'gra work' inside '{container}' to begin working", GREEN)
+        log(f"created '{container}'; run 'gra work' inside it to begin working", GREEN)
         return
+    log(f"created '{container}'", GREEN)
     ref = remote_default_branch(bare)
     if not ref:
         log(
@@ -584,7 +586,7 @@ def clone(url: str, name: str | None, root: Path, no_work: bool, no_tmux: bool) 
             YELLOW,
         )
         return
-    create_worktree(container, root, ref.removeprefix("origin/"), no_tmux)
+    create_worktree(container, root, ref.removeprefix("origin/"), no_tmux=no_tmux)
 
 
 # ---------------------------------------------------------------------------
@@ -1043,7 +1045,9 @@ def init_submodules(worktree: Path) -> None:
         run_git(["submodule", "update", "--init", "--recursive"], cwd=worktree)
 
 
-def create_worktree(container: Path, root: Path, branch: str, no_tmux: bool) -> Path:
+def create_worktree(
+    container: Path, root: Path, branch: str, *, no_tmux: bool
+) -> None:
     """Create a worktree with a fresh random name next to the bare checkout.
 
     An empty branch starts the worktree detached at origin's default branch.
@@ -1068,7 +1072,6 @@ def create_worktree(container: Path, root: Path, branch: str, no_tmux: bool) -> 
 
     if not no_tmux and inside_tmux():
         open_work_window(container, target, word, branch)
-    return target
 
 
 # ---------------------------------------------------------------------------
@@ -1104,7 +1107,7 @@ def work(branch_input: str | None, root: Path, no_tmux: bool) -> None:
             "use 'gra ls' to see repositories or 'gra clone URL' to add one"
         )
     branch = branch_name_from_input(branch_input) if branch_input else ""
-    create_worktree(container, root, branch, no_tmux)
+    create_worktree(container, root, branch, no_tmux=no_tmux)
 
 
 # ---------------------------------------------------------------------------
@@ -1393,7 +1396,7 @@ def parse_args() -> argparse.Namespace:
     )
     clone_parser.set_defaults(
         handler=lambda args: clone(
-            args.url, args.name, args.root, args.no_work, args.no_tmux
+            args.url, args.name, args.root, no_work=args.no_work, no_tmux=args.no_tmux
         )
     )
 
