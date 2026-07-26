@@ -18,6 +18,8 @@ __version__ = "1.1.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import itertools
 import os
 import random
 import re
@@ -26,7 +28,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Callable, NamedTuple, NoReturn, TypeVar
+from typing import Callable, Iterator, NamedTuple, NoReturn, TypeVar
 from urllib.parse import urlparse
 
 
@@ -447,8 +449,52 @@ def taken_worktree_names(root: Path) -> set[str]:
     return names
 
 
-def pick_worktree_name(root: Path) -> str:
-    available = sorted(set(WORDS) - taken_worktree_names(root))
+def worktree_identity(container: Path) -> str:
+    """The string a repository's worktree names are derived from.
+
+    Normalized to 'owner/repo' so that a machine cloning over SSH and one
+    cloning over HTTPS derive the same names. A local path carries no owner -
+    its parent directory is wherever that machine keeps things - so only the
+    repository name is used, as in suggest_clone_name.
+    """
+    url = origin_url(bare_dir(container))
+    if not url:
+        return container.name
+    parsed = parse_repo_url(url)
+    if not parsed.repo:
+        return container.name
+    if parsed.remote and parsed.owner:
+        return f"{parsed.owner}/{parsed.repo}"
+    return parsed.repo
+
+
+def name_candidates(identity: str) -> Iterator[str]:
+    """Yield a repository's preferred worktree names, best first.
+
+    SHA-256 rather than hash(), which is randomized per process for strings
+    and so would not even be stable between two runs on one machine.
+    """
+    for attempt in itertools.count():
+        digest = hashlib.sha256(f"{identity}#{attempt}".encode()).digest()
+        yield WORDS[int.from_bytes(digest[:8], "big") % len(WORDS)]
+
+
+def pick_worktree_name(root: Path, identity: str) -> str:
+    """Pick the repository's first name that no worktree anywhere is using.
+
+    Every pick starts at the first candidate, so a repository's k-th worktree
+    lands on roughly its k-th candidate without any counter being stored, and
+    a name freed by 'gra done' is reclaimed by the next 'gra work'.
+    """
+    taken = taken_worktree_names(root)
+    for attempt, word in enumerate(name_candidates(identity)):
+        if word not in taken:
+            return word
+        # A nearly full pool would keep drawing taken names; stop probing and
+        # take whatever is left instead.
+        if attempt >= 4 * len(WORDS):
+            break
+    available = sorted(set(WORDS) - taken)
     if not available:
         fail("all worktree names are taken; run 'gra clean' or 'gra done' first")
     return random.choice(available)
@@ -1066,7 +1112,7 @@ def create_worktree(
     Shared by 'gra clone' and 'gra work', so both produce the same workspace.
     """
     bare = bare_dir(container)
-    word = pick_worktree_name(root)
+    word = pick_worktree_name(root, worktree_identity(container))
     target = container / word
 
     if branch:

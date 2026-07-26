@@ -16,9 +16,11 @@ There is no default checkout: no branch is ever pinned by a checkout you do not
 use, so any worktree can be on `main`, rebase onto it, or switch to any branch
 freely.
 
-Worktree names are short random words (`hare`, `rose`, `wolf`, ...), all four
-letters, unique across **all** repositories, and unrelated to the branch they
-have checked out. A worktree is just a workspace: create one with `gra work`,
+Worktree names are short words (`hare`, `rose`, `wolf`, ...), all four letters,
+unique across **all** repositories, and unrelated to the branch they have
+checked out. They are derived from the repository rather than drawn at random,
+so cloning `oans` on your laptop and on your desktop gives you the same name in
+both places. A worktree is just a workspace: create one with `gra work`,
 switch branches inside it with `gra work --switch`, and throw it away with
 `gra done`.
 Because names are globally unique, a word like `wolf` identifies one worktree
@@ -117,8 +119,8 @@ The bare checkout is set up to behave like a normal clone:
 ## work - create a new worktree
 
 Run `gra work` from anywhere inside a repository under the gra root. It picks
-a random unused four-letter word and creates a worktree with that name next to
-`.bare`:
+an unused four-letter word for the repository and creates a worktree with that
+name next to `.bare`:
 
 ```sh
 gra work feature/search
@@ -150,9 +152,22 @@ When run inside tmux, `gra work` also opens a tmux window named
 `<repo>/<worktree>`, for example `oans/hare`, starting in the worktree
 directory. Use `--no-tmux` to skip that.
 
-Worktree names are unique across all repositories under the gra root: before
-choosing, `gra` removes every name that is already taken anywhere and picks a
-random one from the rest.
+### How names are chosen
+
+Each repository has a preferred list of names, computed from a hash of its
+remote - `owner/repo`, so an SSH clone and an HTTPS clone of the same
+repository agree. `gra work` walks that list and takes the first name no
+worktree anywhere under the gra root is using.
+
+There is no counter: every choice starts at the top of the list, so a
+repository's second worktree lands on its second name simply because the first
+one is occupied. A name held by another repository is skipped the same way, and
+`gra done` frees a name for the next `gra work` to reclaim.
+
+Two machines that clone the same repository therefore end up with the same
+worktree name, without knowing about each other. They only diverge when some
+other repository on one of them already claimed a contested name - and then
+just that repository shifts to its next name.
 
 To reuse the current worktree for other work instead of creating a new one,
 pass `--switch`:
