@@ -32,6 +32,14 @@ def test_repo_name_from_url_uses_last_path_component() -> None:
     assert gra.repo_name_from_url("file:///tmp/martinus/oans") == "oans"
 
 
+def test_parse_repo_url_reads_the_host() -> None:
+    assert gra.parse_repo_url("git@github.com:martinus/oans.git").host == "github.com"
+    assert gra.parse_repo_url("https://github.com/martinus/oans").host == "github.com"
+    assert gra.parse_repo_url("ssh://git@example.org:22/team/tools.git").host == "example.org"
+    # A path has no host, so nothing will be asked about forks.
+    assert gra.parse_repo_url("/tmp/repos/oans").host is None
+
+
 def test_suggest_clone_name_prefers_owner() -> None:
     assert gra.suggest_clone_name("git@github.com:martinus/oans.git", "oans") == "oans-martinus"
     assert gra.suggest_clone_name("/tmp/repos/oans", "oans") == "oans-2"

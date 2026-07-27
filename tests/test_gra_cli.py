@@ -290,6 +290,87 @@ def test_no_submodules_holds_for_this_and_later_worktrees(tmp_path: Path) -> Non
     )
 
 
+def github_source(tmp_path: Path, home: Path, name: str = "proj") -> str:
+    """A local repository reachable at a github.com URL, via url.insteadOf.
+
+    Lets the fork tests run offline: gra sees github.com and decides to ask
+    about a parent, while git resolves the URL to a path on disk.
+    """
+    source = make_repo(tmp_path, name)
+    url = f"git@github.com:me/{name}.git"
+    (home / ".gitconfig").write_text(f'[url "{source}"]\n\tinsteadOf = {url}\n')
+    return url
+
+
+def gh_mock(tmp_path: Path, parent: str = "") -> dict[str, str]:
+    """A gh that reports `parent` and records that it was asked."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(f'#!/bin/sh\necho "$@" >> "$GH_CALLS"\nprintf \'%s\\n\' "{parent}"\n')
+    gh.chmod(0o755)
+    return {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GH_CALLS": str(tmp_path / "gh-calls"),
+    }
+
+
+def test_clone_adds_upstream_for_a_fork(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    url = github_source(tmp_path, home)
+    parent = "git@github.com:upstream/proj.git"
+
+    result = run_cli(["clone", url], home, env_extra=gh_mock(tmp_path, parent))
+
+    assert result.returncode == 0, result.stderr
+    bare = home / "gra" / "proj" / BARE_DIR
+    assert git_output(["config", "--get", "remote.upstream.url"], cwd=bare) == parent
+    assert "added remote 'upstream'" in result.stdout
+
+
+def test_clone_adds_no_upstream_when_it_is_not_a_fork(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    url = github_source(tmp_path, home)
+
+    result = run_cli(["clone", url], home, env_extra=gh_mock(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    bare = home / "gra" / "proj" / BARE_DIR
+    assert git_fails(["config", "--get", "remote.upstream.url"], cwd=bare)
+    # gh was asked; it simply said the repository has no parent.
+    assert (tmp_path / "gh-calls").is_file()
+
+
+def test_clone_no_upstream_does_not_ask(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    url = github_source(tmp_path, home)
+
+    result = run_cli(
+        ["clone", url, "--no-upstream"], home, env_extra=gh_mock(tmp_path, "x")
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "gh-calls").exists()
+
+
+def test_clone_does_not_ask_gh_about_a_non_github_remote(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+
+    result = run_cli([
+        "clone", str(source)], home, env_extra=gh_mock(tmp_path, "x")
+    )
+
+    assert result.returncode == 0, result.stderr
+    # A path is not a forge, so there is nothing to ask and nothing to say.
+    assert not (tmp_path / "gh-calls").exists()
+    assert "upstream" not in result.stdout
+
+
 def test_clone_uses_repo_name_for_remote_urls(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

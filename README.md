@@ -119,6 +119,21 @@ hook just like `gra work` does. Use `--no-work` for the bare checkout alone, or
 `--no-hook` to skip the hook. A remote without commits has no default branch to
 check out; `gra` says so and keeps the clone.
 
+Cloning a GitHub fork also adds an `upstream` remote pointing at the
+repository it was forked from:
+
+```text
+added remote 'upstream' -> git@github.com:upstream/oans.git
+run 'git fetch upstream' to get its branches
+```
+
+A fork is a GitHub concept rather than a Git one, so `gra` asks `gh` - which
+carries its own login, so private forks work and `gra` never handles a token.
+Without `gh` installed it says so and carries on; for a remote that is not on
+`github.com` it says nothing, because there is nothing it could ask. The
+remote is added but not fetched, so cloning stays as quick as it was. Use
+`--no-upstream` to skip the lookup.
+
 Pass `--no-submodules` for a repository whose submodules you never want. It
 records `gra.submodules = false` in the bare checkout, so every later
 `gra work` in that repository skips them too - the flag is a decision about
