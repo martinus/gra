@@ -751,6 +751,21 @@ def test_clone_writes_both_hooks_ready_to_run(tmp_path: Path) -> None:
         assert "tmux" in text
 
 
+def test_clone_writes_a_work_hook_that_reuses_an_open_window(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+
+    container = clone_repo(home, source)
+
+    # 'gra work --hook' and '--switch' run this for a worktree that already has
+    # a window; without the lookup it would open a second one of the same name.
+    text = (container / "work.sh").read_text()
+    assert "list-windows" in text
+    assert "select-window" in text
+    assert text.index("list-windows") < text.index("new-window")
+
+
 def test_work_runs_the_work_hook_inside_the_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -802,6 +817,178 @@ def test_work_no_hook_skips_the_hook(tmp_path: Path) -> None:
         ["work", "--no-hook", "main"],
         home,
         cwd=container,
+        env_extra={"HOOK_OUT": str(hook_out)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not hook_out.exists()
+
+
+def test_work_hook_runs_the_hook_again_in_the_current_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    hook_out = tmp_path / "hook-out"
+    # Written after the worktree exists, so only the re-run can record anything.
+    write_hook(container, "work.sh", recorder())
+
+    result = run_cli(
+        ["work", "--hook"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert hook_out.read_text().splitlines() == [
+        "project",
+        worktree.name,
+        "main",
+        str(worktree),
+        str(worktree),
+    ]
+    assert worktree_dirs(container) == [worktree]
+
+
+def test_work_hook_finds_a_worktree_by_name_from_anywhere(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    hook_out = tmp_path / "hook-out"
+    write_hook(container, "work.sh", recorder())
+
+    result = run_cli(
+        ["work", "--hook", worktree.name],
+        home,
+        cwd=tmp_path,
+        env_extra={"HOOK_OUT": str(hook_out)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert hook_out.read_text().splitlines()[3] == str(worktree)
+
+
+def test_work_hook_leaves_the_branch_empty_when_detached(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container)
+    hook_out = tmp_path / "hook-out"
+    write_hook(container, "work.sh", recorder())
+
+    result = run_cli(
+        ["work", "--hook"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert hook_out.read_text().splitlines()[2] == ""
+
+
+def test_work_hook_says_so_when_there_is_no_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    (container / "work.sh").unlink()
+
+    result = run_cli(["work", "--hook"], home, cwd=worktree)
+
+    # 'gra work' can be silent about a missing hook because it made a worktree
+    # regardless; --hook has nothing else to show for itself.
+    assert result.returncode == 1
+    assert "has no 'work.sh'" in result.stderr
+    assert "gra hooks" in result.stderr
+
+
+def test_work_hook_says_so_when_the_hook_is_turned_off(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    (container / "work.sh").chmod(0o644)
+
+    result = run_cli(["work", "--hook"], home, cwd=worktree)
+
+    # 'chmod -x' is a decision, not a mistake, so this is not a failure.
+    assert result.returncode == 0, result.stderr
+    assert "turned off" in result.stdout + result.stderr
+
+
+def test_work_hook_rejects_an_unknown_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    clone_repo(home, source)
+
+    result = run_cli(["work", "--hook", "nope"], home, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "no worktree named 'nope'" in result.stderr
+
+
+def test_work_hook_refuses_switch_and_no_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    with_switch = run_cli(["work", "--hook", "--switch", "main"], home, cwd=tmp_path)
+    with_no_hook = run_cli(["work", "--hook", "--no-hook"], home, cwd=tmp_path)
+    with_two = run_cli(["work", "--hook", "project", "main"], home, cwd=tmp_path)
+
+    assert with_switch.returncode == 2
+    assert "--hook and --switch" in with_switch.stderr
+    assert with_no_hook.returncode == 2
+    assert "--hook and --no-hook" in with_no_hook.stderr
+    assert with_two.returncode == 2
+    assert "--hook takes a worktree name" in with_two.stderr
+
+
+def test_work_switch_runs_the_work_hook_with_the_new_branch(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    hook_out = tmp_path / "hook-out"
+    write_hook(container, "work.sh", recorder())
+
+    result = run_cli(
+        ["work", "--switch", "feature"],
+        home,
+        cwd=worktree,
+        env_extra={"HOOK_OUT": str(hook_out)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    # The window keeps its name across a switch, so the branch is the one thing
+    # the hook has to be told again.
+    assert hook_out.read_text().splitlines() == [
+        "project",
+        worktree.name,
+        "feature",
+        str(worktree),
+        str(worktree),
+    ]
+
+
+def test_work_switch_no_hook_skips_the_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    hook_out = tmp_path / "hook-out"
+    write_hook(container, "work.sh", recorder())
+
+    result = run_cli(
+        ["work", "--switch", "--no-hook", "feature"],
+        home,
+        cwd=worktree,
         env_extra={"HOOK_OUT": str(hook_out)},
     )
 
@@ -1260,6 +1447,24 @@ def test_completion_offers_worktree_names(tmp_path: Path) -> None:
     # with --force, which would break the common prefix bash inserts.
     assert complete(home, ["gra", "done", ""], tmp_path) == [worktree.name]
     assert complete(home, ["gra", "done", "-"], tmp_path) == ["--force"]
+
+
+def test_completion_offers_worktree_names_after_work_hook(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+
+    # --hook names an existing worktree, so the branch menu would be wrong -
+    # from inside the repository, where branches are what 'work' usually offers.
+    assert complete(home, ["gra", "work", "--hook", ""], container) == [worktree.name]
+    # --no-hook must not be mistaken for it, and a flag before the positional
+    # is not the REPO of a 'REPO BRANCH' pair, so branches are still the menu.
+    assert "feature" in complete(home, ["gra", "work", "--no-hook", ""], container)
+    assert "feature" in complete(home, ["gra", "work", "--switch", ""], container)
+    assert "--hook" in complete(home, ["gra", "work", "-"], container)
 
 
 def test_completion_offers_repositories_outside_one(tmp_path: Path) -> None:

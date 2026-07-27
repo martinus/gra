@@ -226,6 +226,35 @@ unless the repository has `gra.submodules = false` - see
 As written by `gra clone` that opens a tmux window named `<repo>/<worktree>`,
 for example `oans/hare`. Use `--no-hook` to skip it.
 
+### Setting a worktree up again
+
+A worktree outlives the window it was opened in: close the window, or come
+back the next day to a machine that has been rebooted, and the worktree is
+still there with nothing around it. `gra work --hook` runs `work.sh` again for
+a worktree that already exists, creating nothing:
+
+```sh
+gra work --hook          # the worktree you are standing in
+gra work --hook rail     # by name, from anywhere
+```
+
+Worktree names are unique across all repositories, so the name is enough - no
+`cd` first, and no `REPO` to go with it. Without a name it uses the worktree
+you are in, and fails if you are not in one.
+
+`GRA_BRANCH` is read from the worktree, so a detached one gets the empty value
+`gra work` would have given it.
+
+Where `gra work` shrugs at a missing `work.sh` - it made a worktree either way
+- `--hook` refuses, because there would be nothing left to show for it:
+
+```text
+ERROR: '/home/you/gra/oans' has no 'work.sh'; 'gra hooks' writes missing hooks
+```
+
+A `work.sh` you turned off with `chmod -x` is a decision rather than a
+mistake, so that is a note and not an error.
+
 ### Finding a branch you did not name
 
 BRANCH can be part of a branch name rather than all of it, so a ticket key
@@ -280,17 +309,26 @@ or stash first. Git allows a branch in only one worktree at a time, so
 switching to one checked out elsewhere is refused too, naming the worktree that
 holds it.
 
+The `work.sh` hook runs afterwards, with `GRA_BRANCH` set to the branch you
+switched to - the worktree is set up for the new work the same way a fresh one
+would be. Use `--no-hook` to skip it.
+
 ### Hooks
 
 `gra` runs two scripts from the repository container, next to `.bare`:
 
-| Hook      | When                                                | Working directory |
-| --------- | --------------------------------------------------- | ----------------- |
-| `work.sh` | after `gra work` or `gra clone` creates a worktree   | the new worktree  |
-| `done.sh` | before `gra done` or `gra clean` removes one        | the container     |
+| Hook      | When                                          | Working directory |
+| --------- | --------------------------------------------- | ----------------- |
+| `work.sh` | whenever `gra` leaves you in a worktree        | that worktree     |
+| `done.sh` | before `gra done` or `gra clean` removes one  | the container     |
 
-`gra work --switch` reuses the worktree you are in rather than creating one,
-so it runs neither.
+`work.sh` runs once per worktree only in the simplest case. It also runs after
+`gra work --switch` moves a worktree to another branch, and on demand with
+`gra work --hook`. So it must be safe to run twice: as written by `gra clone`
+it looks for its window before opening one, and selects the window that is
+already there instead of opening a second one of the same name. Anything you
+add should follow that shape - `ln -sf` rather than `ln -s`, and no step that
+would disturb a build running in a pane.
 
 `gra` knows nothing about what is in them. It has no tmux code at all: opening
 a window, laying out panes and closing it again are things the hooks do,
@@ -317,10 +355,17 @@ them afterwards - edit them and they stay edited. `chmod -x work.sh` turns one
 off; deleting it does the same.
 
 Read them - they are short, commented, and they are the documentation for what
-happens around a worktree. `work.sh` opens the window:
+happens around a worktree. `work.sh` goes to the window or opens it:
 
 ```sh
 window_name="$GRA_REPO/$GRA_WORD"
+
+open=$(tmux list-windows -a -F '#{window_id} #{window_name}' \
+    | awk -v name="$window_name" '$2 == name { print $1; exit }')
+if [ -n "$open" ]; then
+    tmux select-window -t "$open"
+    exit 0
+fi
 
 window=$(tmux new-window -P -F '#{window_id}' \
     -n "$window_name" -c "$GRA_WORKTREE")
@@ -330,6 +375,12 @@ and `done.sh` closes the window of that name again. The name is the only thing
 the two have to agree on, so change it in both. The rest of `work.sh` is a
 commented-out pane layout - a `claude` pane, an editor, a monitor - to
 uncomment or replace.
+
+A `work.sh` written before `gra work --hook` existed has no such lookup, and
+`gra` will not add one: it never rewrites a hook you have, and `gra hooks`
+only writes the missing ones. Until you paste the lookup in, `--hook` and
+`--switch` open a second window of the same name - which `done.sh` then closes
+one of. Copy the block above in ahead of `new-window`.
 
 ### Upgrading from 1.x
 
