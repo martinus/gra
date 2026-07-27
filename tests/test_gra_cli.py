@@ -855,6 +855,98 @@ def test_clean_runs_the_done_hook_for_each_removed_worktree(tmp_path: Path) -> N
     assert sorted(hook_out.read_text().split()) == sorted([first.name, second.name])
 
 
+def test_work_finds_a_branch_by_ticket_key(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "mla/OA-2345-per-processor-properties")
+    container = clone_repo(home, source)
+
+    result = run_cli(["work", "OA-2345"], home, cwd=container)
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == (
+        "mla/OA-2345-per-processor-properties"
+    )
+    assert "matches branch" in result.stdout
+
+
+def test_work_matches_a_ticket_key_case_insensitively(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "mla/OA-2345-thing")
+    container = clone_repo(home, source)
+
+    result = run_cli(["work", "oa-2345"], home, cwd=container)
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "mla/OA-2345-thing"
+
+
+def test_work_prefers_an_exact_branch_over_a_longer_one(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "feature")
+    add_feature_branch(source, "feature-extended")
+    container = clone_repo(home, source)
+
+    result = run_cli(["work", "feature"], home, cwd=container)
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    # 'feature' is inside 'feature-extended' too, but an exact name is not a
+    # guess and must never be treated as one.
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
+
+
+def test_work_lists_several_matches_instead_of_guessing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "mla/OA-2345-first")
+    add_feature_branch(source, "mla/OA-2345-second")
+    container = clone_repo(home, source)
+
+    result = run_cli(["work", "OA-2345"], home, cwd=container)
+
+    assert result.returncode == 1
+    assert "matches several branches" in result.stderr
+    assert "mla/OA-2345-first" in result.stderr
+    assert "mla/OA-2345-second" in result.stderr
+    assert worktree_dirs(container) == []
+
+
+def test_work_still_offers_to_create_an_unmatched_branch(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    result = run_cli(["work", "OA-9999"], home, cwd=container, input_text="n\n")
+
+    assert result.returncode == 1
+    assert "does not exist. Create it from" in result.stderr
+    assert worktree_dirs(container) == []
+
+
+def test_work_switch_resolves_a_ticket_key_too(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "mla/OA-2345-thing")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+
+    result = run_cli(["work", "--switch", "OA-2345"], home, cwd=worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "mla/OA-2345-thing"
+
+
 def test_work_switch_changes_branch_in_place(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
