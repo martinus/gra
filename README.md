@@ -45,8 +45,8 @@ python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/hea
 
 That is the whole installation. It writes the script to `~/.local/bin/gra` and
 appends this block to `~/.bashrc`, so that `gra` is on your `PATH` and the shell
-integration makes `gra cd` change directories and `gra done` leave the removed
-directory:
+integration makes `gra cd` change directories, `gra done` leave the removed
+directory, and `<TAB>` complete worktrees, repositories and branches:
 
 ```sh
 # gra
@@ -419,11 +419,12 @@ gra done <TAB>         hare rose wolf --force
 gra work <TAB>         branches, inside a repository
                        repository names, outside one
 gra work oans <TAB>    branches of oans
+gra done -<TAB>        --force
 ```
 
-What it offers follows the same rule the commands do: inside a repository one
-argument is a branch, outside one it is a repository, and two arguments are
-always repository then branch.
+What it offers follows the same rule `gra work` does, so the completion and
+the command never disagree about what an argument means. Flags are offered
+once you type a `-`, so a single worktree name still completes on its own.
 
 Completion never runs `gra` - it reads the gra root and asks `git` for
 branches, which keeps `<TAB>` instant instead of paying for a Python start
