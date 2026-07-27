@@ -15,7 +15,7 @@ checked out: switch branches freely inside a worktree, or start a new one and
 remove it when done.
 """
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -1307,6 +1307,40 @@ def create_missing_branch(bare: Path, branch: str) -> None:
     log(f"created branch '{branch}' from '{start_point}' and tracking 'origin/{branch}'", GREEN)
 
 
+def branches_matching(bare: Path, text: str) -> list[str]:
+    """Branch names containing text, local and on origin, without duplicates."""
+    output = git_output(
+        ["for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads", "refs/remotes/origin"],
+        cwd=bare,
+    )
+    names = set()
+    for name in (output or "").splitlines():
+        name = name.removeprefix("origin/")
+        if name and name != "HEAD" and text.lower() in name.lower():
+            names.add(name)
+    return sorted(names)
+
+
+def resolve_branch(bare: Path, branch: str) -> str:
+    """Map what was typed to a branch, preferring one that already exists.
+
+    An exact branch always wins. Otherwise a single branch containing the text
+    is taken, which is what lets a ticket key stand in for the branch someone
+    named after it - 'gra work OA-2345' finding 'mla/OA-2345-thing'. Several
+    matches are shown rather than guessed between.
+    """
+    if local_branch_exists(bare, branch) or remote_branch_exists(bare, branch):
+        return branch
+    matches = branches_matching(bare, branch)
+    if len(matches) == 1:
+        log(f"'{branch}' matches branch '{matches[0]}'")
+        return matches[0]
+    if matches:
+        listing = "\n  ".join(matches)
+        fail(f"'{branch}' matches several branches; name one:\n  {listing}")
+    return branch
+
+
 def branch_needs_tracking(bare: Path, branch: str) -> bool:
     """Ensure branch exists locally or on origin; return True when tracking is needed."""
     if local_branch_exists(bare, branch):
@@ -1384,7 +1418,7 @@ def switch_in_place(branch_input: str) -> None:
     """Switch the current worktree to another branch."""
     container, worktree = current_gra_worktree("work --switch")
     bare = bare_dir(container)
-    branch = branch_name_from_input(branch_input)
+    branch = resolve_branch(bare, branch_name_from_input(branch_input))
 
     if worktree_status_output(worktree):
         fail(
@@ -1436,6 +1470,8 @@ def work_target(target: str | None, branch: str | None, root: Path) -> tuple[Pat
 def work(target: str | None, branch_input: str | None, root: Path, no_hook: bool) -> None:
     """Create a new worktree named after the repository."""
     container, branch = work_target(target, branch_input, root)
+    if branch:
+        branch = resolve_branch(bare_dir(container), branch)
     create_worktree(container, root, branch, no_hook=no_hook)
 
 
@@ -1786,6 +1822,8 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Create a new worktree named after an unused word for the repository.\n"
             "With BRANCH, check it out (creating and pushing it when missing);\n"
+            "BRANCH may be part of one, so a ticket key finds the branch named\n"
+            "after it; several matches are listed rather than guessed between.\n"
             "without, start detached at origin's default branch.\n"
             "Run outside a repository, name one: 'gra work REPO [BRANCH]'.\n"
             f"The repository's '{WORK_HOOK}' hook then runs inside it.\n"

@@ -226,6 +226,30 @@ unless the repository has `gra.submodules = false` - see
 As written by `gra clone` that opens a tmux window named `<repo>/<worktree>`,
 for example `oans/hare`. Use `--no-hook` to skip it.
 
+### Finding a branch you did not name
+
+BRANCH can be part of a branch name rather than all of it, so a ticket key
+finds the branch someone named after it:
+
+```sh
+gra work OA-2345      # checks out mla/OA-2345-per-processor-properties
+```
+
+An exact branch always wins, so `gra work feature` takes `feature` even when
+`feature-extended` exists. Matching is case-insensitive and covers branches on
+`origin` you have fetched but never checked out. Several matches are listed
+rather than guessed between:
+
+```text
+ERROR: 'OA-7777' matches several branches; name one:
+  mla/OA-7777-first
+  mla/OA-7777-second
+```
+
+Nothing matching means the old behaviour: `gra` offers to create the branch
+from origin's default branch. The same resolution applies to
+`gra work --switch`.
+
 ### How names are chosen
 
 A hash of the repository's remote - `owner/repo`, so an SSH clone and an HTTPS
