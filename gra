@@ -428,34 +428,37 @@ def remote_default_branch(bare: Path) -> str | None:
     return None
 
 
-def worktree_paths(bare: Path) -> list[Path]:
-    """Return registered worktree paths, excluding the bare repository itself."""
+def worktree_entries(bare: Path) -> list[tuple[Path, str | None]]:
+    """Parse (path, branch) for each registered worktree, bare one excluded.
+
+    One place understands the porcelain format; worktree_paths and
+    worktree_branches are views on it.
+    """
     output = git_output(["worktree", "list", "--porcelain"], cwd=bare) or ""
-    paths: list[Path] = []
+    entries: list[tuple[Path, str | None]] = []
     for line in output.splitlines():
         if line.startswith("worktree "):
-            paths.append(Path(line.removeprefix("worktree ")))
+            entries.append((Path(line.removeprefix("worktree ")), None))
         elif line == "bare":
-            paths.pop()
-    return paths
+            entries.pop()
+        elif line.startswith("branch ") and entries:
+            path, _ = entries[-1]
+            entries[-1] = (path, line.removeprefix("branch ").removeprefix("refs/heads/"))
+    return entries
+
+
+def worktree_paths(bare: Path) -> list[Path]:
+    """Return registered worktree paths, excluding the bare repository itself."""
+    return [path for path, _branch in worktree_entries(bare)]
 
 
 def worktree_branches(bare: Path) -> dict[str, Path]:
     """Map each checked-out branch to the worktree holding it.
 
     Git allows a branch in only one worktree at a time, and the porcelain
-    listing already says which - so this costs the one call worktree_paths
-    makes, rather than asking each worktree in turn.
+    listing already says which, so nothing needs asking worktree by worktree.
     """
-    output = git_output(["worktree", "list", "--porcelain"], cwd=bare) or ""
-    branches: dict[str, Path] = {}
-    path: Path | None = None
-    for line in output.splitlines():
-        if line.startswith("worktree "):
-            path = Path(line.removeprefix("worktree "))
-        elif line.startswith("branch ") and path is not None:
-            branches[line.removeprefix("branch ").removeprefix("refs/heads/")] = path
-    return branches
+    return {branch: path for path, branch in worktree_entries(bare) if branch}
 
 
 def refuse_if_branch_is_checked_out(bare: Path, branch: str, current: Path | None = None) -> None:
@@ -466,7 +469,7 @@ def refuse_if_branch_is_checked_out(bare: Path, branch: str, current: Path | Non
     it again by name is a natural next move.
     """
     holder = worktree_branches(bare).get(branch)
-    if holder is None or (current is not None and holder == current):
+    if holder is None or holder == current:
         return
     fail(
         f"'{branch}' is already checked out in '{holder.name}'; "
@@ -497,19 +500,24 @@ def worktree_sync(path: Path) -> str:
     """How far a worktree's branch is from its upstream, as of the last fetch.
 
     Reads local refs only: 'gra ls' stays offline, so this is as fresh as
-    whatever last fetched. Empty when in sync or when there is no upstream.
+    whatever last fetched. Empty means in sync; '-' means the question does
+    not apply - detached, or a branch with no upstream.
     """
+    # A registered worktree whose directory is gone would make git fail to
+    # start at all, which is not a failure git_output can catch.
+    if not path.exists():
+        return "-"
     counts = git_output(
         ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"], cwd=path
     )
     if not counts:
-        return ""
-    behind, _, ahead = counts.partition("\t")
+        return "-"
+    behind, ahead = counts.split()
     parts = []
-    if ahead.strip() not in ("", "0"):
-        parts.append(f"↑{ahead.strip()}")
-    if behind.strip() not in ("", "0"):
-        parts.append(f"↓{behind.strip()}")
+    if ahead != "0":
+        parts.append(f"↑{ahead}")
+    if behind != "0":
+        parts.append(f"↓{behind}")
     return " ".join(parts)
 
 
@@ -670,18 +678,22 @@ def add_local_excludes(bare: Path) -> None:
                 file.write(f"{pattern}\n")
 
 
-def write_default_hooks(container: Path) -> None:
-    """Drop working work.sh and done.sh hooks in the container.
+def write_default_hooks(container: Path) -> int:
+    """Drop working work.sh and done.sh hooks in the container, and count them.
 
     Executable, so a fresh clone opens and closes tmux windows without any
-    setup - that behaviour lives in these scripts now, not in gra.
+    setup - that behaviour lives in these scripts now, not in gra. Hooks that
+    already exist are left alone, edits and all.
     """
+    written = 0
     for name, default in ((WORK_HOOK, WORK_HOOK_DEFAULT), (DONE_HOOK, DONE_HOOK_DEFAULT)):
         script = container / name
         if not script.exists():
             script.write_text(default, encoding="utf-8")
             script.chmod(0o755)
             log(f"wrote '{script}'")
+            written += 1
+    return written
 
 
 def write_missing_hooks(root: Path) -> None:
@@ -692,15 +704,13 @@ def write_missing_hooks(root: Path) -> None:
     """
     repositories = containers(root)
     if not repositories:
-        fail(f"no repositories under '{root}'")
-    before = sum(
-        1 for c in repositories for h in (WORK_HOOK, DONE_HOOK) if not (c / h).exists()
-    )
-    for container in repositories:
-        write_default_hooks(container)
+        print(f"Root: {root}")
+        print("No repositories found.")
+        return
+    written = sum(write_default_hooks(container) for container in repositories)
     log(
-        f"{before} hook(s) written across {len(repositories)} repositories"
-        if before
+        f"{written} hook(s) written across {len(repositories)} repositories"
+        if written
         else f"all {len(repositories)} repositories already have their hooks",
         GREEN,
     )
@@ -796,7 +806,7 @@ def print_repositories(root: Path) -> None:
     rows = []
     for container, (remote, paths) in zip(repositories, per_repo):
         if not paths:
-            rows.append(["", container.name, "-", "-", "", "-", remote])
+            rows.append(["", container.name, "-", "-", "-", "-", remote])
             continue
         for index, path in enumerate(paths):
             marker = "▶" if current and path.resolve() == current else ""
@@ -1226,7 +1236,7 @@ def resolve_repository(name: str, root: Path) -> Path:
     return container
 
 
-def work_target(first: str | None, second: str | None, root: Path) -> tuple[Path, str]:
+def work_target(target: str | None, branch: str | None, root: Path) -> tuple[Path, str]:
     """Resolve (container, branch) from up to two positional arguments.
 
     Two arguments always mean repository then branch. One means a branch when
@@ -1234,23 +1244,24 @@ def work_target(first: str | None, second: str | None, root: Path) -> tuple[Path
     when run outside one, where a bare branch name would have nothing to
     apply to.
     """
-    if second is not None:
-        return resolve_repository(first or "", root), branch_name_from_input(second)
+    if branch is not None:
+        # argparse fills positionals left to right, so target is set too.
+        return resolve_repository(str(target), root), branch_name_from_input(branch)
 
     container = find_container(Path.cwd())
     if container:
-        return container, branch_name_from_input(first) if first else ""
-    if not first:
+        return container, branch_name_from_input(target) if target else ""
+    if not target:
         fail(
             "gra work needs a repository when run outside one: 'gra work REPO';\n"
             "use 'gra ls' to see repositories or 'gra clone URL' to add one"
         )
-    return resolve_repository(first, root), ""
+    return resolve_repository(target, root), ""
 
 
-def work(first: str | None, second: str | None, root: Path, no_hook: bool) -> None:
+def work(target: str | None, branch_input: str | None, root: Path, no_hook: bool) -> None:
     """Create a new worktree named after the repository."""
-    container, branch = work_target(first, second, root)
+    container, branch = work_target(target, branch_input, root)
     create_worktree(container, root, branch, no_hook=no_hook)
 
 
