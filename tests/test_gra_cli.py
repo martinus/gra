@@ -368,14 +368,132 @@ def test_work_missing_branch_can_be_declined(tmp_path: Path) -> None:
     assert worktree_dirs(container) == []
 
 
-def test_work_outside_repository_fails(tmp_path: Path) -> None:
+def test_work_outside_repository_needs_a_repository_name(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
 
     result = run_cli(["work"], home, cwd=tmp_path)
 
     assert result.returncode == 1
-    assert "must be run from inside a repository" in result.stderr
+    assert "needs a repository when run outside one" in result.stderr
+
+
+def test_work_takes_a_repository_from_anywhere(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "feature/search")
+    container = clone_repo(home, source)
+
+    result = run_cli(["work", "project", "feature/search"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature/search"
+
+
+def test_work_with_only_a_repository_starts_detached(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    result = run_cli(["work", "project"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == ""
+
+
+def test_work_inside_a_repository_still_reads_one_argument_as_a_branch(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "feature")
+    container = clone_repo(home, source)
+
+    # 'feature' is not a repository, and inside a container it never could be.
+    result = run_cli(["work", "feature"], home, cwd=container)
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
+
+
+def test_work_reports_an_unknown_repository(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    make_repo(tmp_path, "project")
+
+    result = run_cli(["work", "nope"], home, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "no repository 'nope'" in result.stderr
+
+
+def test_work_points_at_the_worktree_holding_the_branch(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source, work=True)
+    holder = worktree_dirs(container)[0]
+
+    result = run_cli(["work", "main"], home, cwd=container)
+
+    assert result.returncode == 1
+    assert f"already checked out in '{holder.name}'" in result.stderr
+    assert f"gra cd {holder.name}" in result.stderr
+    assert worktree_dirs(container) == [holder]
+
+
+def test_done_removes_a_named_worktree_from_anywhere(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+
+    result = run_cli(["done", worktree.name], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert not worktree.exists()
+
+
+def test_hooks_writes_only_the_missing_ones(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    # Stand in for a repository cloned before hooks existed, and for one whose
+    # hook the user already edited.
+    (container / "done.sh").unlink()
+    (container / "work.sh").write_text("#!/bin/sh\n# mine\n")
+
+    result = run_cli(["hooks"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert (container / "done.sh").is_file()
+    assert os.access(container / "done.sh", os.X_OK)
+    assert (container / "work.sh").read_text() == "#!/bin/sh\n# mine\n"
+    assert "1 hook(s) written" in result.stdout
+
+
+def test_ls_shows_ahead_and_behind(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    (worktree / "local.txt").write_text("local\n")
+    git(["add", "local.txt"], cwd=worktree)
+    git(["commit", "-m", "local"], cwd=worktree)
+
+    result = run_cli(["ls"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert "SYNC" in result.stdout
+    assert "↑1" in result.stdout
 
 
 def recorder() -> str:

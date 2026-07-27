@@ -167,6 +167,25 @@ instantly usable for looking around, running builds, or letting a later
 gra work
 ```
 
+Outside a repository, name one - so starting work never needs a `cd` first:
+
+```sh
+gra work oans feature/search   # repository, then branch
+gra work oans                  # detached at origin's default branch
+```
+
+Two arguments always mean repository then branch. One means a branch when you
+are inside a repository, and a repository when you are not, where a bare branch
+name would have nothing to apply to.
+
+If the branch is already checked out somewhere - Git allows it in only one
+worktree at a time - `gra` names that worktree instead of leaving you with
+Git's message:
+
+```text
+ERROR: 'main' is already checked out in 'puma'; work there with 'gra cd puma'
+```
+
 If the repository has submodules, they are initialized in the new worktree.
 
 `gra work` then runs the repository's `work.sh` hook inside the new worktree.
@@ -253,17 +272,18 @@ uncomment or replace.
 ### Upgrading from 1.x
 
 Only `gra clone` writes the hooks, so repositories you cloned with an older
-`gra` have none and will open no windows. Copy them in from a freshly cloned
-repository. A `.tmux-setup` file is no longer read, and renaming it will not
+`gra` have none and will open no windows. `gra hooks` gives them all one. A `.tmux-setup` file is no longer read, and renaming it will not
 help: it targets a `GRA_WINDOW` that no longer exists, because gra no longer
 opens the window. Port what is in it into `work.sh`.
 
-## done - remove the current worktree
+## done - remove a worktree
 
-Run `gra done` inside a worktree when the work in it is finished:
+Run `gra done` inside a worktree when the work in it is finished, or name one
+from anywhere:
 
 ```sh
-gra done
+gra done        # the worktree you are in
+gra done wolf   # from anywhere
 ```
 
 `gra done` refuses when the worktree is dirty or when its commits are not in
@@ -293,13 +313,30 @@ Example output:
 Root: /home/me/gra
 Repositories: 2  Worktrees: 2
 
-REPOSITORY  WORKTREE  BRANCH          STATUS   REMOTE
-gra         wolf      main            ✓ clean  git@github.com:martinus/gra
-oans        hare      feature/search  ● dirty  git@github.com:martinus/oans
+REPOSITORY  WORKTREE  BRANCH          SYNC   STATUS   REMOTE
+gra         wolf      main            ↑2     ✓ clean  git@github.com:martinus/gra
+oans        hare      feature/search  ↓1     ● dirty  git@github.com:martinus/oans
 ```
 
 Because worktree names carry no meaning, the `BRANCH` column is the primary
 information; the name is just an address.
+
+`SYNC` is how far the branch is from its upstream: `↑2` is two commits to
+push, `↓1` is one to pull, and blank is in sync or has no upstream. It reads
+local refs only - `gra ls` never goes to the network - so it is as fresh as
+your last fetch. `gra clean` fetches first, so run that when you want the
+truth rather than the last thing you heard.
+
+## hooks - write missing hooks
+
+```sh
+gra hooks
+```
+
+Writes `work.sh` and `done.sh` into every repository under the gra root that
+is missing them, and leaves existing ones alone - so it cannot overwrite your
+edits and is safe to re-run. Only `gra clone` writes hooks otherwise, so this
+is how repositories you cloned earlier catch up.
 
 ## clean - report or remove clean merged worktrees
 
