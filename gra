@@ -15,7 +15,7 @@ checked out: switch branches freely inside a worktree, or start a new one and
 remove it when done.
 """
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -55,6 +55,12 @@ GRAKEEP_FILE = ".grakeep"
 # Set to false in a repository's config by 'gra clone --no-submodules', or
 # globally to keep submodules out of every repository.
 SUBMODULES_CONFIG = "gra.submodules"
+
+# A fork is a forge concept, not a git one, so the parent repository can only
+# be discovered by asking GitHub - which gh does, carrying its own login, so
+# private forks work and gra keeps its hands off tokens.
+GITHUB_HOST = "github.com"
+UPSTREAM_REMOTE = "upstream"
 LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
 
 # Per-repository hooks, run when a worktree is created and before one is
@@ -242,13 +248,14 @@ def parallel_map(fn: Callable[[T], U], items: list[T]) -> list[U]:
 # ---------------------------------------------------------------------------
 
 
-SCP_LIKE_URL = re.compile(r"[^@/]+@[^:]+:(.+)$")
+SCP_LIKE_URL = re.compile(r"[^@/]+@([^:]+):(.+)$")
 
 
 class RepoUrl(NamedTuple):
-    """A git URL classified once: remote flag, owner segment, repo name."""
+    """A git URL classified once: remote flag, host, owner segment, repo name."""
 
     remote: bool
+    host: str | None
     owner: str | None
     repo: str | None
 
@@ -265,13 +272,14 @@ class RepoUrl(NamedTuple):
 def parse_repo_url(url: str) -> RepoUrl:
     """Classify a git URL (HTTPS, SSH scp-like, or local path) in one pass."""
     if match := SCP_LIKE_URL.match(url):
-        remote, path = True, match.group(1)
+        remote, host, path = True, match.group(1), match.group(2)
     else:
         parsed = urlparse(url)
-        remote, path = bool(parsed.scheme), (parsed.path if parsed.scheme else url)
+        remote, host = bool(parsed.scheme), parsed.hostname
+        path = parsed.path if parsed.scheme else url
     parts = [part for part in path.rstrip("/").removesuffix(".git").split("/") if part]
     owner = parts[-2] if len(parts) >= 2 else None
-    return RepoUrl(remote, owner, parts[-1] if parts else None)
+    return RepoUrl(remote, host, owner, parts[-1] if parts else None)
 
 
 def repo_name_from_url(url: str) -> str:
@@ -305,6 +313,39 @@ def validate_path_name(kind: str, name: str) -> None:
 
 def origin_url(bare: Path) -> str | None:
     return git_output(["config", "--get", "remote.origin.url"], cwd=bare)
+
+
+def fork_parent_url(url: str) -> str | None:
+    """The repository a GitHub fork was made from, or None if it is not one."""
+    parsed = parse_repo_url(url)
+    if parsed.host != GITHUB_HOST or not parsed.owner or not parsed.repo:
+        return None
+    if not shutil.which("gh"):
+        log(f"gh is not installed; not looking for a fork parent of '{url}'")
+        return None
+    # Match origin's protocol, so upstream authenticates the same way.
+    field = "clone_url" if url.startswith(("http://", "https://")) else "ssh_url"
+    result = subprocess.run(
+        ["gh", "api", f"repos/{parsed.owner}/{parsed.repo}", "--jq", f".parent.{field}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        log(f"could not ask gh whether '{url}' is a fork", YELLOW)
+        return None
+    return result.stdout.strip() or None
+
+
+def add_upstream_remote(bare: Path, url: str) -> None:
+    """Point 'upstream' at the repository this one was forked from."""
+    parent = fork_parent_url(url)
+    if not parent:
+        return
+    run_git(["remote", "add", UPSTREAM_REMOTE, parent], cwd=bare)
+    log(f"added remote '{UPSTREAM_REMOTE}' -> {parent}", GREEN)
+    log(f"run 'git fetch {UPSTREAM_REMOTE}' to get its branches")
 
 
 def clone_collision_error(url: str, container: Path, local_name: str) -> None:
@@ -728,6 +769,7 @@ def clone(
     no_work: bool,
     no_hook: bool,
     no_submodules: bool,
+    no_upstream: bool,
 ) -> None:
     """Clone into a bare checkout under the gra root, with a worktree on it."""
     try:
@@ -767,6 +809,9 @@ def clone(
     # Past this point the clone itself succeeded, so it is kept whatever
     # happens to the worktree: no cleanup here, and no failure for a remote
     # that has nothing to check out yet.
+    if not no_upstream:
+        add_upstream_remote(bare, url)
+
     if no_work:
         log(f"created '{container}'; run 'gra work' inside it to begin working", GREEN)
         return
@@ -1192,7 +1237,7 @@ _gra() {
     # completes on its own rather than sharing a menu with --force.
     if [[ $cur == -* ]]; then
         case $cmd in
-            clone) words='--name --no-work --no-hook --no-submodules' ;;
+            clone) words='--name --no-work --no-hook --no-submodules --no-upstream' ;;
             work) words='--switch --no-hook' ;;
             done) words='--force' ;;
             clean) words='--yes --no-fetch' ;;
@@ -1679,7 +1724,9 @@ def parse_args() -> argparse.Namespace:
             f"use --no-work to skip it. Writes '{WORK_HOOK}' and '{DONE_HOOK}'\n"
             f"hooks next to '{BARE_DIR}' and runs the first.\n"
             f"--no-submodules records '{SUBMODULES_CONFIG}=false', which every\n"
-            "later 'gra work' in this repository honours too."
+            "later 'gra work' in this repository honours too.\n"
+            f"A GitHub fork gets an '{UPSTREAM_REMOTE}' remote pointing at the\n"
+            "repository it came from, which needs gh; --no-upstream skips it."
         ),
     )
     clone_parser.add_argument("url", help="git repository URL to clone")
@@ -1695,6 +1742,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="never initialize submodules in this repository",
     )
+    clone_parser.add_argument(
+        "--no-upstream",
+        action="store_true",
+        help="do not add an 'upstream' remote when the repository is a fork",
+    )
     clone_parser.set_defaults(
         handler=lambda args: clone(
             args.url,
@@ -1703,6 +1755,7 @@ def parse_args() -> argparse.Namespace:
             no_work=args.no_work,
             no_hook=args.no_hook,
             no_submodules=args.no_submodules,
+            no_upstream=args.no_upstream,
         )
     )
 
