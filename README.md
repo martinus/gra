@@ -35,7 +35,8 @@ git config --global gra.root ~/develop
 
 # Installation
 
-`gra` needs Git and Python 3.10 or newer, and `fzf` for the `gra cd` picker.
+`gra` needs Git and Python 3.10 or newer, `fzf` for the `gra cd` picker, and
+`gh` to spot that a clone is a fork.
 `gra` itself never calls `tmux`; the hooks it writes for you do, so `tmux` is
 only needed if you keep them.
 
@@ -127,12 +128,16 @@ added remote 'upstream' -> git@github.com:upstream/oans.git
 run 'git fetch upstream' to get its branches
 ```
 
-A fork is a GitHub concept rather than a Git one, so `gra` asks `gh` - which
-carries its own login, so private forks work and `gra` never handles a token.
+A fork is a GitHub concept rather than a Git one, so `gra` asks `gh`, which
+carries its own login - private forks work and `gra` never handles a token.
 Without `gh` installed it says so and carries on; for a remote that is not on
 `github.com` it says nothing, because there is nothing it could ask. The
-remote is added but not fetched, so cloning stays as quick as it was. Use
-`--no-upstream` to skip the lookup.
+remote is added but not fetched, so cloning stays as quick as it was.
+
+`--no-upstream` skips the lookup once, and `git config --global gra.upstream
+false` skips it for good. Only `gra clone` does this, so a repository you
+cloned earlier keeps whatever remotes it has; `git remote add upstream <url>`
+is the one-off.
 
 Pass `--no-submodules` for a repository whose submodules you never want. It
 records `gra.submodules = false` in the bare checkout, so every later
