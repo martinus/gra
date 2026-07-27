@@ -1,6 +1,7 @@
 """CLI tests for the gra commands."""
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -975,6 +976,29 @@ def test_completion_offers_the_subcommands(tmp_path: Path) -> None:
     assert complete(home, ["gra", "cl"], tmp_path) == ["clone", "clean"]
 
 
+def test_completion_offers_every_subcommand(tmp_path: Path) -> None:
+    """The completion's command list is a copy of argparse's; keep them equal."""
+    home = tmp_path / "home"
+    home.mkdir()
+    usage = run_cli(["--help"], home).stdout
+    documented = set(re.search(r"\{([a-z,]+)\}", usage).group(1).split(","))
+
+    offered = set(complete(home, ["gra", ""], tmp_path))
+
+    assert offered == documented
+
+
+def test_completion_offers_a_stray_directory_as_nothing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    # Not a gra repository, so 'gra cd' could not go there anyway.
+    (home / "gra" / "notes" / "2026").mkdir(parents=True)
+
+    assert complete(home, ["gra", "cd", ""], tmp_path) == [worktree.name]
+
+
 def test_completion_offers_worktree_names(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -982,7 +1006,10 @@ def test_completion_offers_worktree_names(tmp_path: Path) -> None:
     worktree = work_worktree(home, container, "main")
 
     assert complete(home, ["gra", "cd", ""], tmp_path) == [worktree.name]
-    assert complete(home, ["gra", "done", ""], tmp_path) == [worktree.name, "--force"]
+    # A lone worktree name completes on its own rather than sharing a menu
+    # with --force, which would break the common prefix bash inserts.
+    assert complete(home, ["gra", "done", ""], tmp_path) == [worktree.name]
+    assert complete(home, ["gra", "done", "-"], tmp_path) == ["--force"]
 
 
 def test_completion_offers_repositories_outside_one(tmp_path: Path) -> None:

@@ -1061,7 +1061,7 @@ def is_on_path(directory: Path) -> bool:
 
 
 def shell_init_block(directory: Path) -> str:
-    """Bash lines that put gra on the PATH and enable 'gra cd' and 'gra done'."""
+    """Bash lines that put gra on the PATH and enable the shell integration."""
     lines = ["", "# gra"]
     if not is_on_path(directory):
         lines.append(f'export PATH="{INSTALL_DIR.replace("~", "$HOME")}:$PATH"')
@@ -1123,13 +1123,18 @@ BASH_INIT = r'''gra() {
 # answer here is a directory listing or one for-each-ref.
 BASH_COMPLETION = r'''_gra_root() {
     local root
-    root="$(git config --get gra.root 2>/dev/null)"
-    root=${root:-~/gra}
-    printf '%s\n' "${root/#\~/$HOME}"
+    # --path expands ~ and ~user the way git itself does; $HOME is the only
+    # variable worth matching expand_path on, and eval is not worth the rest.
+    root=$(git config --get --path gra.root 2>/dev/null)
+    root=${root:-$HOME/gra}
+    root=${root//\$\{HOME\}/$HOME}
+    printf '%s\n' "${root//\$HOME/$HOME}"
 }
 
 _gra_container() {
-    local dir=$PWD
+    local dir
+    # Physical, like the Python: a symlinked cwd must resolve the same way.
+    dir=$(pwd -P)
     while [[ -n $dir ]]; do
         [[ -d $dir/.bare ]] && { printf '%s\n' "$dir"; return; }
         dir=${dir%/*}
@@ -1138,9 +1143,10 @@ _gra_container() {
 
 _gra_worktrees() {
     local dir name
-    # */*/ skips .bare for us: globs do not match leading dots.
+    # */*/ skips .bare for us: globs do not match leading dots. The .bare test
+    # is what keeps a stray directory under the root from looking like one.
     for dir in "$1"/*/*/; do
-        [[ -d $dir ]] || continue
+        [[ -d $dir && -d ${dir%/*/}/.bare ]] || continue
         name=${dir%/}
         printf '%s\n' "${name##*/}"
     done
@@ -1156,16 +1162,13 @@ _gra_repos() {
 }
 
 _gra_branches() {
-    [[ -d $1/.bare ]] || return
-    {
-        git --git-dir="$1/.bare" for-each-ref --format='%(refname:lstrip=2)' refs/heads
-        git --git-dir="$1/.bare" for-each-ref --format='%(refname:lstrip=3)' \
-            refs/remotes/origin
-    } 2>/dev/null | grep -vx HEAD | sort -u
+    git --git-dir="$1/.bare" for-each-ref --format='%(refname:lstrip=2)' \
+        refs/heads refs/remotes/origin 2>/dev/null |
+        sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u
 }
 
 _gra() {
-    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} root container words
+    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
 
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=($(compgen -W 'install clone ls work done cd shell hooks clean' \
@@ -1173,33 +1176,34 @@ _gra() {
         return
     fi
 
-    root=$(_gra_root)
+    # Flags only once one is being typed, so a lone worktree name still
+    # completes on its own rather than sharing a menu with --force.
+    if [[ $cur == -* ]]; then
+        case $cmd in
+            clone) words='--name --no-work --no-hook' ;;
+            work) words='--switch --no-hook' ;;
+            done) words='--force' ;;
+            clean) words='--yes --no-fetch' ;;
+            install) words='--no-check' ;;
+        esac
+        COMPREPLY=($(compgen -W "$words" -- "$cur"))
+        return
+    fi
+
     case $cmd in
-        cd)
-            words=$(_gra_worktrees "$root")
-            ;;
-        done)
-            words="$(_gra_worktrees "$root") --force"
+        cd|done)
+            words=$(_gra_worktrees "$(_gra_root)")
             ;;
         work)
             container=$(_gra_container)
             if (( COMP_CWORD >= 3 )); then
                 # Two arguments always mean repository then branch.
-                words=$(_gra_branches "$root/${COMP_WORDS[2]}")
+                words=$(_gra_branches "$(_gra_root)/${COMP_WORDS[2]}")
             elif [[ -n $container ]]; then
-                words="$(_gra_branches "$container") --switch --no-hook"
+                words=$(_gra_branches "$container")
             else
-                words="$(_gra_repos "$root") --no-hook"
+                words=$(_gra_repos "$(_gra_root)")
             fi
-            ;;
-        clone)
-            words='--name --no-work --no-hook'
-            ;;
-        clean)
-            words='--yes --no-fetch'
-            ;;
-        install)
-            words='--no-check'
             ;;
         shell)
             words='bash'
