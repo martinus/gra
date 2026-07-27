@@ -45,8 +45,25 @@ def run_cli(
     )
 
 
+# Committing must not depend on the machine having a global git identity:
+# tests commit inside gra's own clones, which carry no user config.
+GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "gra test",
+    "GIT_AUTHOR_EMAIL": "gra@example.invalid",
+    "GIT_COMMITTER_NAME": "gra test",
+    "GIT_COMMITTER_EMAIL": "gra@example.invalid",
+}
+
+
 def git(args: list[str], cwd: Path | None = None) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **GIT_IDENTITY},
+    )
 
 
 def git_output(args: list[str], cwd: Path | None = None) -> str:
@@ -61,8 +78,6 @@ def git_fails(args: list[str], cwd: Path | None = None) -> bool:
 def make_repo(tmp_path: Path, name: str, branch: str = "main") -> Path:
     repo = tmp_path / name
     git(["init", "--initial-branch", branch, str(repo)])
-    git(["config", "user.email", "gra@example.invalid"], cwd=repo)
-    git(["config", "user.name", "gra test"], cwd=repo)
     (repo / "README.md").write_text(f"# {name}\n")
     git(["add", "README.md"], cwd=repo)
     git(["commit", "-m", "initial"], cwd=repo)
