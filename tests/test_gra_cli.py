@@ -928,6 +928,101 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     ]
 
 
+def complete(home: Path, words: list[str], cwd: Path) -> list[str]:
+    """Return what the emitted bash completion offers for a typed command line."""
+    init = run_cli(["shell", "bash"], home)
+    assert init.returncode == 0, init.stderr
+    typed = " ".join(f'"{word}"' for word in words)
+    script = (
+        f"{init.stdout}\n"
+        f"COMP_WORDS=({typed})\n"
+        f"COMP_CWORD={len(words) - 1}\n"
+        '_gra\nprintf "%s\\n" "${COMPREPLY[@]}"\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=cli_env(home),
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.split()
+
+
+def test_completion_is_registered_for_gra(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    init = run_cli(["shell", "bash"], home)
+
+    result = subprocess.run(
+        ["bash", "-c", f"{init.stdout}\ncomplete -p gra"],
+        capture_output=True,
+        text=True,
+        env=cli_env(home),
+    )
+
+    # Without this the function exists but Tab never reaches it.
+    assert result.returncode == 0, result.stderr
+    assert "-F _gra gra" in result.stdout
+
+
+def test_completion_offers_the_subcommands(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    assert "work" in complete(home, ["gra", ""], tmp_path)
+    assert complete(home, ["gra", "cl"], tmp_path) == ["clone", "clean"]
+
+
+def test_completion_offers_worktree_names(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+
+    assert complete(home, ["gra", "cd", ""], tmp_path) == [worktree.name]
+    assert complete(home, ["gra", "done", ""], tmp_path) == [worktree.name, "--force"]
+
+
+def test_completion_offers_repositories_outside_one(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    clone_repo(home, make_repo(tmp_path, "project"))
+    clone_repo(home, make_repo(tmp_path, "other"))
+
+    words = complete(home, ["gra", "work", ""], tmp_path)
+
+    assert "project" in words and "other" in words
+
+
+def test_completion_offers_branches_inside_a_repository(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "feature/search")
+    container = clone_repo(home, source)
+
+    words = complete(home, ["gra", "work", ""], container)
+
+    assert "main" in words
+    assert "feature/search" in words
+    # Inside a repository one argument is a branch, so repositories are not offered.
+    assert "project" not in words
+
+
+def test_completion_offers_branches_of_a_named_repository(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "feature/search")
+    clone_repo(home, source)
+
+    words = complete(home, ["gra", "work", "project", "feature"], tmp_path)
+
+    assert words == ["feature/search"]
+
+
 def test_shell_bash_prints_shell_helper(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

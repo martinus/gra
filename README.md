@@ -406,6 +406,29 @@ shell's directory, add this to `~/.bashrc` after `gra` is on your `PATH`:
 eval "$(gra shell bash)"
 ```
 
+`gra install` adds that line for you.
+
+## Tab completion
+
+The same line installs Bash completion, so there is nothing else to set up:
+
+```text
+gra <TAB>              install clone ls work done cd shell hooks clean
+gra cd <TAB>           hare rose wolf          worktree names
+gra done <TAB>         hare rose wolf --force
+gra work <TAB>         branches, inside a repository
+                       repository names, outside one
+gra work oans <TAB>    branches of oans
+```
+
+What it offers follows the same rule the commands do: inside a repository one
+argument is a branch, outside one it is a repository, and two arguments are
+always repository then branch.
+
+Completion never runs `gra` - it reads the gra root and asks `git` for
+branches, which keeps `<TAB>` instant instead of paying for a Python start
+every time.
+
 ## Opening a worktree in tmux
 
 There is no `gra tmux` command - `gra` has no tmux code. `gra cd` prints a

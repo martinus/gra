@@ -15,7 +15,7 @@ checked out: switch branches freely inside a worktree, or start a new one and
 remove it when done.
 """
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -1118,10 +1118,105 @@ BASH_INIT = r'''gra() {
 '''
 
 
+# Completion asks git and the filesystem directly rather than running gra:
+# gra takes ~75ms to start, which is a long time to hold down Tab, and every
+# answer here is a directory listing or one for-each-ref.
+BASH_COMPLETION = r'''_gra_root() {
+    local root
+    root="$(git config --get gra.root 2>/dev/null)"
+    root=${root:-~/gra}
+    printf '%s\n' "${root/#\~/$HOME}"
+}
+
+_gra_container() {
+    local dir=$PWD
+    while [[ -n $dir ]]; do
+        [[ -d $dir/.bare ]] && { printf '%s\n' "$dir"; return; }
+        dir=${dir%/*}
+    done
+}
+
+_gra_worktrees() {
+    local dir name
+    # */*/ skips .bare for us: globs do not match leading dots.
+    for dir in "$1"/*/*/; do
+        [[ -d $dir ]] || continue
+        name=${dir%/}
+        printf '%s\n' "${name##*/}"
+    done
+}
+
+_gra_repos() {
+    local dir name
+    for dir in "$1"/*/; do
+        [[ -d $dir.bare ]] || continue
+        name=${dir%/}
+        printf '%s\n' "${name##*/}"
+    done
+}
+
+_gra_branches() {
+    [[ -d $1/.bare ]] || return
+    {
+        git --git-dir="$1/.bare" for-each-ref --format='%(refname:lstrip=2)' refs/heads
+        git --git-dir="$1/.bare" for-each-ref --format='%(refname:lstrip=3)' \
+            refs/remotes/origin
+    } 2>/dev/null | grep -vx HEAD | sort -u
+}
+
+_gra() {
+    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} root container words
+
+    if (( COMP_CWORD == 1 )); then
+        COMPREPLY=($(compgen -W 'install clone ls work done cd shell hooks clean' \
+            -- "$cur"))
+        return
+    fi
+
+    root=$(_gra_root)
+    case $cmd in
+        cd)
+            words=$(_gra_worktrees "$root")
+            ;;
+        done)
+            words="$(_gra_worktrees "$root") --force"
+            ;;
+        work)
+            container=$(_gra_container)
+            if (( COMP_CWORD >= 3 )); then
+                # Two arguments always mean repository then branch.
+                words=$(_gra_branches "$root/${COMP_WORDS[2]}")
+            elif [[ -n $container ]]; then
+                words="$(_gra_branches "$container") --switch --no-hook"
+            else
+                words="$(_gra_repos "$root") --no-hook"
+            fi
+            ;;
+        clone)
+            words='--name --no-work --no-hook'
+            ;;
+        clean)
+            words='--yes --no-fetch'
+            ;;
+        install)
+            words='--no-check'
+            ;;
+        shell)
+            words='bash'
+            ;;
+    esac
+    COMPREPLY=($(compgen -W "$words" -- "$cur"))
+}
+
+complete -F _gra gra
+'''
+
+
 def print_shell_init(shell: str) -> None:
     """Print shell integration code for eval."""
     if shell == "bash":
         print(BASH_INIT, end="")
+        print(BASH_COMPLETION, end="")
         return
     fail(f"unsupported shell '{shell}'")
 
