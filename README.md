@@ -176,7 +176,8 @@ gra work oans                  # detached at origin's default branch
 
 Two arguments always mean repository then branch. One means a branch when you
 are inside a repository, and a repository when you are not, where a bare branch
-name would have nothing to apply to.
+name would have nothing to apply to. So from inside one repository you cannot
+name another with a single argument - give both, or `cd` out.
 
 If the branch is already checked out somewhere - Git allows it in only one
 worktree at a time - `gra` names that worktree instead of leaving you with
@@ -218,9 +219,9 @@ switched to, `origin/<branch>` gets a local tracking branch, and missing
 branches can be created from origin's default branch and pushed.
 
 `gra work --switch` refuses when the worktree has uncommitted changes - commit
-or stash first. Git allows a branch to be checked out in only one worktree at a
-time, so switching to a branch that is already checked out elsewhere fails with
-Git's normal message.
+or stash first. Git allows a branch in only one worktree at a time, so
+switching to one checked out elsewhere is refused too, naming the worktree that
+holds it.
 
 ### Hooks
 
@@ -271,10 +272,11 @@ uncomment or replace.
 
 ### Upgrading from 1.x
 
-Only `gra clone` writes the hooks, so repositories you cloned with an older
-`gra` have none and will open no windows. `gra hooks` gives them all one. A `.tmux-setup` file is no longer read, and renaming it will not
-help: it targets a `GRA_WINDOW` that no longer exists, because gra no longer
-opens the window. Port what is in it into `work.sh`.
+Only `gra clone` writes hooks, so repositories you cloned with an older `gra`
+have none and open no windows. `gra hooks` gives every repository the hooks it
+is missing, in one go. A `.tmux-setup` file is no longer read, and renaming it
+will not help: it targets a `GRA_WINDOW` that no longer exists, because gra no
+longer opens the window. Port what is in it into `work.sh`.
 
 ## done - remove a worktree
 
@@ -324,8 +326,9 @@ information; the name is just an address.
 `SYNC` is how far the branch is from its upstream: `↑2` is two commits to
 push, `↓1` is one to pull, and blank is in sync or has no upstream. It reads
 local refs only - `gra ls` never goes to the network - so it is as fresh as
-your last fetch. `gra clean` fetches first, so run that when you want the
-truth rather than the last thing you heard.
+your last fetch. A `-` means the question does not apply: a detached worktree,
+or a branch with no upstream. To refresh it, fetch (`gra clean` does, for every
+repository) and run `gra ls` again.
 
 ## hooks - write missing hooks
 
@@ -335,8 +338,7 @@ gra hooks
 
 Writes `work.sh` and `done.sh` into every repository under the gra root that
 is missing them, and leaves existing ones alone - so it cannot overwrite your
-edits and is safe to re-run. Only `gra clone` writes hooks otherwise, so this
-is how repositories you cloned earlier catch up.
+edits and is safe to re-run.
 
 ## clean - report or remove clean merged worktrees
 

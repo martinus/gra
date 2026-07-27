@@ -1,6 +1,7 @@
 """CLI tests for the gra commands."""
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -420,16 +421,16 @@ def test_work_with_only_a_repository_starts_detached(tmp_path: Path) -> None:
     assert git_output(["branch", "--show-current"], cwd=worktree) == ""
 
 
-def test_work_inside_a_repository_still_reads_one_argument_as_a_branch(
-    tmp_path: Path,
-) -> None:
+def test_work_inside_a_repository_reads_one_argument_as_a_branch(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
     add_feature_branch(source, "feature")
     container = clone_repo(home, source)
+    # A repository named 'feature' exists too, so the argument is ambiguous
+    # on its face: inside a repository the branch has to win.
+    clone_repo(home, make_repo(tmp_path, "feature"))
 
-    # 'feature' is not a repository, and inside a container it never could be.
     result = run_cli(["work", "feature"], home, cwd=container)
 
     assert result.returncode == 0, result.stderr
@@ -500,15 +501,61 @@ def test_ls_shows_ahead_and_behind(tmp_path: Path) -> None:
     source = make_repo(tmp_path, "project")
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
+
     (worktree / "local.txt").write_text("local\n")
     git(["add", "local.txt"], cwd=worktree)
     git(["commit", "-m", "local"], cwd=worktree)
+    # And one commit on the other side, fetched but not merged.
+    (source / "remote.txt").write_text("remote\n")
+    git(["add", "remote.txt"], cwd=source)
+    git(["commit", "-m", "remote"], cwd=source)
+    git(["fetch", "origin"], cwd=container / BARE_DIR)
 
     result = run_cli(["ls"], home)
 
     assert result.returncode == 0, result.stderr
     assert "SYNC" in result.stdout
     assert "↑1" in result.stdout
+    assert "↓1" in result.stdout
+
+
+def test_ls_marks_sync_as_not_applicable_without_an_upstream(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"), work=True)
+    work_worktree(home, container)  # detached, so there is no upstream
+
+    result = run_cli(["ls"], home)
+
+    assert result.returncode == 0, result.stderr
+    # '-' rather than blank: blank would read as "up to date".
+    assert " - " in result.stdout
+
+
+def test_ls_survives_a_worktree_whose_directory_is_gone(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"), work=True)
+    shutil.rmtree(worktree_dirs(container)[0])
+
+    result = run_cli(["ls"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert "× missing" in result.stdout
+
+
+def test_work_switch_to_the_branch_it_is_already_on(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+
+    # The branch is checked out here, so the guard must exempt this worktree.
+    result = run_cli(["work", "--switch", "main"], home, cwd=worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
 
 
 def recorder() -> str:
