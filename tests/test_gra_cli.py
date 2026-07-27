@@ -235,6 +235,67 @@ def test_clone_keeps_the_clone_when_the_worktree_cannot_be_created(
     assert worktree_dirs(container) == []
 
 
+def make_repo_with_submodule(tmp_path: Path, home: Path) -> Path:
+    """A source repository carrying a submodule, and a home that may clone it.
+
+    Git refuses file:// submodules by default (CVE-2022-39253), so the fake
+    global config the CLI runs with has to allow them.
+    """
+    (home / ".gitconfig").write_text('[protocol "file"]\n\tallow = always\n')
+    child = make_repo(tmp_path, "child")
+    parent = make_repo(tmp_path, "parent")
+    git(
+        ["-c", "protocol.file.allow=always", "submodule", "add", str(child), "lib"],
+        cwd=parent,
+    )
+    git(["commit", "-m", "add submodule"], cwd=parent)
+    return parent
+
+
+def test_clone_initializes_submodules_by_default(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo_with_submodule(tmp_path, home)
+
+    container = clone_repo(home, source, work=True)
+
+    worktree = worktree_dirs(container)[0]
+    assert (worktree / "lib" / "README.md").is_file()
+
+
+def test_clone_no_submodules_leaves_them_alone(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo_with_submodule(tmp_path, home)
+
+    result = run_cli(["clone", str(source), "--no-submodules"], home)
+
+    assert result.returncode == 0, result.stderr
+    container = home / "gra" / "parent"
+    worktree = worktree_dirs(container)[0]
+    assert (worktree / ".gitmodules").is_file()
+    assert not (worktree / "lib" / "README.md").exists()
+
+
+def test_no_submodules_is_remembered_for_later_worktrees(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo_with_submodule(tmp_path, home)
+    run_cli(["clone", str(source), "--no-submodules", "--no-work"], home)
+    container = home / "gra" / "parent"
+
+    # The flag was only given to clone; the choice has to stick to the
+    # repository, or every later worktree would pull them in again.
+    worktree = work_worktree(home, container, "main")
+
+    assert (worktree / ".gitmodules").is_file()
+    assert not (worktree / "lib" / "README.md").exists()
+    assert (
+        git_output(["config", "--get", "gra.submodules"], cwd=container / BARE_DIR)
+        == "false"
+    )
+
+
 def test_clone_uses_repo_name_for_remote_urls(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

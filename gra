@@ -15,7 +15,7 @@ checked out: switch branches freely inside a worktree, or start a new one and
 remove it when done.
 """
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -51,6 +51,10 @@ VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
 # local-only directories out of `git status` without changing tracked files.
 CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
 GRAKEEP_FILE = ".grakeep"
+
+# Set to false in a repository's config by 'gra clone --no-submodules', or
+# globally to keep submodules out of every repository.
+SUBMODULES_CONFIG = "gra.submodules"
 LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
 
 # Per-repository hooks, run when a worktree is created and before one is
@@ -717,7 +721,13 @@ def write_missing_hooks(root: Path) -> None:
 
 
 def clone(
-    url: str, name: str | None, root: Path, *, no_work: bool, no_hook: bool
+    url: str,
+    name: str | None,
+    root: Path,
+    *,
+    no_work: bool,
+    no_hook: bool,
+    no_submodules: bool,
 ) -> None:
     """Clone into a bare checkout under the gra root, with a worktree on it."""
     try:
@@ -745,6 +755,8 @@ def clone(
         # A remote without commits has no HEAD to resolve. That is not a failed
         # clone, and remote_default_branch falls back to main/master anyway.
         git_output(["remote", "set-head", "origin", "--auto"], cwd=bare)
+        if no_submodules:
+            run_git(["config", SUBMODULES_CONFIG, "false"], cwd=bare)
         add_local_excludes(bare)
         write_default_hooks(container)
     except Exception:
@@ -1180,7 +1192,7 @@ _gra() {
     # completes on its own rather than sharing a menu with --force.
     if [[ $cur == -* ]]; then
         case $cmd in
-            clone) words='--name --no-work --no-hook' ;;
+            clone) words='--name --no-work --no-hook --no-submodules' ;;
             work) words='--switch --no-hook' ;;
             done) words='--force' ;;
             clean) words='--yes --no-fetch' ;;
@@ -1264,10 +1276,24 @@ def add_attached_worktree(bare: Path, target: Path, branch: str) -> None:
     run_git(["worktree", "add", target, branch], cwd=bare)
 
 
-def init_submodules(worktree: Path) -> None:
-    if (worktree / ".gitmodules").is_file():
-        log(f"Initializing submodules in '{worktree}'")
-        run_git(["submodule", "update", "--init", "--recursive"], cwd=worktree)
+def submodules_wanted(bare: Path) -> bool:
+    """Whether this repository's worktrees should get their submodules.
+
+    Ordinary git config, so 'gra clone --no-submodules' records it in the bare
+    repository, a global setting turns them off everywhere, and either can be
+    changed later with git config rather than only at clone time.
+    """
+    return git_output(["config", "--get", "--type=bool", SUBMODULES_CONFIG], cwd=bare) != "false"
+
+
+def init_submodules(bare: Path, worktree: Path) -> None:
+    if not (worktree / ".gitmodules").is_file():
+        return
+    if not submodules_wanted(bare):
+        log(f"skipping submodules ({SUBMODULES_CONFIG} is false)")
+        return
+    log(f"Initializing submodules in '{worktree}'")
+    run_git(["submodule", "update", "--init", "--recursive"], cwd=worktree)
 
 
 def create_worktree(
@@ -1293,7 +1319,7 @@ def create_worktree(
         log(f"Creating worktree '{target}' detached at '{ref}'")
         run_git(["worktree", "add", "--detach", target, ref], cwd=bare)
 
-    init_submodules(target)
+    init_submodules(bare, target)
     log(f"created '{target}'", GREEN)
 
     if not no_hook:
@@ -1654,7 +1680,9 @@ def parse_args() -> argparse.Namespace:
             "A worktree named after an unused word for the repository is\n"
             "created next to it, checked out on origin's default branch;\n"
             f"use --no-work to skip it. Writes '{WORK_HOOK}' and '{DONE_HOOK}'\n"
-            f"hooks next to '{BARE_DIR}' and runs the first."
+            f"hooks next to '{BARE_DIR}' and runs the first.\n"
+            f"--no-submodules records '{SUBMODULES_CONFIG}=false', which every\n"
+            "later 'gra work' in this repository honours too."
         ),
     )
     clone_parser.add_argument("url", help="git repository URL to clone")
@@ -1665,9 +1693,19 @@ def parse_args() -> argparse.Namespace:
     clone_parser.add_argument(
         "--no-hook", action="store_true", help=f"do not run the '{WORK_HOOK}' hook"
     )
+    clone_parser.add_argument(
+        "--no-submodules",
+        action="store_true",
+        help="never initialize submodules in this repository",
+    )
     clone_parser.set_defaults(
         handler=lambda args: clone(
-            args.url, args.name, args.root, no_work=args.no_work, no_hook=args.no_hook
+            args.url,
+            args.name,
+            args.root,
+            no_work=args.no_work,
+            no_hook=args.no_hook,
+            no_submodules=args.no_submodules,
         )
     )
 
