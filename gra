@@ -73,8 +73,10 @@ LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
 WORK_HOOK = "work.sh"
 WORK_HOOK_DEFAULT = """\
 #!/bin/sh
-# Runs after 'gra work' or 'gra clone' creates a worktree, from inside it.
-# 'gra work --switch' reuses a worktree, so it does not run this.
+# Runs from inside a worktree, whenever gra leaves you in one: after
+# 'gra work' or 'gra clone' creates it, after 'gra work --switch' moves it to
+# another branch, and on demand with 'gra work --hook'. So it runs more than
+# once per worktree and must not undo work in progress.
 #
 # gra runs this with these variables set:
 #
@@ -90,6 +92,15 @@ WORK_HOOK_DEFAULT = """\
 
 # done.sh finds the window by this name. Change it there too.
 window_name="$GRA_REPO/$GRA_WORD"
+
+# The window survives everything but 'gra done', so on a re-run go to the one
+# that is already open rather than opening a second window of the same name.
+open=$(tmux list-windows -a -F '#{window_id} #{window_name}' \
+    | awk -v name="$window_name" '$2 == name { print $1; exit }')
+if [ -n "$open" ]; then
+    tmux select-window -t "$open"
+    exit 0
+fi
 
 window=$(tmux new-window -P -F '#{window_id}' \
     -n "$window_name" -c "$GRA_WORKTREE")
@@ -1232,7 +1243,8 @@ _gra_branches() {
 }
 
 _gra() {
-    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
+    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container word words
+    local -a typed=()
 
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=($(compgen -W 'install clone ls work done cd shell hooks clean' \
@@ -1245,7 +1257,7 @@ _gra() {
     if [[ $cur == -* ]]; then
         case $cmd in
             clone) words='--name --no-work --no-hook --no-submodules --no-upstream' ;;
-            work) words='--switch --no-hook' ;;
+            work) words='--switch --hook --no-hook' ;;
             done) words='--force' ;;
             clean) words='--yes --no-fetch' ;;
             install) words='--no-check' ;;
@@ -1259,10 +1271,22 @@ _gra() {
             words=$(_gra_worktrees "$(_gra_root)")
             ;;
         work)
+            # The spaces keep --no-hook out of this.
+            if [[ " ${COMP_WORDS[*]} " == *" --hook "* ]]; then
+                words=$(_gra_worktrees "$(_gra_root)")
+                COMPREPLY=($(compgen -W "$words" -- "$cur"))
+                return
+            fi
+            # Count the positionals typed so far, skipping flags: with them
+            # counted, 'gra work --switch <TAB>' looks for a repository named
+            # '--switch' and offers nothing.
+            for word in "${COMP_WORDS[@]:2:COMP_CWORD-2}"; do
+                [[ $word == -* ]] || typed+=("$word")
+            done
             container=$(_gra_container)
-            if (( COMP_CWORD >= 3 )); then
+            if (( ${#typed[@]} >= 1 )); then
                 # Two arguments always mean repository then branch.
-                words=$(_gra_branches "$(_gra_root)/${COMP_WORDS[2]}")
+                words=$(_gra_branches "$(_gra_root)/${typed[0]}")
             elif [[ -n $container ]]; then
                 words=$(_gra_branches "$container")
             else
@@ -1414,7 +1438,7 @@ def create_worktree(
 # ---------------------------------------------------------------------------
 
 
-def switch_in_place(branch_input: str) -> None:
+def switch_in_place(branch_input: str, no_hook: bool) -> None:
     """Switch the current worktree to another branch."""
     container, worktree = current_gra_worktree("work --switch")
     bare = bare_dir(container)
@@ -1432,6 +1456,9 @@ def switch_in_place(branch_input: str) -> None:
     else:
         run_git(["switch", branch], cwd=worktree)
     log(f"'{worktree.name}' is now on '{branch}'", GREEN)
+
+    if not no_hook:
+        run_hook(WORK_HOOK, container, worktree, branch, cwd=worktree)
 
 
 def resolve_repository(name: str, root: Path) -> Path:
@@ -1473,6 +1500,37 @@ def work(target: str | None, branch_input: str | None, root: Path, no_hook: bool
     if branch:
         branch = resolve_branch(bare_dir(container), branch)
     create_worktree(container, root, branch, no_hook=no_hook)
+
+
+def run_work_hook(name: str | None, root: Path) -> None:
+    """Run the work hook again for a worktree that is already there.
+
+    Setting a worktree up is not a one-shot event: the tmux window it opened
+    can be closed, and 'gra work --switch' leaves you in a worktree without
+    having created one. Names are unique across repositories, so NAME reaches
+    any worktree from anywhere; without it, the one you are standing in.
+
+    The branch comes off the worktree rather than an argument, so a detached
+    one reports the empty GRA_BRANCH that 'gra work' would have given it.
+    """
+    if name:
+        worktree = Path(resolve_worktree_name(root, name).path)
+        container = worktree.parent
+    else:
+        container, worktree = current_gra_worktree("work --hook")
+
+    # Everywhere else a missing hook is silence, because something was created
+    # anyway. Here it would mean the whole command did nothing without saying
+    # so, and repositories cloned by gra 1.x have no hooks at all.
+    script = container / WORK_HOOK
+    if not script.is_file():
+        fail(f"'{container}' has no '{WORK_HOOK}'; 'gra hooks' writes missing hooks")
+    if not os.access(script, os.X_OK):
+        log(f"'{script}' is turned off; 'chmod +x' it to run it", YELLOW)
+        return
+
+    branch = git_output(["branch", "--show-current"], cwd=worktree) or ""
+    run_hook(WORK_HOOK, container, worktree, branch, cwd=worktree)
 
 
 # ---------------------------------------------------------------------------
@@ -1828,7 +1886,9 @@ def parse_args() -> argparse.Namespace:
             "Run outside a repository, name one: 'gra work REPO [BRANCH]'.\n"
             f"The repository's '{WORK_HOOK}' hook then runs inside it.\n"
             "With --switch, reuse the current worktree instead: switch it to\n"
-            "BRANCH with the same branch resolution. Refuses when dirty."
+            "BRANCH with the same branch resolution. Refuses when dirty.\n"
+            f"With --hook, create nothing and run '{WORK_HOOK}' for a worktree\n"
+            "that is already there: NAME from anywhere, or the current one."
         ),
     )
     work_parser.add_argument(
@@ -1843,16 +1903,29 @@ def parse_args() -> argparse.Namespace:
         help="switch the current worktree to BRANCH instead of creating one",
     )
     work_parser.add_argument(
+        "--hook",
+        action="store_true",
+        help=f"only run '{WORK_HOOK}', for an existing worktree NAME",
+    )
+    work_parser.add_argument(
         "--no-hook", action="store_true", help=f"do not run the '{WORK_HOOK}' hook"
     )
 
     def run_work(args: argparse.Namespace) -> None:
-        if args.switch:
+        if args.hook:
+            if args.switch:
+                work_parser.error("--hook and --switch do different jobs; pick one")
+            if args.no_hook:
+                work_parser.error("--hook and --no-hook contradict each other")
+            if args.branch:
+                work_parser.error("--hook takes a worktree name, not REPO BRANCH")
+            run_work_hook(args.target, args.root)
+        elif args.switch:
             if not args.target:
                 work_parser.error("--switch requires BRANCH")
             if args.branch:
                 work_parser.error("--switch switches the current worktree; drop REPO")
-            switch_in_place(args.target)
+            switch_in_place(args.target, args.no_hook)
         else:
             work(args.target, args.branch, args.root, args.no_hook)
 
