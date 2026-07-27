@@ -228,46 +228,35 @@ Both receive:
 | `GRA_WORD`     | worktree name, e.g. `hare`                  |
 | `GRA_BRANCH`   | checked-out branch, or empty when detached  |
 
-`gra clone` writes both, executable and working, and says so: out of the box
-`work.sh` opens a tmux window for the new worktree and `done.sh` closes it
-again. They live in the container rather than the repository, so they are
-personal and per-machine and are never committed. `gra` writes them once and
-never touches them afterwards - edit them and they stay edited.
+`gra clone` writes both, executable and working: out of the box `work.sh`
+opens a tmux window for the new worktree and `done.sh` closes it again. They
+live in the container rather than the repository, so they are personal and
+per-machine and are never committed. `gra` writes them once and never touches
+them afterwards - edit them and they stay edited. `chmod -x work.sh` turns one
+off; deleting it does the same.
 
-Edit them freely. `chmod -x work.sh` turns one off; deleting it does the same.
-`done.sh` runs while the worktree still exists, so it can look inside before it
-goes.
-
-The `work.sh` you get, with the pane layout uncommented:
+Read them - they are short, commented, and they are the documentation for what
+happens around a worktree. `work.sh` opens the window:
 
 ```sh
-#!/bin/sh
-[ -n "$TMUX" ] || exit 0
+window_name="$GRA_REPO/$GRA_WORD"
 
 window=$(tmux new-window -P -F '#{window_id}' \
-    -n "$GRA_REPO/$GRA_WORD" -c "$GRA_WORKTREE")
-
-ln -sf ../shared/compile_commands.json .
-
-tmux send-keys    -t "$window" 'claude' Enter
-tmux split-window -h -t "$window" -c "$GRA_WORKTREE"
-tmux send-keys    -t "$window" 'hx .' Enter
-tmux split-window -v -t "$window" -c "$GRA_WORKTREE"
-tmux send-keys    -t "$window" 'htop' Enter
-tmux select-pane  -t "$window".0
+    -n "$window_name" -c "$GRA_WORKTREE")
 ```
 
-`done.sh` is the mirror image: it finds the window by the same name and kills
-it. Both scripts set `window_name` on their first line, which is the only thing
-they have to agree on.
+and `done.sh` closes the window of that name again. The name is the only thing
+the two have to agree on, so change it in both. The rest of `work.sh` is a
+commented-out pane layout - a `claude` pane, an editor, a monitor - to
+uncomment or replace.
 
 ### Upgrading from 1.x
 
-`gra clone` writes the hooks, so repositories cloned with an older `gra` do not
-have them and will open no windows. Copy `work.sh` and `done.sh` from a freshly
-cloned repository, or write your own. A `.tmux-setup` file from 1.x is no
-longer read - it expects a `GRA_WINDOW` that no longer exists, so port it into
-`work.sh` rather than renaming it.
+Only `gra clone` writes the hooks, so repositories you cloned with an older
+`gra` have none and will open no windows. Copy them in from a freshly cloned
+repository. A `.tmux-setup` file is no longer read, and renaming it will not
+help: it targets a `GRA_WINDOW` that no longer exists, because gra no longer
+opens the window. Port what is in it into `work.sh`.
 
 ## done - remove the current worktree
 
@@ -281,10 +270,10 @@ gra done
 origin's default branch (squash and cherry-pick merges are recognized via patch
 equivalence). `--force` overrides both checks. On removal:
 
+* the `done.sh` hook runs, while the worktree is still there,
 * the worktree directory is removed,
 * the local branch is deleted, but only when its changes were verified to be
-  merged - with `--force` on an unmerged branch, the branch is kept,
-* `done.sh` runs first, while the worktree is still there.
+  merged - with `--force` on an unmerged branch, the branch is kept.
 
 With the bash shell integration, `gra done` also moves your shell out of the
 removed directory into the repository folder.
