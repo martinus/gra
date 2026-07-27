@@ -241,13 +241,19 @@ def test_clone_keeps_the_clone_when_the_worktree_cannot_be_created(
     assert worktree_dirs(container) == []
 
 
+def add_global_config(home: Path, text: str) -> None:
+    """Append to the fake global config, so fixtures can be combined."""
+    with (home / ".gitconfig").open("a") as handle:
+        handle.write(text)
+
+
 def make_repo_with_submodule(tmp_path: Path, home: Path) -> Path:
     """A source repository carrying a submodule, and a home that may clone it.
 
     Git refuses file:// submodules by default (CVE-2022-39253), so the fake
     global config the CLI runs with has to allow them.
     """
-    (home / ".gitconfig").write_text('[protocol "file"]\n\tallow = always\n')
+    add_global_config(home, '[protocol "file"]\n\tallow = always\n')
     child = make_repo(tmp_path, "child")
     parent = make_repo(tmp_path, "parent")
     git(
@@ -298,7 +304,7 @@ def github_source(tmp_path: Path, home: Path, name: str = "proj") -> str:
     """
     source = make_repo(tmp_path, name)
     url = f"git@github.com:me/{name}.git"
-    (home / ".gitconfig").write_text(f'[url "{source}"]\n\tinsteadOf = {url}\n')
+    add_global_config(home, f'[url "{source}"]\n\tinsteadOf = {url}\n')
     return url
 
 
@@ -307,7 +313,11 @@ def gh_mock(tmp_path: Path, parent: str = "") -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     gh = bin_dir / "gh"
-    gh.write_text(f'#!/bin/sh\necho "$@" >> "$GH_CALLS"\nprintf \'%s\\n\' "{parent}"\n')
+    gh.write_text(
+        "#!/bin/sh\n"
+        'echo "$@" >> "$GH_CALLS"\n'
+        f'echo "{parent}"\n'
+    )
     gh.chmod(0o755)
     return {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -343,6 +353,20 @@ def test_clone_adds_no_upstream_when_it_is_not_a_fork(tmp_path: Path) -> None:
     assert (tmp_path / "gh-calls").is_file()
 
 
+def test_clone_upstream_can_be_turned_off_for_good(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    url = github_source(tmp_path, home)
+    # Without gh installed the lookup would announce itself on every GitHub
+    # clone; this is the switch that stops it, rather than a flag to remember.
+    add_global_config(home, "[gra]\n\tupstream = false\n")
+
+    result = run_cli(["clone", url], home, env_extra=gh_mock(tmp_path, "x"))
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "gh-calls").exists()
+
+
 def test_clone_no_upstream_does_not_ask(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -361,9 +385,7 @@ def test_clone_does_not_ask_gh_about_a_non_github_remote(tmp_path: Path) -> None
     home.mkdir()
     source = make_repo(tmp_path, "project")
 
-    result = run_cli([
-        "clone", str(source)], home, env_extra=gh_mock(tmp_path, "x")
-    )
+    result = run_cli(["clone", str(source)], home, env_extra=gh_mock(tmp_path, "x"))
 
     assert result.returncode == 0, result.stderr
     # A path is not a forge, so there is nothing to ask and nothing to say.

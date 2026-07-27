@@ -61,6 +61,7 @@ SUBMODULES_CONFIG = "gra.submodules"
 # private forks work and gra keeps its hands off tokens.
 GITHUB_HOST = "github.com"
 UPSTREAM_REMOTE = "upstream"
+UPSTREAM_CONFIG = "gra.upstream"
 LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
 
 # Per-repository hooks, run when a worktree is created and before one is
@@ -221,14 +222,19 @@ def run_git(args: list[str | Path], *, cwd: Path | None = None) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True)
 
 
-def git_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None:
-    """Run Git quietly; return its output, or None when the command fails."""
+def command_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None:
+    """Run a command quietly; return its output, or None when it fails."""
     try:
         return subprocess.check_output(
-            ["git", *args], cwd=cwd, encoding="utf-8", stderr=subprocess.DEVNULL
+            args, cwd=cwd, encoding="utf-8", stderr=subprocess.DEVNULL
         ).strip()
     except subprocess.CalledProcessError:
         return None
+
+
+def git_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None:
+    """Run Git quietly; return its output, or None when the command fails."""
+    return command_output(["git", *args], cwd=cwd)
 
 
 T = TypeVar("T")
@@ -325,27 +331,28 @@ def fork_parent_url(url: str) -> str | None:
         return None
     # Match origin's protocol, so upstream authenticates the same way.
     field = "clone_url" if url.startswith(("http://", "https://")) else "ssh_url"
-    result = subprocess.run(
-        ["gh", "api", f"repos/{parsed.owner}/{parsed.repo}", "--jq", f".parent.{field}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        encoding="utf-8",
-        check=False,
+    parent = command_output(
+        ["gh", "api", f"repos/{parsed.owner}/{parsed.repo}", "--jq", f".parent.{field}"]
     )
-    if result.returncode != 0:
+    if parent is None:
         log(f"could not ask gh whether '{url}' is a fork", YELLOW)
         return None
-    return result.stdout.strip() or None
+    return parent or None
 
 
 def add_upstream_remote(bare: Path, url: str) -> None:
     """Point 'upstream' at the repository this one was forked from."""
+    if git_output(["config", "--get", "--type=bool", UPSTREAM_CONFIG], cwd=bare) == "false":
+        return
     parent = fork_parent_url(url)
     if not parent:
         return
     run_git(["remote", "add", UPSTREAM_REMOTE, parent], cwd=bare)
-    log(f"added remote '{UPSTREAM_REMOTE}' -> {parent}", GREEN)
-    log(f"run 'git fetch {UPSTREAM_REMOTE}' to get its branches")
+    log(
+        f"added remote '{UPSTREAM_REMOTE}' -> {parent}; "
+        f"run 'git fetch {UPSTREAM_REMOTE}' for its branches",
+        GREEN,
+    )
 
 
 def clone_collision_error(url: str, container: Path, local_name: str) -> None:
@@ -1726,7 +1733,8 @@ def parse_args() -> argparse.Namespace:
             f"--no-submodules records '{SUBMODULES_CONFIG}=false', which every\n"
             "later 'gra work' in this repository honours too.\n"
             f"A GitHub fork gets an '{UPSTREAM_REMOTE}' remote pointing at the\n"
-            "repository it came from, which needs gh; --no-upstream skips it."
+            "repository it came from, which needs gh; --no-upstream skips it,\n"
+            f"and '{UPSTREAM_CONFIG}=false' skips it for good."
         ),
     )
     clone_parser.add_argument("url", help="git repository URL to clone")
