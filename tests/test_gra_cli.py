@@ -94,7 +94,12 @@ def add_feature_branch(source: Path, branch: str = "feature", base: str = "main"
 
 
 def clone_repo(
-    home: Path, source: Path, name: str | None = None, *, work: bool = False
+    home: Path,
+    source: Path,
+    name: str | None = None,
+    *,
+    work: bool = False,
+    extra: list[str] | None = None,
 ) -> Path:
     """Clone for tests that create their own worktrees, so --no-work by default."""
     args = ["clone", str(source)]
@@ -102,6 +107,7 @@ def clone_repo(
         args += ["--name", name]
     if not work:
         args.append("--no-work")
+    args += extra or []
     result = run_cli(args, home)
     assert result.returncode == 0, result.stderr
     return home / "gra" / (name or source.name)
@@ -263,33 +269,21 @@ def test_clone_initializes_submodules_by_default(tmp_path: Path) -> None:
     assert (worktree / "lib" / "README.md").is_file()
 
 
-def test_clone_no_submodules_leaves_them_alone(tmp_path: Path) -> None:
+def test_no_submodules_holds_for_this_and_later_worktrees(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo_with_submodule(tmp_path, home)
 
-    result = run_cli(["clone", str(source), "--no-submodules"], home)
+    container = clone_repo(home, source, work=True, extra=["--no-submodules"])
+    # The flag was only given to clone, so the second worktree proves the
+    # choice stuck to the repository rather than to one command line. It is
+    # detached because the clone's worktree already holds main.
+    later = work_worktree(home, container)
 
-    assert result.returncode == 0, result.stderr
-    container = home / "gra" / "parent"
-    worktree = worktree_dirs(container)[0]
-    assert (worktree / ".gitmodules").is_file()
-    assert not (worktree / "lib" / "README.md").exists()
-
-
-def test_no_submodules_is_remembered_for_later_worktrees(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo_with_submodule(tmp_path, home)
-    run_cli(["clone", str(source), "--no-submodules", "--no-work"], home)
-    container = home / "gra" / "parent"
-
-    # The flag was only given to clone; the choice has to stick to the
-    # repository, or every later worktree would pull them in again.
-    worktree = work_worktree(home, container, "main")
-
-    assert (worktree / ".gitmodules").is_file()
-    assert not (worktree / "lib" / "README.md").exists()
+    for worktree in (worktree_dirs(container)[0], later):
+        assert (worktree / ".gitmodules").is_file()
+        assert not (worktree / "lib" / "README.md").exists()
+    # The key the README tells people to edit by hand.
     assert (
         git_output(["config", "--get", "gra.submodules"], cwd=container / BARE_DIR)
         == "false"

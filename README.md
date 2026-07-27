@@ -119,8 +119,16 @@ hook just like `gra work` does. Use `--no-work` for the bare checkout alone, or
 `--no-hook` to skip the hook. A remote without commits has no default branch to
 check out; `gra` says so and keeps the clone.
 
-Pass `--no-submodules` for a repository whose submodules you never want; the
-choice is remembered, so later worktrees skip them too.
+Pass `--no-submodules` for a repository whose submodules you never want. It
+records `gra.submodules = false` in the bare checkout, so every later
+`gra work` in that repository skips them too - the flag is a decision about
+the repository, not about one clone. It is ordinary Git config, so you can
+change your mind:
+
+```sh
+git -C ~/gra/oans/.bare config gra.submodules true    # this repository
+git config --global gra.submodules false              # everywhere
+```
 
 The local name is the repository name (`oans` above). If that name is already
 taken, `gra` stops and suggests a distinct one; use `--name` to choose it - for
@@ -190,8 +198,9 @@ Git's message:
 ERROR: 'main' is already checked out in 'puma'; work there with 'gra cd puma'
 ```
 
-If the repository has submodules, they are initialized in the new worktree -
-unless that repository is set not to; see [Submodules](#submodules).
+If the repository has submodules, they are initialized in the new worktree,
+unless the repository has `gra.submodules = false` - see
+[clone](#clone---clone-a-remote-repository).
 
 `gra work` then runs the repository's `work.sh` hook inside the new worktree.
 As written by `gra clone` that opens a tmux window named `<repo>/<worktree>`,
@@ -242,6 +251,10 @@ so it runs neither.
 `gra` knows nothing about what is in them. It has no tmux code at all: opening
 a window, laying out panes and closing it again are things the hooks do,
 which is why they are shell scripts and not options.
+
+The line is that `gra` owns what a worktree *is* - its branch, its submodules,
+its name - and the hooks own what you *do* with it. That is why submodules are
+initialized by `gra` and windows are not.
 
 Both receive:
 
@@ -333,23 +346,6 @@ local refs only - `gra ls` never goes to the network - so it is as fresh as
 your last fetch. A `-` means the question does not apply: a detached worktree,
 or a branch with no upstream. To refresh it, fetch (`gra clean` does, for every
 repository) and run `gra ls` again.
-
-### Submodules
-
-A worktree gets the repository's submodules unless you say otherwise:
-
-```sh
-gra clone git@github.com:martinus/oans.git --no-submodules
-```
-
-That records `gra.submodules = false` in the repository, so every later
-`gra work` in it skips them too - the flag is a decision about the repository,
-not about one clone. It is ordinary Git config, so you can change your mind:
-
-```sh
-git -C ~/gra/oans/.bare config gra.submodules true    # this repository
-git config --global gra.submodules false              # everywhere
-```
 
 ## hooks - write missing hooks
 

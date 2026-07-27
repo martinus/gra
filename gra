@@ -1277,12 +1277,9 @@ def add_attached_worktree(bare: Path, target: Path, branch: str) -> None:
 
 
 def submodules_wanted(bare: Path) -> bool:
-    """Whether this repository's worktrees should get their submodules.
-
-    Ordinary git config, so 'gra clone --no-submodules' records it in the bare
-    repository, a global setting turns them off everywhere, and either can be
-    changed later with git config rather than only at clone time.
-    """
+    """Whether this repository's worktrees should get their submodules."""
+    # Anything git cannot read as a boolean - unset, or a typo - leaves
+    # submodules on: a complete checkout is the safer thing to fall back to.
     return git_output(["config", "--get", "--type=bool", SUBMODULES_CONFIG], cwd=bare) != "false"
 
 
