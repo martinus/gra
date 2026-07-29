@@ -199,7 +199,7 @@ def test_clone_checks_out_the_default_branch(tmp_path: Path) -> None:
     worktrees = worktree_dirs(container)
     assert len(worktrees) == 1
     worktree = worktrees[0]
-    assert len(worktree.name) == 4
+    assert len(worktree.name) == 8
     assert (worktree / "README.md").is_file()
     assert git_output(["rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree) == "main"
     assert git_output(["rev-parse", "--abbrev-ref", "main@{upstream}"], cwd=worktree) == (
@@ -242,8 +242,8 @@ def test_clone_keeps_the_clone_when_the_worktree_cannot_be_created(
     # Every worktree name is taken, so worktree creation fails after the clone.
     taken = home / "gra" / "taken"
     (taken / BARE_DIR).mkdir(parents=True)
-    for word in load_gra().WORDS:
-        (taken / word).mkdir()
+    for name in load_gra().name_candidates("project"):
+        (taken / name).mkdir()
 
     result = run_cli(["clone", str(source)], home)
 
@@ -481,7 +481,7 @@ def test_work_creates_named_worktree_for_branch(tmp_path: Path) -> None:
 
     worktree = work_worktree(home, container, "feature/search")
 
-    assert len(worktree.name) == 4
+    assert len(worktree.name) == 8
     assert worktree.name.isalpha()
     assert (worktree / ".git").is_file()
     assert (worktree / "README.md").read_text() == "# feature\n"
@@ -516,7 +516,7 @@ def test_work_worktree_names_are_unique(tmp_path: Path) -> None:
     second = work_worktree(home, container)
 
     assert first.name != second.name
-    assert len(first.name) == len(second.name) == 4
+    assert len(first.name) == len(second.name) == 8
 
 
 def test_work_missing_branch_can_be_created(tmp_path: Path) -> None:

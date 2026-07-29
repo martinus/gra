@@ -46,24 +46,42 @@ def test_suggest_clone_name_prefers_owner() -> None:
 
 
 def test_words_are_short_unique_and_safe() -> None:
-    assert len(gra.WORDS) >= 150
-    assert len(set(gra.WORDS)) == len(gra.WORDS)
-    assert all(len(word) == 4 for word in gra.WORDS)
-    assert all(word.isalpha() and word.islower() for word in gra.WORDS)
-    commands = {"install", "clone", "ls", "work", "switch", "done", "cd", "shell", "hooks", "clean"}
-    assert not commands & set(gra.WORDS)
-    assert not {"main", "bare", "root"} & set(gra.WORDS)
+    for words in (gra.DESCRIPTORS, gra.NOUNS):
+        assert len(words) >= 60
+        assert len(set(words)) == len(words)
+        assert all(len(word) == 4 for word in words)
+        assert all(word.isalpha() and word.islower() for word in words)
+    # A word in both lists would allow doubled names like "roserose".
+    assert not set(gra.DESCRIPTORS) & set(gra.NOUNS)
+
+    # The order is per repository but the set of names is not, so this is
+    # every name gra can give a worktree.
+    names = set(gra.name_candidates("martinus/oans"))
+    # Both words run together, and nothing gra reserves is that long - which is
+    # what keeps a name from ever being read as a command or a repository path.
+    assert all(len(name) == 8 for name in names)
+    reserved = {"install", "clone", "ls", "work", "switch", "done", "cd", "shell", "hooks", "clean"}
+    assert not (reserved | {"main", "bare", "root", gra.BARE_DIR}) & names
+    # A doubled letter where the words meet is fine (snowwolf); three in a row
+    # (talllion, pureeels) is not readable, so one of the two words has to go.
+    assert not [
+        name
+        for name in names
+        if any(name[i] == name[i + 1] == name[i + 2] for i in range(len(name) - 2))
+    ]
 
 
 def test_pick_worktree_name_skips_taken_names(monkeypatch: pytest.MonkeyPatch) -> None:
-    taken = set(gra.WORDS) - {"wolf"}
+    candidates = gra.name_candidates("martinus/oans")
+    taken = set(candidates) - {candidates[7]}
     monkeypatch.setattr(gra, "taken_worktree_names", lambda root: taken)
 
-    assert gra.pick_worktree_name(Path("root"), "martinus/oans") == "wolf"
+    assert gra.pick_worktree_name(Path("root"), "martinus/oans") == candidates[7]
 
 
 def test_pick_worktree_name_fails_when_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(gra, "taken_worktree_names", lambda root: set(gra.WORDS))
+    every_name = set(gra.name_candidates("martinus/oans"))
+    monkeypatch.setattr(gra, "taken_worktree_names", lambda root: every_name)
 
     with pytest.raises(SystemExit):
         gra.pick_worktree_name(Path("root"), "martinus/oans")
@@ -82,14 +100,17 @@ def test_pick_worktree_name_prefers_the_repositorys_own_candidates(
     assert gra.pick_worktree_name(Path("root"), "martinus/oans") == second
 
 
-def test_name_candidates_order_the_whole_pool_per_repository() -> None:
+def test_name_candidates_order_every_combination_per_repository() -> None:
     oans = gra.name_candidates("martinus/oans")
     other = gra.name_candidates("martinus/gra")
 
-    # Every name appears exactly once, so the list can neither repeat nor run
-    # out: no probe budget is needed, and the k-th worktree is the k-th name.
-    assert sorted(oans) == sorted(gra.WORDS)
+    # Every combination appears exactly once, so the list can neither repeat
+    # nor run out: no probe budget is needed, the k-th worktree is the k-th name.
+    every_name = {descriptor + noun for descriptor in gra.DESCRIPTORS for noun in gra.NOUNS}
+    assert sorted(oans) == sorted(every_name)
     assert oans != other
+    # The Latin-square pairing: consecutive names share neither word.
+    assert all(a[:4] != b[:4] and a[4:] != b[4:] for a, b in zip(oans, oans[1:]))
 
 
 def test_worktree_identity_normalizes_the_remote(monkeypatch: pytest.MonkeyPatch) -> None:
