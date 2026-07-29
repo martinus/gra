@@ -186,7 +186,6 @@ def test_clone_with_no_work_creates_only_the_bare_repository(tmp_path: Path) -> 
     assert git_output(["branch", "--list"], cwd=bare) == ""
     exclude = (bare / "info" / "exclude").read_text()
     assert ".claude/worktrees/" in exclude
-    assert ".grakeep" in exclude
 
 
 def test_clone_checks_out_the_default_branch(tmp_path: Path) -> None:
@@ -995,24 +994,6 @@ def test_done_runs_the_done_hook_before_removing_the_worktree(tmp_path: Path) ->
     ]
 
 
-def test_clean_runs_the_done_hook_for_each_removed_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    first = work_worktree(home, container, "main")
-    second = work_worktree(home, container)
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "done.sh", '#!/bin/sh\necho "$GRA_WORD" >> "$HOOK_OUT"\n')
-
-    result = run_cli(
-        ["clean", "--yes", "--no-fetch"], home, env_extra={"HOOK_OUT": str(hook_out)}
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert sorted(hook_out.read_text().split()) == sorted([first.name, second.name])
-
-
 def test_work_finds_a_branch_by_ticket_key(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -1259,150 +1240,103 @@ def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
     assert "● dirty" in result.stdout
 
 
-def test_clean_treats_squash_merged_worktree_as_removable(tmp_path: Path) -> None:
+def test_fetch_updates_and_prunes_every_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "feature")
-    bare = container / BARE_DIR
+    first = make_repo(tmp_path, "one")
+    second = make_repo(tmp_path, "two")
+    add_feature_branch(first)
+    add_feature_branch(second)
+    first_bare = clone_repo(home, first) / BARE_DIR
+    second_bare = clone_repo(home, second) / BARE_DIR
 
-    git(["merge", "--squash", "feature"], cwd=source)
-    git(["commit", "-m", "squash feature"], cwd=source)
+    for source in (first, second):
+        add_feature_branch(source, "later")
+        git(["branch", "-D", "feature"], cwd=source)
 
-    dry_run = run_cli(["clean"], home, cwd=tmp_path)
-
-    assert dry_run.returncode == 0, dry_run.stderr
-    assert worktree.name in dry_run.stdout
-    assert "remove" in dry_run.stdout
-    assert "Dry run. Re-run with --yes to remove 1 worktree(s)." in dry_run.stdout
-
-    apply_run = run_cli(["clean", "--yes"], home, cwd=tmp_path)
-
-    assert apply_run.returncode == 0, apply_run.stderr
-    assert not worktree.exists()
-    assert git_fails(["show-ref", "--verify", "--quiet", "refs/heads/feature"], cwd=bare)
-
-
-def test_clean_keeps_grakeep_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "feature")
-    (worktree / ".grakeep").write_text("")
-
-    assert git_output(["status", "--porcelain", "--", ".grakeep"], cwd=worktree) == ""
-
-    git(["merge", "--squash", "feature"], cwd=source)
-    git(["commit", "-m", "squash feature"], cwd=source)
-
-    result = run_cli(["clean"], home, cwd=tmp_path)
+    result = run_cli(["fetch"], home, cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert worktree.name in result.stdout
-    assert ".grakeep marker" in result.stdout
-    assert "Nothing to clean." in result.stdout
-    assert "Dry run. Re-run" not in result.stdout
+    assert "fetched 2 repositories" in result.stdout
+    for bare in (first_bare, second_bare):
+        assert not git_fails(
+            ["show-ref", "--verify", "--quiet", "refs/remotes/origin/later"], cwd=bare
+        )
+        # --prune, so a branch gone from the remote is gone here too.
+        assert git_fails(
+            ["show-ref", "--verify", "--quiet", "refs/remotes/origin/feature"], cwd=bare
+        )
 
 
-def add_old_style_worktree(container: Path, name: str, branch: str | None = "main") -> Path:
-    """A worktree named the way gra named them before two-word names.
-
-    Without a branch the worktree is detached at origin's default branch,
-    which is how a repository gets a second one while the first holds `main`.
-    """
-    worktree = container / name
-    args = ["worktree", "add"]
-    args += [str(worktree), branch] if branch else ["--detach", str(worktree), "origin/main"]
-    git(args, cwd=container / BARE_DIR)
-    return worktree
-
-
-def test_migrate_renames_worktrees_named_by_an_older_gra(tmp_path: Path) -> None:
+def test_fetch_updates_every_remote_not_just_origin(tmp_path: Path) -> None:
+    """A fork's 'upstream' is exactly the remote that goes stale."""
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    old = add_old_style_worktree(container, "hare")
+    parent = make_repo(tmp_path, "parent")
+    bare = clone_repo(home, source) / BARE_DIR
+    git(["remote", "add", "upstream", str(parent)], cwd=bare)
+    add_feature_branch(parent)
 
-    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
+    result = run_cli(["fetch"], home, cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert not old.exists()
-    # The name it gets is the one 'gra work' would have given it.
-    expected = load_gra().name_candidates("project")[0]
-    assert (container / expected).is_dir()
-    # Git followed the directory, so the worktree is still usable.
-    assert git_output(["branch", "--show-current"], cwd=container / expected) == "main"
-    assert str(container / expected) in git_output(
-        ["worktree", "list"], cwd=container / BARE_DIR
+    assert not git_fails(
+        ["show-ref", "--verify", "--quiet", "refs/remotes/upstream/feature"], cwd=bare
     )
 
 
-def test_migrate_is_a_dry_run_without_yes(tmp_path: Path) -> None:
+def test_fetch_reports_an_unreachable_repository_and_fetches_the_rest(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    broken_bare = clone_repo(home, make_repo(tmp_path, "broken")) / BARE_DIR
+    working = make_repo(tmp_path, "working")
+    working_bare = clone_repo(home, working) / BARE_DIR
+    git(["remote", "set-url", "origin", str(tmp_path / "gone")], cwd=broken_bare)
+    add_feature_branch(working)
+
+    result = run_cli(["fetch"], home, cwd=tmp_path)
+
+    # One repository nobody can reach must not cost the others their fetch.
+    assert result.returncode == 0, result.stderr
+    assert "broken" in result.stdout
+    assert "fetched 1 of 2 repositories" in result.stdout
+    assert not git_fails(
+        ["show-ref", "--verify", "--quiet", "refs/remotes/origin/feature"], cwd=working_bare
+    )
+
+
+def test_fetch_without_repositories_says_so(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    result = run_cli(["fetch"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "No repositories found." in result.stdout
+
+
+def test_ls_fetch_refreshes_the_sync_column(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
     container = clone_repo(home, source)
-    old = add_old_style_worktree(container, "hare")
+    work_worktree(home, container, "main")
+    (source / "README.md").write_text("# moved on\n")
+    git(["commit", "-am", "second"], cwd=source)
 
-    result = run_cli(["migrate"], home, cwd=tmp_path)
+    offline = run_cli(["ls"], home, cwd=tmp_path)
 
-    assert result.returncode == 0, result.stderr
-    assert "Dry run. Re-run with --yes" in result.stdout
-    assert "hare" in result.stdout
-    assert old.is_dir()
+    assert offline.returncode == 0, offline.stderr
+    assert "↓1" not in offline.stdout
 
+    fetched = run_cli(["ls", "--fetch"], home, cwd=tmp_path)
 
-def test_migrate_leaves_current_names_alone(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert "already uses the current naming scheme" in result.stdout
-    assert worktree.is_dir()
-
-
-def test_migrate_keeps_uncommitted_changes(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    old = add_old_style_worktree(container, "hare")
-    (old / "README.md").write_text("# edited\n")
-
-    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    moved = container / load_gra().name_candidates("project")[0]
-    assert (moved / "README.md").read_text() == "# edited\n"
-    assert git_output(["status", "--porcelain"], cwd=moved) == "M README.md"
-
-
-def test_migrate_gives_every_worktree_a_distinct_name(tmp_path: Path) -> None:
-    """Two repositories migrating at once must not land on the same name."""
-    home = tmp_path / "home"
-    home.mkdir()
-    first = clone_repo(home, make_repo(tmp_path, "one"))
-    second = clone_repo(home, make_repo(tmp_path, "two"))
-    for container in (first, second):
-        add_old_style_worktree(container, "hare" if container is first else "wolf")
-        add_old_style_worktree(container, "rose" if container is first else "puma", None)
-
-    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    names = [path.name for container in (first, second) for path in worktree_dirs(container)]
-    assert len(names) == 4
-    assert len(set(names)) == 4
+    assert fetched.returncode == 0, fetched.stderr
+    assert "Fetching 1 repository" in fetched.stdout
+    assert "↓1" in fetched.stdout
 
 
 def test_cd_with_name_prints_worktree_path(tmp_path: Path) -> None:
@@ -1495,7 +1429,7 @@ def test_completion_offers_the_subcommands(tmp_path: Path) -> None:
     home.mkdir()
 
     assert "work" in complete(home, ["gra", ""], tmp_path)
-    assert complete(home, ["gra", "cl"], tmp_path) == ["clone", "clean"]
+    assert complete(home, ["gra", "f"], tmp_path) == ["fetch"]
 
 
 def test_completion_offers_every_subcommand(tmp_path: Path) -> None:
