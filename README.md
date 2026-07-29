@@ -1,53 +1,79 @@
+<div align="center">
+
 # gra - Git Repo Admin
 
-`gra` is a tiny worktree-first clone helper. It keeps repositories under a flat
-root directory as bare checkouts, and all work happens in short-named worktrees
-next to them:
+**One flat root. Bare checkouts. Disposable worktrees.**
+
+A tiny worktree-first clone helper in a single Python file - no daemon, no
+config, no lock-in.
+
+[![tests](https://github.com/martinus/gra/actions/workflows/tests.yml/badge.svg)](https://github.com/martinus/gra/actions/workflows/tests.yml)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![install](https://img.shields.io/badge/install-one%20file-brightgreen)](gra)
+[![license](https://img.shields.io/github/license/martinus/gra)](LICENSE)
+
+</div>
+
+---
+
+## A minute with gra
+
+```sh
+gra clone git@github.com:martinus/oans.git   # into ~/gra/oans, with a worktree ready
+gra cd warmhare                              # jump into that worktree, from anywhere
+gra work OA-2345                             # another worktree, on that branch
+gra switch main                              # or reuse the one you are standing in
+gra done                                     # throw it away once the work is merged
+gra ls                                       # what do I have, and where is it?
+```
+
+Every repository lives once, as a bare checkout, and all work happens in
+short-named worktrees next to it:
 
 ```text
 ~/gra
-└── oans
-  ├── .bare
-  ├── warmhare
-  └── goldfish
+├── oans
+│   ├── .bare        <- the repository itself
+│   ├── warmhare     <- a worktree, on main
+│   └── goldfish     <- another one, on feature/search
+└── nanobench
+    ├── .bare
+    └── snowwolf
 ```
 
-There is no default checkout: no branch is ever pinned by a checkout you do not
-use, so any worktree can be on `main`, rebase onto it, or switch to any branch
-freely.
+* **No default checkout.** No branch is ever pinned by a checkout you do not
+  use, so any worktree can be on `main`, rebase onto it, or switch away.
+* **Names, not paths.** Worktree names are word pairs - `warmhare`,
+  `goldfish`, `snowwolf` - always eight letters and unique across **all**
+  repositories, so one name identifies one worktree on the whole machine.
+* **The same names everywhere.** They are derived from the repository rather
+  than drawn at random, so cloning `oans` on your laptop and on your desktop
+  gives you the same name in both places.
+* **Worktrees are cheap.** A worktree is just a workspace, unrelated to the
+  branch it has checked out: make one, switch it around, throw it away.
 
-Worktree names are word pairs (`warmhare`, `goldfish`, `snowwolf`, ...), always
-eight letters, unique across **all** repositories, and unrelated to the branch
-they have checked out. They are derived from the repository rather than drawn
-at random, so cloning `oans` on your laptop and on your desktop gives you the
-same name in both places. A worktree is just a workspace: create one with
-`gra work`, switch branches inside it with `gra switch`, and throw it away with
-`gra done`.
-Because names are globally unique, a name like `snowwolf` identifies one
-worktree across the whole machine - in `gra cd snowwolf`, in the tmux window
-names the default hook gives them, and in conversation.
-
-The default root is `~/gra`. Configure a different root in `~/.gitconfig`:
-
-```sh
-git config --global gra.root ~/develop
-```
-
-# Installation
-
-`gra` needs Git and Python 3.10 or newer, `fzf` for the worktree and branch
-pickers, and `gh` to spot that a clone is a fork.
-`gra` itself never calls `tmux`; the hooks it writes for you do, so `tmux` is
-only needed if you keep them.
+## Install
 
 ```sh
 python3 -c "$(curl -fsLS https://raw.githubusercontent.com/martinus/gra/refs/heads/main/gra)" install
 ```
 
-That is the whole installation. It writes the script to `~/.local/bin/gra` and
-appends this block to `~/.bashrc`, so that `gra` is on your `PATH` and the shell
-integration makes `gra cd` change directories, `gra done` leave the removed
-directory, and `<TAB>` complete worktrees, repositories and branches:
+That is the whole installation, and re-running it is how you upgrade. Restart
+your shell afterwards.
+
+> [!NOTE]
+> Needs **Git** and **Python 3.10+**. [`fzf`](https://github.com/junegunn/fzf)
+> powers the worktree and branch pickers, [`gh`](https://cli.github.com/) lets
+> `gra` spot that a clone is a fork. `gra` itself never calls `tmux` - the
+> hooks it writes for you do.
+
+<details>
+<summary><b>What it writes, and where</b></summary>
+
+<br>
+
+The script goes to `~/.local/bin/gra`, and this block is appended to
+`~/.bashrc`:
 
 ```sh
 # gra
@@ -55,49 +81,52 @@ export PATH="$HOME/.local/bin:$PATH"
 eval "$(gra shell bash)"
 ```
 
-Restart your shell afterwards.
+The `PATH` line is added only when `~/.local/bin` is not on your `PATH`
+already, and the block is added only once - re-running touches nothing else.
+When there is no `~/.bashrc` (`gra shell` only speaks bash) nothing is written
+and the lines to add are printed instead.
 
-# Commands
+That one `eval` is what makes `gra cd` change directories, `gra done` leave
+the removed directory, and `<TAB>` complete worktrees, repositories and
+branches.
 
-## install - install or upgrade gra
+</details>
+
+<details>
+<summary><b>Choosing where repositories live</b></summary>
+
+<br>
+
+The default root is `~/gra`. Configure a different one in `~/.gitconfig`:
 
 ```sh
-gra install
+git config --global gra.root ~/develop
 ```
 
-Writes `gra` to `~/.local/bin/gra` and makes it executable, replacing whatever
-is there - including a symlink left by an older installation. The `PATH` line
-is added only when `~/.local/bin` is not on your `PATH` already, and the
-`~/.bashrc` block is added only once, so re-running the command touches nothing
-else.
+</details>
 
-When there is no `~/.bashrc` - `gra shell` only speaks bash - nothing is
-written and the lines to add are printed instead.
+## Commands
 
-### Upgrading
+| Command | What it does |
+| ------- | ------------ |
+| [`gra clone <url>`](#gra-clone) | Clone into `~/gra/<repo>` as a bare checkout, with a worktree ready to use |
+| [`gra work [branch]`](#gra-work) | Create a worktree for a branch - or set the one you are in up again |
+| [`gra switch [branch]`](#gra-switch) | Move the worktree you are standing in to another branch |
+| [`gra done [name]`](#gra-done) | Remove a worktree once its work is in origin |
+| [`gra cd [name]`](#gra-cd) | Jump to a worktree, by name or with `fzf` |
+| [`gra ls [--fetch]`](#gra-ls) | One table of every repository and worktree |
+| [`gra fetch`](#gra-fetch) | `git fetch --prune --all` in every repository, in parallel |
+| [`gra hooks`](#gra-hooks) | Write missing `work.sh` / `done.sh` hooks |
+| [`gra install`](#gra-install) | Install or upgrade `gra` itself |
 
-`gra install` compares itself against the version on `main` and installs
-whichever is newer, so re-running it is how you upgrade:
+Everything runs from anywhere. The exceptions are the commands that act on
+*where you are standing*: `gra switch`, and a bare `gra work` or `gra done`.
 
-```text
-downloading https://raw.githubusercontent.com/martinus/gra/main/gra
-upgrading gra 1.2.0 -> 1.3.0
-installed gra 1.3.0 to '/home/me/.local/bin/gra'
-```
+---
 
-Ties go to the local script, so `./gra install` from a checkout still installs
-that checkout. Run through `python3 -c` there is nothing local, so the download
-is what gets installed - that is the one-liner above.
+# Reference
 
-If the lookup fails - no network, GitHub down - `gra` says so and installs the
-local script anyway; a failed check never costs you a working install.
-
-Run from a file, `--no-check` installs that file without looking online, which
-is what you want offline or when installing an older branch on purpose.
-Through `python3 -c` it changes nothing: with no local script the download is
-the only thing there is to install.
-
-## clone - clone a remote repository
+## `gra clone`
 
 Clones one repository as a bare checkout into `~/gra/<repo>/.bare` and opens a
 worktree next to it:
@@ -105,8 +134,6 @@ worktree next to it:
 ```sh
 gra clone git@github.com:martinus/oans.git
 ```
-
-This creates:
 
 ```text
 ~/gra/oans
@@ -116,9 +143,28 @@ This creates:
 
 The worktree is ready to work in: it checks out origin's default branch as a
 local branch tracking `origin/<branch>`, and runs the repository's `work.sh`
-hook just like `gra work` does. Use `--no-work` for the bare checkout alone, or
-`--no-hook` to skip the hook. A remote without commits has no default branch to
-check out; `gra` says so and keeps the clone.
+hook just like `gra work` does.
+
+| Flag | Effect |
+| ---- | ------ |
+| `--name <name>` | Use a different local directory name |
+| `--no-work` | Bare checkout only, no worktree |
+| `--no-hook` | Create the worktree, skip the hook |
+| `--no-submodules` | Never initialize submodules in this repository |
+| `--no-upstream` | Skip the fork lookup |
+
+> [!TIP]
+> The local name is the repository name (`oans` above). If it is taken, `gra`
+> stops and suggests a distinct one - for two owners of the same repository,
+> disambiguating by owner works well:
+> ```sh
+> gra clone git@github.com:andreas/oans.git --name oans-andreas
+> ```
+
+<details>
+<summary><b>Forks get an <code>upstream</code> remote</b></summary>
+
+<br>
 
 Cloning a GitHub fork also adds an `upstream` remote pointing at the
 repository it was forked from:
@@ -139,6 +185,13 @@ false` skips it for good. Only `gra clone` does this, so a repository you
 cloned earlier keeps whatever remotes it has; `git remote add upstream <url>`
 is the one-off.
 
+</details>
+
+<details>
+<summary><b>Submodules are a decision about the repository</b></summary>
+
+<br>
+
 Pass `--no-submodules` for a repository whose submodules you never want. It
 records `gra.submodules = false` in the bare checkout, so every later
 `gra work` in that repository skips them too - the flag is a decision about
@@ -150,15 +203,14 @@ git -C ~/gra/oans/.bare config gra.submodules true    # this repository
 git config --global gra.submodules false              # everywhere
 ```
 
-The local name is the repository name (`oans` above). If that name is already
-taken, `gra` stops and suggests a distinct one; use `--name` to choose it - for
-two owners of the same repository, disambiguating by owner works well:
+</details>
 
-```sh
-gra clone git@github.com:andreas/oans.git --name oans-andreas
-```
+<details>
+<summary><b>How the bare checkout is set up</b></summary>
 
-The bare checkout is set up to behave like a normal clone:
+<br>
+
+It is made to behave like a normal clone:
 
 * the fetch refspec tracks all of origin's branches as `origin/<branch>`
   remote-tracking refs, and never mirrors them into local branches,
@@ -167,19 +219,23 @@ The bare checkout is set up to behave like a normal clone:
 * `.claude/worktrees/` is added to the shared local Git exclude file so
   tool-managed paths do not show up as untracked files in any worktree.
 
-## work - create a new worktree, or set one up again
+A remote without commits has no default branch to check out; `gra` says so and
+keeps the clone.
 
-What `gra work` does depends on where you run it:
+</details>
+
+## `gra work`
+
+What it does depends on where you run it:
 
 * **in the repository folder** (next to `.bare`): create a new worktree,
 * **inside a worktree**: run its `work.sh` hook again, creating nothing,
 * **anywhere else**: fail, and say exactly this.
 
-Creating a worktree picks an unused name for the repository and checks the
-branch out next to `.bare`:
-
 ```sh
-gra work feature/search
+gra work feature/search   # a worktree with that branch checked out
+gra work OA-2345          # part of a name is enough
+gra work                  # pick a branch with fzf
 ```
 
 ```text
@@ -188,20 +244,20 @@ gra work feature/search
 └── warmhare    <- checked out feature/search
 ```
 
-With a branch, `gra work` checks it out - and a branch always means a new
-worktree, even from inside another one, so a second task never needs a
-`cd ..` first. If the branch only exists as `origin/<branch>`, a local
-tracking branch is created. If it does not exist at all, `gra` asks whether to
-create it from origin's default branch; on confirmation the new branch is
-pushed to `origin` and set up to track `origin/<branch>`.
+A branch always means a *new* worktree, even from inside another one, so a
+second task never needs a `cd ..` first. If the branch only exists as
+`origin/<branch>`, a local tracking branch is created. If it does not exist at
+all, `gra` asks whether to create it from origin's default branch; on
+confirmation the new branch is pushed to `origin` and set up to track
+`origin/<branch>`.
 
-Without a branch, in the repository folder, `gra work` opens an `fzf` picker
-over all branches, the ones with the newest commits first - the branch you
-are here for is almost always near the top. Branches already checked out in a
-worktree are not offered, because Git allows a branch in only one worktree at
-a time. The first entry starts the worktree detached at origin's default
-branch instead - instantly usable for looking around, running builds, or
-letting a later `gra switch` pick the real work.
+Without a branch, `gra work` opens an `fzf` picker over all branches, the ones
+with the newest commits first - the branch you are here for is almost always
+near the top. Branches already checked out in a worktree are not offered,
+because Git allows a branch in only one worktree at a time. The first entry
+starts the worktree detached at origin's default branch instead - instantly
+usable for looking around, running builds, or letting a later `gra switch`
+pick the real work.
 
 If the branch you name is already checked out somewhere, `gra` names that
 worktree instead of leaving you with Git's message:
@@ -210,37 +266,15 @@ worktree instead of leaving you with Git's message:
 ERROR: 'main' is already checked out in 'calmpuma'; work there with 'gra cd calmpuma'
 ```
 
-If the repository has submodules, they are initialized in the new worktree,
-unless the repository has `gra.submodules = false` - see
-[clone](#clone---clone-a-remote-repository).
+Submodules are initialized in the new worktree unless the repository has
+`gra.submodules = false`. Afterwards the repository's [`work.sh`](#hooks) hook
+runs inside it - as written by `gra clone`, that opens a tmux window named
+`<repo>/<worktree>`, for example `oans/warmhare`.
 
-`gra work` then runs the repository's `work.sh` hook inside the new worktree.
-As written by `gra clone` that opens a tmux window named `<repo>/<worktree>`,
-for example `oans/warmhare`.
+<details>
+<summary><b>Finding a branch you did not name</b></summary>
 
-### Setting a worktree up again
-
-A worktree outlives the window it was opened in: close the window, or come
-back the next day to a machine that has been rebooted, and the worktree is
-still there with nothing around it. Run `gra work` inside it - with the
-shell integration, `gra cd rail` and then `gra work` from anywhere - and
-`work.sh` runs again for it, creating nothing.
-
-`GRA_BRANCH` is read from the worktree, so a detached one gets the empty value
-creating it would have given the hook.
-
-Where creating a worktree shrugs at a missing `work.sh` - it made a worktree
-either way - the re-run refuses, because there would be nothing left to show
-for it:
-
-```text
-ERROR: '/home/you/gra/oans' has no 'work.sh'; 'gra hooks' writes missing hooks
-```
-
-A `work.sh` you turned off with `chmod -x` is a decision rather than a
-mistake, so that is a note and not an error.
-
-### Finding a branch you did not name
+<br>
 
 BRANCH can be part of a branch name rather than all of it, so a ticket key
 finds the branch someone named after it:
@@ -263,7 +297,39 @@ ERROR: 'OA-7777' matches several branches; name one:
 Nothing matching means the old behaviour: `gra` offers to create the branch
 from origin's default branch. The same resolution applies to `gra switch`.
 
-### How names are chosen
+</details>
+
+<details>
+<summary><b>Setting a worktree up again</b></summary>
+
+<br>
+
+A worktree outlives the window it was opened in: close the window, or come
+back the next day to a machine that has been rebooted, and the worktree is
+still there with nothing around it. Run `gra work` inside it - with the shell
+integration, `gra cd snowwolf` and then `gra work` from anywhere - and
+`work.sh` runs again for it, creating nothing.
+
+`GRA_BRANCH` is read from the worktree, so a detached one gets the empty value
+creating it would have given the hook.
+
+Where creating a worktree shrugs at a missing `work.sh` - it made a worktree
+either way - the re-run refuses, because there would be nothing left to show
+for it:
+
+```text
+ERROR: '/home/you/gra/oans' has no 'work.sh'; 'gra hooks' writes missing hooks
+```
+
+A `work.sh` you turned off with `chmod -x` is a decision rather than a
+mistake, so that is a note and not an error.
+
+</details>
+
+<details>
+<summary><b>How names are chosen</b></summary>
+
+<br>
 
 A name is a descriptor and a noun run together, each from its own list of
 four-letter words - `warmhare`, `goldfish`, `snowwolf`. A hash of the
@@ -279,39 +345,198 @@ another repository is skipped the same way, and `gra done` frees a name for the
 next `gra work` to reclaim. Machines only disagree when one of them let another
 repository claim a contested name first, and then only that repository shifts.
 
-### Hooks
+</details>
+
+## `gra switch`
+
+To reuse the worktree you are standing in for other work instead of creating
+a new one:
+
+```sh
+gra switch feature/search   # by name, or part of one
+gra switch                  # pick with fzf
+```
+
+Branch resolution is the same as [`gra work`](#gra-work)'s: existing local
+branches are switched to, `origin/<branch>` gets a local tracking branch,
+missing branches can be created from origin's default branch and pushed, and
+part of a name is enough when it matches one branch. Without a branch, an
+`fzf` picker offers all branches, newest commits first - minus those already
+checked out in a worktree, which a switch could never reach.
+
+The `work.sh` hook runs afterwards, with `GRA_BRANCH` set to the branch you
+switched to - the worktree is set up for the new work the same way a fresh one
+would be.
+
+> [!IMPORTANT]
+> `gra switch` refuses when the worktree has uncommitted changes - commit or
+> stash first. Switching to a branch checked out elsewhere is refused too,
+> naming the worktree that holds it. Run anywhere but inside a worktree it
+> fails: there is no checkout there whose branch it could change.
+
+## `gra done`
+
+Run it inside a worktree when the work in it is finished, or name one from
+anywhere:
+
+```sh
+gra done            # the worktree you are in
+gra done snowwolf   # from anywhere
+gra done --force    # dirty or unmerged, remove it anyway
+```
+
+On removal the [`done.sh`](#hooks) hook runs while the worktree is still
+there, the directory is removed, and the local branch is deleted - but only
+when its changes were verified to be merged. With `--force` on an unmerged
+branch, the branch is kept.
+
+With the bash shell integration, `gra done` also moves your shell out of the
+removed directory into the repository folder.
+
+> [!WARNING]
+> `gra done` refuses when the worktree is dirty, or when its commits are not
+> in origin's default branch. Squash and cherry-pick merges are recognized via
+> patch equivalence, so the usual PR workflow does not need `--force`.
+
+## `gra cd`
+
+```sh
+gra cd            # pick with fzf
+gra cd snowwolf   # jump straight to the worktree named snowwolf
+```
+
+The command prints the selected path; the shell integration is what turns that
+into an actual `cd`. `gra install` adds it for you, or add it yourself:
+
+```sh
+eval "$(gra shell bash)"
+```
+
+## `gra ls`
+
+One table of every repository under the gra root and every worktree Git knows
+about:
+
+```sh
+gra ls
+gra ls --fetch    # refresh every repository first
+```
+
+```text
+Root: /home/me/gra
+Repositories: 2  Worktrees: 3
+
+   REPOSITORY  WORKTREE  BRANCH          SYNC   STATUS   REMOTE
+   gra         snowwolf  main            ↑2     ✓ clean  git@github.com:martinus/gra
+▶  oans        warmhare  feature/search  ↓1     ● dirty  git@github.com:martinus/oans
+               goldfish  main                   ✓ clean
+```
+
+`▶` is the worktree you are standing in. Because worktree names carry no
+meaning, `BRANCH` is the primary information - the name is just an address.
+
+`SYNC` is how far the branch is from its upstream: `↑2` is two commits to
+push, `↓1` is one to pull, blank is in sync or has no upstream, and `-` means
+the question does not apply (detached, or no upstream). It reads local refs
+only - `gra ls` never goes to the network - so it is as fresh as your last
+fetch. `--fetch` is [`gra fetch`](#gra-fetch) followed by `gra ls`.
+
+## `gra fetch`
+
+Runs `git fetch --prune --all` in every repository under the gra root, several
+at a time:
+
+```sh
+gra fetch
+```
+
+```text
+Fetching 12 repositories
+fetched 12 repositories
+```
+
+Every remote, not just `origin`: a fork's `upstream` is exactly the remote
+that goes stale. Only remote-tracking refs move - no worktree, branch, or
+uncommitted change is touched - so it is safe to run at any time, and it is
+what makes the `SYNC` column of `gra ls` current.
+
+A repository that cannot be reached is named with the reason, and the others
+are still fetched:
+
+```text
+Fetching 12 repositories
+oans: fatal: could not read from remote repository.
+fetched 11 of 12 repositories
+```
+
+## `gra hooks`
+
+```sh
+gra hooks
+```
+
+Writes `work.sh` and `done.sh` into every repository under the gra root that
+is missing them, and leaves existing ones alone - so it cannot overwrite your
+edits and is safe to re-run. Repositories cloned before hooks existed are what
+this is for.
+
+## `gra install`
+
+```sh
+gra install
+```
+
+Writes `gra` to `~/.local/bin/gra` and makes it executable, replacing whatever
+is there - including a symlink left by an older installation. See
+[Install](#install) for the `~/.bashrc` block it adds.
+
+<details>
+<summary><b>Upgrading, and installing a specific version</b></summary>
+
+<br>
+
+`gra install` compares itself against the version on `main` and installs
+whichever is newer, so re-running it is how you upgrade:
+
+```text
+downloading https://raw.githubusercontent.com/martinus/gra/main/gra
+upgrading gra 1.2.0 -> 1.3.0
+installed gra 1.3.0 to '/home/me/.local/bin/gra'
+```
+
+Ties go to the local script, so `./gra install` from a checkout still installs
+that checkout. Run through `python3 -c` there is nothing local, so the
+download is what gets installed - that is the one-liner above.
+
+If the lookup fails - no network, GitHub down - `gra` says so and installs the
+local script anyway; a failed check never costs you a working install.
+
+Run from a file, `--no-check` installs that file without looking online, which
+is what you want offline or when installing an older branch on purpose.
+Through `python3 -c` it changes nothing: with no local script the download is
+the only thing there is to install.
+
+</details>
+
+---
+
+# Hooks
 
 `gra` runs two scripts from the repository container, next to `.bare`:
 
-| Hook      | When                                          | Working directory |
-| --------- | --------------------------------------------- | ----------------- |
-| `work.sh` | whenever `gra` leaves you in a worktree        | that worktree     |
-| `done.sh` | before `gra done` removes one                  | the container     |
-
-`work.sh` runs once per worktree only in the simplest case. It also runs after
-`gra switch` moves a worktree to another branch, and again whenever `gra work`
-is run inside the worktree. So it must be safe to run twice: as written by `gra clone`
-it looks for its window before opening one, and selects the window that is
-already there instead of opening a second one of the same name. Anything you
-add should follow that shape - `ln -sf` rather than `ln -s`, and no step that
-would disturb a build running in a pane.
-
-`gra` knows nothing about what is in them. It has no tmux code at all: opening
-a window, laying out panes and closing it again are things the hooks do,
-which is why they are shell scripts and not options.
-
-The line is that `gra` owns what a worktree *is* - its branch, its submodules,
-its name - and the hooks own what you *do* with it. That is why submodules are
-initialized by `gra` and windows are not.
+| Hook | When | Working directory |
+| ---- | ---- | ----------------- |
+| `work.sh` | whenever `gra` leaves you in a worktree | that worktree |
+| `done.sh` | before `gra done` removes one | the container |
 
 Both receive:
 
-| Variable       | Value                                       |
-| -------------- | ------------------------------------------- |
-| `GRA_WORKTREE` | absolute path to the worktree               |
-| `GRA_REPO`     | repository name, e.g. `nanobench`           |
-| `GRA_WORD`     | worktree name, e.g. `warmhare`              |
-| `GRA_BRANCH`   | checked-out branch, or empty when detached  |
+| Variable | Value |
+| -------- | ----- |
+| `GRA_WORKTREE` | absolute path to the worktree |
+| `GRA_REPO` | repository name, e.g. `nanobench` |
+| `GRA_WORD` | worktree name, e.g. `warmhare` |
+| `GRA_BRANCH` | checked-out branch, or empty when detached |
 
 `gra clone` writes both, executable and working: out of the box `work.sh`
 opens a tmux window for the new worktree and `done.sh` closes it again. They
@@ -319,6 +544,24 @@ live in the container rather than the repository, so they are personal and
 per-machine and are never committed. `gra` writes them once and never touches
 them afterwards - edit them and they stay edited. `chmod -x work.sh` turns one
 off; deleting it does the same.
+
+> [!NOTE]
+> `gra` owns what a worktree *is* - its branch, its submodules, its name - and
+> the hooks own what you *do* with it. That is why submodules are initialized
+> by `gra` and tmux windows are not: `gra` has no tmux code at all.
+
+<details>
+<summary><b>Writing your own: the one rule</b></summary>
+
+<br>
+
+`work.sh` runs once per worktree only in the simplest case. It also runs after
+`gra switch` moves a worktree to another branch, and again whenever `gra work`
+is run inside the worktree. So it must be safe to run twice: as written by
+`gra clone` it looks for its window before opening one, and selects the window
+that is already there instead of opening a second one of the same name.
+Anything you add should follow that shape - `ln -sf` rather than `ln -s`, and
+no step that would disturb a build running in a pane.
 
 Read them - they are short, commented, and they are the documentation for what
 happens around a worktree. `work.sh` goes to the window or opens it:
@@ -342,163 +585,31 @@ the two have to agree on, so change it in both. The rest of `work.sh` is a
 commented-out pane layout - a `claude` pane, an editor, a monitor - to
 uncomment or replace.
 
-A `work.sh` written before re-running it was possible has no such lookup, and
-`gra` will not add one: it never rewrites a hook you have, and `gra hooks`
+</details>
+
+<details>
+<summary><b>Upgrading a hook written by an older gra</b></summary>
+
+<br>
+
+A `work.sh` written before re-running it was possible has no window lookup,
+and `gra` will not add one: it never rewrites a hook you have, and `gra hooks`
 only writes the missing ones. Until you paste the lookup in, `gra switch` and
 a re-run `gra work` open a second window of the same name - which `done.sh`
 then closes one of. Copy the block above in ahead of `new-window`.
 
-### Upgrading from 1.x
+Repositories cloned with `gra` 1.x have no hooks at all and open no windows;
+`gra hooks` gives every repository the hooks it is missing, in one go. A
+`.tmux-setup` file is no longer read, and renaming it will not help: it
+targets a `GRA_WINDOW` that no longer exists, because `gra` no longer opens
+the window. Port what is in it into `work.sh`.
 
-Only `gra clone` writes hooks, so repositories you cloned with an older `gra`
-have none and open no windows. `gra hooks` gives every repository the hooks it
-is missing, in one go. A `.tmux-setup` file is no longer read, and renaming it
-will not help: it targets a `GRA_WINDOW` that no longer exists, because gra no
-longer opens the window. Port what is in it into `work.sh`.
+</details>
 
-## switch - switch the current worktree to another branch
+# Tab completion
 
-To reuse the worktree you are standing in for other work instead of creating
-a new one:
-
-```sh
-gra switch feature/search   # by name, or part of one
-gra switch                  # pick with fzf
-```
-
-Branch resolution is the same as `gra work`'s: existing local branches are
-switched to, `origin/<branch>` gets a local tracking branch, missing branches
-can be created from origin's default branch and pushed, and part of a name is
-enough when it matches one branch. Without a branch, an `fzf` picker offers
-all branches, the ones with the newest commits first - minus those already
-checked out in a worktree, which a switch could never reach.
-
-`gra switch` refuses when the worktree has uncommitted changes - commit or
-stash first. Git allows a branch in only one worktree at a time, so switching
-to one checked out elsewhere is refused too, naming the worktree that holds
-it. Run anywhere but inside a worktree it fails: there is no checkout there
-whose branch it could change.
-
-The `work.sh` hook runs afterwards, with `GRA_BRANCH` set to the branch you
-switched to - the worktree is set up for the new work the same way a fresh
-one would be.
-
-## done - remove a worktree
-
-Run `gra done` inside a worktree when the work in it is finished, or name one
-from anywhere:
-
-```sh
-gra done            # the worktree you are in
-gra done snowwolf   # from anywhere
-```
-
-`gra done` refuses when the worktree is dirty or when its commits are not in
-origin's default branch (squash and cherry-pick merges are recognized via patch
-equivalence). `--force` overrides both checks. On removal:
-
-* the `done.sh` hook runs, while the worktree is still there,
-* the worktree directory is removed,
-* the local branch is deleted, but only when its changes were verified to be
-  merged - with `--force` on an unmerged branch, the branch is kept.
-
-With the bash shell integration, `gra done` also moves your shell out of the
-removed directory into the repository folder.
-
-## ls - list repositories and worktrees
-
-Run `gra ls` from anywhere to see all repositories under the configured gra
-root and every worktree Git knows about:
-
-```sh
-gra ls
-```
-
-Example output:
-
-```text
-Root: /home/me/gra
-Repositories: 2  Worktrees: 2
-
-REPOSITORY  WORKTREE  BRANCH          SYNC   STATUS   REMOTE
-gra         snowwolf  main            ↑2     ✓ clean  git@github.com:martinus/gra
-oans        warmhare  feature/search  ↓1     ● dirty  git@github.com:martinus/oans
-```
-
-Because worktree names carry no meaning, the `BRANCH` column is the primary
-information; the name is just an address.
-
-`SYNC` is how far the branch is from its upstream: `↑2` is two commits to
-push, `↓1` is one to pull, and blank is in sync or has no upstream. It reads
-local refs only - `gra ls` never goes to the network - so it is as fresh as
-your last fetch. A `-` means the question does not apply: a detached worktree,
-or a branch with no upstream. Pass `--fetch` to refresh every repository
-first, which is `gra fetch` followed by `gra ls`:
-
-```sh
-gra ls --fetch
-```
-
-## fetch - fetch every repository
-
-Run `gra fetch` from anywhere to run `git fetch --prune --all` in every
-repository under the gra root, several at a time:
-
-```sh
-gra fetch
-```
-
-```text
-Fetching 12 repositories
-fetched 12 repositories
-```
-
-Every remote, not just `origin`: a fork's `upstream` is exactly the remote
-that goes stale. Only remote-tracking refs move - no worktree, branch, or
-uncommitted change is touched - so this is safe to run at any time, and what
-makes the `SYNC` column of `gra ls` current.
-
-A repository that cannot be reached is named with the reason, and the others
-are still fetched:
-
-```text
-Fetching 12 repositories
-oans: fatal: could not read from remote repository.
-fetched 11 of 12 repositories
-```
-
-## hooks - write missing hooks
-
-```sh
-gra hooks
-```
-
-Writes `work.sh` and `done.sh` into every repository under the gra root that
-is missing them, and leaves existing ones alone - so it cannot overwrite your
-edits and is safe to re-run.
-
-## cd - jump to a worktree
-
-Run `gra cd` to choose any worktree under the gra root with `fzf`, or pass a
-worktree name to jump directly:
-
-```sh
-gra cd            # pick with fzf
-gra cd snowwolf   # jump straight to the worktree named snowwolf
-```
-
-The command prints the selected path. To make `gra cd` change the current Bash
-shell's directory, add this to `~/.bashrc` after `gra` is on your `PATH`:
-
-```sh
-eval "$(gra shell bash)"
-```
-
-`gra install` adds that line for you.
-
-## Tab completion
-
-The same line installs Bash completion, so there is nothing else to set up:
+The `eval` line installs Bash completion too, so there is nothing else to set
+up:
 
 ```text
 gra <TAB>              install clone fetch ls work switch done cd shell hooks
@@ -517,7 +628,12 @@ Completion never runs `gra` - it reads the gra root and asks `git` for
 branches, which keeps `<TAB>` instant instead of paying for a Python start
 every time.
 
-## Opening a worktree in tmux
+# Recipes
+
+<details>
+<summary><b>Opening a worktree in tmux</b></summary>
+
+<br>
 
 There is no `gra tmux` command - `gra` has no tmux code. `gra cd` prints a
 path, so a shell function covers it:
@@ -532,22 +648,27 @@ gratmux() {
 }
 ```
 
-# Working with Claude
+</details>
 
-The layout is designed so that a coding agent can manage branches itself inside
-one worktree. A useful convention for a repository's `CLAUDE.md`:
+<details>
+<summary><b>Working with Claude</b></summary>
+
+<br>
+
+The layout is designed so that a coding agent can manage branches itself
+inside one worktree. A useful convention for a repository's `CLAUDE.md`:
 
 * to work on another branch in this worktree: commit or stash, then
   `gra switch <branch>`,
-* `gra switch` also creates missing branches (from origin's default
-  branch, pushed and tracking) after asking for confirmation.
+* `gra switch` also creates missing branches (from origin's default branch,
+  pushed and tracking) after asking for confirmation.
 
 For parallel agents, give each its own worktree with `gra work` - one branch
 can only be checked out in one worktree at a time.
 
-# Development
+</details>
 
-Install test dependencies and run the suite with:
+# Development
 
 ```sh
 python3 -m pip install -r requirements-dev.txt
@@ -559,9 +680,11 @@ Without the flag a checkout behind `main` installs `main` instead.
 
 # Alternatives
 
-* [ghq](https://github.com/x-motemen/ghq) was the main inspiration for `gra`. gra is much simpler,
-  a single python file, git only, and integrates easily with VSCode.
-* [ghr](https://github.com/siketyan/ghr) is another ghq clone, written in Rust, but it currently
-  did not work with non github URLs. I like the bash integration.
-* [rhq](https://github.com/ubnt-intrepid/rhq) Another one in rust
+* [ghq](https://github.com/x-motemen/ghq) was the main inspiration for `gra`.
+  gra is much simpler, a single python file, git only, and integrates easily
+  with VSCode.
+* [ghr](https://github.com/siketyan/ghr) is another ghq clone, written in
+  Rust, but it currently did not work with non github URLs. I like the bash
+  integration.
+* [rhq](https://github.com/ubnt-intrepid/rhq) another one in rust.
 * [projj](https://github.com/popomore/projj)
