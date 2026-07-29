@@ -177,6 +177,11 @@ NOUNS = (
     "taxi", "tent", "tofu", "tree", "tuna", "vase", "wave", "wolf", "wood",
 )
 
+# Every word in both lists is this long, which is what lets a name be split
+# back into the two words that built it - and lets 'gra migrate' recognize a
+# name this version of gra could have produced.
+WORD_LENGTH = 4
+
 _quiet = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 if _use_color:
@@ -666,6 +671,23 @@ def name_candidates(identity: str) -> list[str]:
     ]
 
 
+def is_generated_name(name: str) -> bool:
+    """Whether this is a name the current word lists could have produced.
+
+    Every word is WORD_LENGTH long, so a name splits at one known offset.
+    'gra migrate' uses this to leave worktrees it has already renamed alone.
+    """
+    return name[:WORD_LENGTH] in DESCRIPTORS and name[WORD_LENGTH:] in NOUNS
+
+
+def first_free_name(identity: str, taken: set[str]) -> str:
+    """The repository's first name that nothing in `taken` is using."""
+    for name in name_candidates(identity):
+        if name not in taken:
+            return name
+    fail("all worktree names are taken; run 'gra clean' or 'gra done' first")
+
+
 def pick_worktree_name(root: Path, identity: str) -> str:
     """Pick the repository's first name that no worktree anywhere is using.
 
@@ -673,11 +695,7 @@ def pick_worktree_name(root: Path, identity: str) -> str:
     worktree lands on its k-th name without any counter being stored, and a
     name freed by 'gra done' is reclaimed by the next 'gra work'.
     """
-    taken = taken_worktree_names(root)
-    for word in name_candidates(identity):
-        if word not in taken:
-            return word
-    fail("all worktree names are taken; run 'gra clean' or 'gra done' first")
+    return first_free_name(identity, taken_worktree_names(root))
 
 
 # ---------------------------------------------------------------------------
@@ -1272,7 +1290,7 @@ _gra() {
     local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
 
     if (( COMP_CWORD == 1 )); then
-        COMPREPLY=($(compgen -W 'install clone ls work switch done cd shell hooks clean' \
+        COMPREPLY=($(compgen -W 'install clone ls work switch done cd shell hooks clean migrate' \
             -- "$cur"))
         return
     fi
@@ -1284,6 +1302,7 @@ _gra() {
             clone) words='--name --no-work --no-hook --no-submodules --no-upstream' ;;
             done) words='--force' ;;
             clean) words='--yes --no-fetch' ;;
+            migrate) words='--yes' ;;
             install) words='--no-check' ;;
         esac
         COMPREPLY=($(compgen -W "$words" -- "$cur"))
@@ -1823,6 +1842,101 @@ def clean(root: Path, yes: bool, fetch: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# migrate command
+# ---------------------------------------------------------------------------
+
+
+class Rename(NamedTuple):
+    container: Path
+    path: Path
+    new_name: str
+
+    @property
+    def new_path(self) -> Path:
+        return self.path.parent / self.new_name
+
+
+def planned_renames(root: Path) -> list[Rename]:
+    """Every worktree whose name predates the current scheme, and its new name.
+
+    Names are handed out exactly as 'gra work' hands them out: the
+    repository's own preference order, skipping every name taken anywhere -
+    including the ones handed out earlier in this same plan, which is why the
+    taken set is carried across repositories rather than re-read per worktree.
+    """
+    taken = taken_worktree_names(root)
+    renames: list[Rename] = []
+    for container in containers(root):
+        identity = worktree_identity(container)
+        paths = sorted(worktree_paths(bare_dir(container)), key=lambda path: path.name)
+        for path in paths:
+            # A registered worktree whose directory is gone cannot be moved;
+            # 'gra clean' prunes those.
+            if is_generated_name(path.name) or not path.is_dir():
+                continue
+            new_name = first_free_name(identity, taken)
+            taken.add(new_name)
+            renames.append(Rename(container, path, new_name))
+    return renames
+
+
+def apply_renames(renames: list[Rename]) -> None:
+    """Move each worktree to its new name, Git metadata and all."""
+    for rename in renames:
+        log(f"Renaming '{rename.path.name}' to '{rename.new_name}' in '{rename.container.name}'")
+        run_git(
+            ["worktree", "move", rename.path, rename.new_path],
+            cwd=bare_dir(rename.container),
+        )
+
+
+def migrate(root: Path, yes: bool) -> None:
+    """Rename worktrees named by an older gra to the current scheme."""
+    repositories = containers(root)
+    print(f"Root: {root}")
+    if not repositories:
+        print("No repositories found.")
+        return
+
+    renames = planned_renames(root)
+    if not renames:
+        log("Every worktree already uses the current naming scheme.", GREEN)
+        return
+
+    rows = []
+    previous: Path | None = None
+    for rename in renames:
+        rows.append(
+            [
+                rename.container.name if rename.container != previous else "",
+                rename.path.name,
+                rename.new_name,
+            ]
+        )
+        previous = rename.container
+
+    print(f"Repositories: {len(repositories)}  Worktrees to rename: {len(renames)}")
+    print()
+    print_table(["REPOSITORY", "WORKTREE", "NEW NAME"], rows)
+    print()
+
+    if not yes:
+        log(f"Dry run. Re-run with --yes to rename {len(renames)} worktree(s).", YELLOW)
+        return
+
+    # Where the shell is standing has to be read before anything moves.
+    here = Path.cwd()
+    apply_renames(renames)
+
+    print()
+    log(f"Renamed {len(renames)} worktree(s).", GREEN)
+    for rename in renames:
+        if here == rename.path or rename.path in here.parents:
+            log(f"the directory you are in moved; 'cd {rename.new_path}'", YELLOW)
+            break
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -2030,6 +2144,26 @@ def parse_args() -> argparse.Namespace:
         "--no-fetch", action="store_true", help="skip 'git fetch --prune origin' before classifying"
     )
     clean_parser.set_defaults(handler=lambda args: clean(args.root, args.yes, not args.no_fetch))
+
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="rename worktrees to the current naming scheme",
+        description=(
+            f"Rename every worktree under '{root}' that an older gra named,\n"
+            "using the name the current gra would have given it. Worktrees\n"
+            "already on the current scheme are left alone, so re-running\n"
+            "this does nothing. Without --yes, only prints the table.\n"
+            "Only the directory moves, with 'git worktree move'; branches,\n"
+            "commits and uncommitted changes are untouched.\n"
+            f"A tmux window opened for the old name keeps it until '{WORK_HOOK}'\n"
+            "runs again, which 'gra work' inside the worktree does."
+        ),
+    )
+    migrate_parser.add_argument(
+        "--yes", action="store_true", help="actually rename the worktrees"
+    )
+    migrate_parser.set_defaults(handler=lambda args: migrate(args.root, args.yes))
 
     args = parser.parse_args()
     args.root = root
