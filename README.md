@@ -280,6 +280,10 @@ another repository is skipped the same way, and `gra done` frees a name for the
 next `gra work` to reclaim. Machines only disagree when one of them let another
 repository claim a contested name first, and then only that repository shifts.
 
+Worktrees created before `gra` 4.0 carry a single four-letter word instead;
+[`gra migrate`](#migrate---rename-worktrees-to-the-current-naming-scheme)
+renames them.
+
 ### Hooks
 
 `gra` runs two scripts from the repository container, next to `.bare`:
@@ -495,6 +499,50 @@ merged or patch-equivalent verification already happened as part of the
 verdict. It runs each repository's `done.sh` before removing a worktree, like
 `gra done` does. It never removes dirty worktrees.
 
+## migrate - rename worktrees to the current naming scheme
+
+Worktree names used to be a single four-letter word. `gra migrate` renames
+every worktree still named that way, giving each the name the current `gra`
+would have given it:
+
+```sh
+gra migrate
+```
+
+```text
+Root: /home/me/gra
+Repositories: 2  Worktrees to rename: 3
+
+REPOSITORY  WORKTREE  NEW NAME
+gra         wolf      snowwolf
+            rose      goldfish
+oans        hare      warmhare
+
+Dry run. Re-run with --yes to rename 3 worktree(s).
+```
+
+Like `gra clean`, it is a dry run until you pass `--yes`:
+
+```sh
+gra migrate --yes
+```
+
+Only the directory moves, with `git worktree move`, so Git follows it:
+branches, commits, and uncommitted changes are all untouched. Names are handed
+out exactly as `gra work` hands them out - the repository's own preference
+order, skipping every name taken anywhere - so a migrated worktree gets the
+same name it would have got had it been created today, and no two worktrees
+can land on the same name.
+
+Worktrees already on the current scheme are left alone, so re-running it does
+nothing. That also makes it safe on a machine where only some repositories
+were touched.
+
+Two things it deliberately does not do. A tmux window opened for the old name
+keeps that name; `gra work` inside the worktree re-runs `work.sh` and gets you
+a window with the new one. And if your shell is standing in a worktree that
+moved, `gra migrate` tells you where it went rather than moving you.
+
 ## cd - jump to a worktree
 
 Run `gra cd` to choose any worktree under the gra root with `fzf`, or pass a
@@ -519,7 +567,7 @@ eval "$(gra shell bash)"
 The same line installs Bash completion, so there is nothing else to set up:
 
 ```text
-gra <TAB>              install clone ls work switch done cd shell hooks clean
+gra <TAB>              install clone ls work switch done cd shell hooks clean migrate
 gra cd <TAB>           warmhare goldfish snowwolf    worktree names
 gra done <TAB>         warmhare goldfish snowwolf --force
 gra work <TAB>         branches, inside a repository

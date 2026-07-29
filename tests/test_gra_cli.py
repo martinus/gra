@@ -1308,6 +1308,103 @@ def test_clean_keeps_grakeep_worktree(tmp_path: Path) -> None:
     assert "Dry run. Re-run" not in result.stdout
 
 
+def add_old_style_worktree(container: Path, name: str, branch: str | None = "main") -> Path:
+    """A worktree named the way gra named them before two-word names.
+
+    Without a branch the worktree is detached at origin's default branch,
+    which is how a repository gets a second one while the first holds `main`.
+    """
+    worktree = container / name
+    args = ["worktree", "add"]
+    args += [str(worktree), branch] if branch else ["--detach", str(worktree), "origin/main"]
+    git(args, cwd=container / BARE_DIR)
+    return worktree
+
+
+def test_migrate_renames_worktrees_named_by_an_older_gra(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    old = add_old_style_worktree(container, "hare")
+
+    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert not old.exists()
+    # The name it gets is the one 'gra work' would have given it.
+    expected = load_gra().name_candidates("project")[0]
+    assert (container / expected).is_dir()
+    # Git followed the directory, so the worktree is still usable.
+    assert git_output(["branch", "--show-current"], cwd=container / expected) == "main"
+    assert str(container / expected) in git_output(
+        ["worktree", "list"], cwd=container / BARE_DIR
+    )
+
+
+def test_migrate_is_a_dry_run_without_yes(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    old = add_old_style_worktree(container, "hare")
+
+    result = run_cli(["migrate"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "Dry run. Re-run with --yes" in result.stdout
+    assert "hare" in result.stdout
+    assert old.is_dir()
+
+
+def test_migrate_leaves_current_names_alone(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+
+    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "already uses the current naming scheme" in result.stdout
+    assert worktree.is_dir()
+
+
+def test_migrate_keeps_uncommitted_changes(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    old = add_old_style_worktree(container, "hare")
+    (old / "README.md").write_text("# edited\n")
+
+    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    moved = container / load_gra().name_candidates("project")[0]
+    assert (moved / "README.md").read_text() == "# edited\n"
+    assert git_output(["status", "--porcelain"], cwd=moved) == "M README.md"
+
+
+def test_migrate_gives_every_worktree_a_distinct_name(tmp_path: Path) -> None:
+    """Two repositories migrating at once must not land on the same name."""
+    home = tmp_path / "home"
+    home.mkdir()
+    first = clone_repo(home, make_repo(tmp_path, "one"))
+    second = clone_repo(home, make_repo(tmp_path, "two"))
+    for container in (first, second):
+        add_old_style_worktree(container, "hare" if container is first else "wolf")
+        add_old_style_worktree(container, "rose" if container is first else "puma", None)
+
+    result = run_cli(["migrate", "--yes"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    names = [path.name for container in (first, second) for path in worktree_dirs(container)]
+    assert len(names) == 4
+    assert len(set(names)) == 4
+
+
 def test_cd_with_name_prints_worktree_path(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
