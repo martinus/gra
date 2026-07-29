@@ -1,5 +1,6 @@
 """Focused tests for gra helper functions."""
 
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -10,6 +11,11 @@ from conftest import GRA, load_gra
 
 
 gra = load_gra()
+
+
+def completed(returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
+    """What a patched subprocess.run hands back, of the type the real one does."""
+    return subprocess.CompletedProcess(args=["git"], returncode=returncode, stderr=stderr)
 
 
 def test_older_python_is_rejected_with_a_message(
@@ -60,7 +66,7 @@ def test_words_are_short_unique_and_safe() -> None:
     # Both words run together, and nothing gra reserves is that long - which is
     # what keeps a name from ever being read as a command or a repository path.
     assert all(len(name) == 8 for name in names)
-    reserved = {"install", "clone", "ls", "work", "switch", "done", "cd", "shell", "hooks", "clean"}
+    reserved = {"install", "clone", "fetch", "ls", "work", "switch", "done", "cd", "shell", "hooks"}
     assert not (reserved | {"main", "bare", "root", gra.BARE_DIR}) & names
     # A doubled letter where the words meet is fine (snowwolf); three in a row
     # (talllion, pureeels) is not readable, so one of the two words has to go.
@@ -223,58 +229,38 @@ def test_branch_needs_tracking_creates_missing_branch(
 
 
 def test_fetch_repositories_runs_fetches_in_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[list[str], Path, int, int, bool]] = []
+    calls: list[tuple[list[str], Path, bool]] = []
     lock = threading.Lock()
     both_started = threading.Event()
 
-    def fake_run(
-        args: list[str], *, cwd: Path, stdout: int, stderr: int, check: bool
-    ) -> object:
+    def fake_run(args: list[str], *, cwd: Path, check: bool, **kwargs: object) -> object:
         with lock:
-            calls.append((args, cwd, stdout, stderr, check))
+            calls.append((args, cwd, check))
             if len(calls) == 2:
                 both_started.set()
+        # A serial implementation never gets both started, so it waits out the
+        # second here and the assert turns that into a failure.
         assert both_started.wait(1)
-        return object()
+        return completed()
 
     monkeypatch.setattr(gra.subprocess, "run", fake_run)
 
-    gra.fetch_repositories([Path("repo-a/.bare"), Path("repo-b/.bare")])
+    gra.fetch_repositories([Path("root/repo-a"), Path("root/repo-b")])
 
-    assert {call[1] for call in calls} == {Path("repo-a/.bare"), Path("repo-b/.bare")}
-    assert all(call[0] == ["git", "fetch", "--prune", "origin"] for call in calls)
-    assert all(call[4] is False for call in calls)
+    assert {call[1] for call in calls} == {Path("root/repo-a/.bare"), Path("root/repo-b/.bare")}
+    assert all(call[0] == ["git", "fetch", "--prune", "--all"] for call in calls)
+    assert all(call[2] is False for call in calls)
 
 
-def test_clean_repository_entries_builds_worktree_entries_in_parallel(
+def test_fetch_repository_reports_the_last_line_of_the_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[Path] = []
-    lock = threading.Lock()
-    both_started = threading.Event()
+    error = "Fetching origin\nfatal: could not read from remote repository\n"
+    monkeypatch.setattr(gra.subprocess, "run", lambda *a, **k: completed(128, error))
 
-    monkeypatch.setattr(gra, "remote_default_branch", lambda bare: "origin/main")
-    monkeypatch.setattr(
-        gra,
-        "worktree_paths",
-        lambda bare: [Path("repo/wolf"), Path("repo/lynx")],
+    assert gra.fetch_repository(Path("repo/.bare")) == (
+        "fatal: could not read from remote repository"
     )
-
-    def fake_clean_worktree_entry(
-        path: Path, default_ref: str
-    ) -> tuple[Path, str, str, str, str]:
-        with lock:
-            calls.append(path)
-            if len(calls) == 2:
-                both_started.set()
-        assert both_started.wait(1)
-        return (path, path.name, "✓ clean", "keep", default_ref)
-
-    monkeypatch.setattr(gra, "clean_worktree_entry", fake_clean_worktree_entry)
-
-    entries = gra.clean_repository_entries(Path("repo"))
-
-    assert [entry[0] for entry in entries] == [Path("repo/wolf"), Path("repo/lynx")]
 
 
 def script(version: str) -> bytes:

@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "4.0.0"
+__version__ = "5.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -50,7 +50,6 @@ VALID_PATH_NAME = re.compile(r"[A-Za-z0-9._-]+")
 # Claude may create its own temporary worktrees inside a checkout. Keep those
 # local-only directories out of `git status` without changing tracked files.
 CLAUDE_WORKTREES_EXCLUDE = ".claude/worktrees/"
-GRAKEEP_FILE = ".grakeep"
 
 # Set to false in a repository's config by 'gra clone --no-submodules', or
 # globally to keep submodules out of every repository.
@@ -62,7 +61,7 @@ SUBMODULES_CONFIG = "gra.submodules"
 GITHUB_HOST = "github.com"
 UPSTREAM_REMOTE = "upstream"
 UPSTREAM_CONFIG = "gra.upstream"
-LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE, GRAKEEP_FILE)
+LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE,)
 
 # Per-repository hooks, run when a worktree is created and before one is
 # removed. They live in the container (next to `.bare`), so they are personal
@@ -123,8 +122,8 @@ window=$(tmux new-window -P -F '#{window_id}' \
 DONE_HOOK = "done.sh"
 DONE_HOOK_DEFAULT = """\
 #!/bin/sh
-# Runs before 'gra done' or 'gra clean' removes a worktree, from the
-# repository directory. The worktree still exists while this runs.
+# Runs before 'gra done' removes a worktree, from the repository directory.
+# The worktree still exists while this runs.
 #
 # gra runs this with these variables set:
 #
@@ -150,10 +149,9 @@ done
 # Worktree names are a descriptor and a noun run together, e.g. warmhare:
 # memorable, always eight letters, and never colliding with a gra command
 # name. Both lists hold only common, concrete four-letter words that are easy
-# to read aloud for non-native speakers - the fixed word length means every
-# name splits unambiguously into its two words. A name is taken as long as
-# any repository under the gra root uses it, so a name identifies one
-# worktree across the whole machine.
+# to read aloud for non-native speakers. A name is taken as long as any
+# repository under the gra root uses it, so a name identifies one worktree
+# across the whole machine.
 DESCRIPTORS = (
     "aqua", "blue", "bold", "busy", "calm", "cold", "cool", "cozy", "cute",
     "dark", "dawn", "deep", "easy", "epic", "fair", "fast", "fine", "fire",
@@ -176,11 +174,6 @@ NOUNS = (
     "rope", "rose", "sail", "sand", "seed", "ship", "song", "swan", "taco",
     "taxi", "tent", "tofu", "tree", "tuna", "vase", "wave", "wolf", "wood",
 )
-
-# Every word in both lists is this long, which is what lets a name be split
-# back into the two words that built it - and lets 'gra migrate' recognize a
-# name this version of gra could have produced.
-WORD_LENGTH = 4
 
 _quiet = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
@@ -256,11 +249,11 @@ T = TypeVar("T")
 U = TypeVar("U")
 
 
-def parallel_map(fn: Callable[[T], U], items: list[T]) -> list[U]:
+def parallel_map(fn: Callable[[T], U], items: list[T], workers: int = 8) -> list[U]:
     """Map fn over items with a bounded thread pool, preserving order."""
     if len(items) <= 1:
         return [fn(item) for item in items]
-    with ThreadPoolExecutor(max_workers=min(8, len(items))) as executor:
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as executor:
         return list(executor.map(fn, items))
 
 
@@ -365,7 +358,7 @@ def add_upstream_remote(bare: Path, url: str) -> None:
     run_git(["remote", "add", UPSTREAM_REMOTE, parent], cwd=bare)
     log(
         f"added remote '{UPSTREAM_REMOTE}' -> {parent}; "
-        f"run 'git fetch {UPSTREAM_REMOTE}' for its branches",
+        "run 'gra fetch' for its branches",
         GREEN,
     )
 
@@ -425,6 +418,19 @@ def containers(root: Path) -> list[Path]:
         (child for child in root.iterdir() if child.is_dir() and is_container(child)),
         key=lambda path: path.name,
     )
+
+
+def repositories_or_report(root: Path) -> list[Path]:
+    """Every repository under the root, saying where it looked when there is none.
+
+    How every command that walks the whole root starts, so they all answer an
+    empty root the same way instead of doing nothing visible.
+    """
+    repositories = containers(root)
+    if not repositories:
+        print(f"Root: {root}")
+        print("No repositories found.")
+    return repositories
 
 
 def find_container(path: Path) -> Path | None:
@@ -602,12 +608,10 @@ def worktree_status_output(path: Path) -> str:
     return git_output(["status", "--porcelain"], cwd=path) or ""
 
 
-def fmt_worktree_status(path: Path, status_output: str | None = None) -> str:
+def fmt_worktree_status(path: Path) -> str:
     if not path.exists():
         return "× missing"
-    if status_output is None:
-        status_output = worktree_status_output(path)
-    return "● dirty" if status_output else "✓ clean"
+    return "● dirty" if worktree_status_output(path) else "✓ clean"
 
 
 # ---------------------------------------------------------------------------
@@ -671,21 +675,12 @@ def name_candidates(identity: str) -> list[str]:
     ]
 
 
-def is_generated_name(name: str) -> bool:
-    """Whether this is a name the current word lists could have produced.
-
-    Every word is WORD_LENGTH long, so a name splits at one known offset.
-    'gra migrate' uses this to leave worktrees it has already renamed alone.
-    """
-    return name[:WORD_LENGTH] in DESCRIPTORS and name[WORD_LENGTH:] in NOUNS
-
-
 def first_free_name(identity: str, taken: set[str]) -> str:
     """The repository's first name that nothing in `taken` is using."""
     for name in name_candidates(identity):
         if name not in taken:
             return name
-    fail("all worktree names are taken; run 'gra clean' or 'gra done' first")
+    fail("all worktree names are taken; free one with 'gra done' first")
 
 
 def pick_worktree_name(root: Path, identity: str) -> str:
@@ -735,13 +730,6 @@ def table_cell(header: str, value: str) -> str:
             return style(value, YELLOW)
         if value.startswith("×"):
             return style(value, RED)
-    if header == "VERDICT":
-        if value == "remove":
-            return style(value, GREEN)
-        if value == "prune":
-            return style(value, YELLOW)
-        if value == "keep":
-            return style(value, DIM)
     return value
 
 
@@ -808,10 +796,8 @@ def write_missing_hooks(root: Path) -> None:
     Repositories cloned before hooks existed have none, and only 'gra clone'
     writes them, so without this they would stay silent forever.
     """
-    repositories = containers(root)
+    repositories = repositories_or_report(root)
     if not repositories:
-        print(f"Root: {root}")
-        print("No repositories found.")
         return
     written = sum(write_default_hooks(container) for container in repositories)
     log(
@@ -889,17 +875,74 @@ def clone(
 
 
 # ---------------------------------------------------------------------------
+# fetch command
+# ---------------------------------------------------------------------------
+
+
+def fetch_repository(bare: Path) -> str | None:
+    """Fetch every remote of one repository; the reason when it fails.
+
+    Every remote, not just origin: a fork's 'upstream' is exactly what goes
+    stale, and gra adds no remotes beyond those two.
+    """
+    result = subprocess.run(
+        ["git", "fetch", "--prune", "--all"],
+        cwd=bare,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return None
+    # The last line is where git says what went wrong; the ones above it are
+    # progress, and one line per repository keeps the summary readable.
+    lines = result.stderr.strip().splitlines()
+    return lines[-1].strip() if lines else "git fetch failed"
+
+
+def fetch_repositories(repositories: list[Path]) -> None:
+    """Fetch every repository in parallel, naming the ones that failed."""
+    count = len(repositories)
+    word = "repository" if count == 1 else "repositories"
+    log(f"Fetching {count} {word}")
+
+    # More threads than the default: these wait on the network rather than
+    # competing for a disk, so a machine with many repositories should not
+    # fetch them in waves of eight.
+    errors = parallel_map(
+        lambda container: fetch_repository(bare_dir(container)), repositories, workers=16
+    )
+    failed = [(container, error) for container, error in zip(repositories, errors) if error]
+    for container, error in failed:
+        log(f"{container.name}: {error}", YELLOW)
+
+    if failed:
+        log(f"fetched {count - len(failed)} of {count} {word}", YELLOW)
+    else:
+        log(f"fetched {count} {word}", GREEN)
+
+
+def fetch_all(root: Path) -> None:
+    """Fetch every repository under the gra root."""
+    repositories = repositories_or_report(root)
+    if repositories:
+        fetch_repositories(repositories)
+
+
+# ---------------------------------------------------------------------------
 # ls command
 # ---------------------------------------------------------------------------
 
 
-def print_repositories(root: Path) -> None:
+def print_repositories(root: Path, fetch: bool) -> None:
     """Show every gra repository and every worktree under the gra root."""
-    repositories = containers(root)
-    print(f"Root: {root}")
+    repositories = repositories_or_report(root)
     if not repositories:
-        print("No repositories found.")
         return
+    if fetch:
+        fetch_repositories(repositories)
+    print(f"Root: {root}")
 
     active_worktree = git_toplevel(Path.cwd())
     current = active_worktree.resolve() if active_worktree else None
@@ -1290,7 +1333,7 @@ _gra() {
     local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
 
     if (( COMP_CWORD == 1 )); then
-        COMPREPLY=($(compgen -W 'install clone ls work switch done cd shell hooks clean migrate' \
+        COMPREPLY=($(compgen -W 'install clone fetch ls work switch done cd shell hooks' \
             -- "$cur"))
         return
     fi
@@ -1301,8 +1344,7 @@ _gra() {
         case $cmd in
             clone) words='--name --no-work --no-hook --no-submodules --no-upstream' ;;
             done) words='--force' ;;
-            clean) words='--yes --no-fetch' ;;
-            migrate) words='--yes' ;;
+            ls) words='--fetch' ;;
             install) words='--no-check' ;;
         esac
         COMPREPLY=($(compgen -W "$words" -- "$cur"))
@@ -1600,7 +1642,7 @@ def run_work_hook(container: Path, worktree: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Merge state probes shared by done and clean
+# Worktree removal
 # ---------------------------------------------------------------------------
 
 
@@ -1691,252 +1733,6 @@ def done(name: str | None, root: Path, force: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# clean command
-# ---------------------------------------------------------------------------
-
-
-def fetch_repository(bare: Path) -> None:
-    subprocess.run(
-        ["git", "fetch", "--prune", "origin"],
-        cwd=bare,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-
-
-def fetch_repositories(bares: list[Path]) -> None:
-    parallel_map(fetch_repository, bares)
-
-
-def classify_worktree(
-    path: Path,
-    default_ref: str | None,
-    status_output: str | None = None,
-) -> tuple[str, str]:
-    """Return (verdict, reason) for a worktree path. Verdict is keep/remove/prune."""
-    if not path.exists():
-        return ("prune", "missing path")
-    if (path / GRAKEEP_FILE).is_file():
-        return ("keep", f"{GRAKEEP_FILE} marker")
-    if status_output is None:
-        status_output = worktree_status_output(path)
-    if status_output:
-        return ("keep", "uncommitted changes")
-    if not default_ref:
-        return ("keep", "origin default branch unknown")
-    if is_merged_into(path, default_ref):
-        return ("remove", f"merged into {default_ref}")
-    if has_patch_equivalent_changes_in(path, default_ref):
-        return ("remove", f"changes already in {default_ref}")
-    return ("keep", f"has commits not in {default_ref}")
-
-
-class CleanEntry(NamedTuple):
-    path: Path
-    ref: str
-    status: str
-    verdict: str
-    reason: str
-
-
-def clean_worktree_entry(path: Path, default_ref: str | None) -> CleanEntry:
-    status_output = worktree_status_output(path) if path.exists() else ""
-    verdict, reason = classify_worktree(path, default_ref, status_output)
-    return CleanEntry(
-        path,
-        worktree_ref(path),
-        fmt_worktree_status(path, status_output),
-        verdict,
-        reason,
-    )
-
-
-def clean_repository_entries(container: Path) -> list[CleanEntry]:
-    """Classify worktrees in one repository."""
-    bare = bare_dir(container)
-    default_ref = remote_default_branch(bare)
-    return parallel_map(
-        lambda path: clean_worktree_entry(path, default_ref), worktree_paths(bare)
-    )
-
-
-def apply_clean(container: Path, entries: list[CleanEntry]) -> None:
-    """Remove removable worktrees and prune missing entries for one repository."""
-    has_missing = False
-    for entry in entries:
-        if entry.verdict == "prune":
-            has_missing = True
-        elif entry.verdict == "remove":
-            remove_worktree(container, entry.path, force=False, branch_merged=True)
-    if has_missing:
-        log(f"Pruning missing worktree entries in '{container.name}'")
-        run_git(["worktree", "prune"], cwd=bare_dir(container))
-
-
-def clean(root: Path, yes: bool, fetch: bool) -> None:
-    """Report cleanable worktrees across every gra repository under root."""
-    repositories = containers(root)
-    print(f"Root: {root}")
-    if not repositories:
-        print("No repositories found.")
-        return
-
-    if fetch:
-        log(f"Fetching origin for {len(repositories)} repositories")
-        fetch_repositories([bare_dir(container) for container in repositories])
-
-    repo_entries = [
-        (container, clean_repository_entries(container)) for container in repositories
-    ]
-
-    rows = []
-    for container, entries in repo_entries:
-        for index, entry in enumerate(entries):
-            rows.append(
-                [
-                    container.name if index == 0 else "",
-                    entry.path.name,
-                    entry.ref,
-                    entry.status,
-                    entry.verdict,
-                    entry.reason,
-                ]
-            )
-
-    total_removable = sum(
-        1 for _c, entries in repo_entries for e in entries if e.verdict == "remove"
-    )
-    total_missing = sum(
-        1 for _c, entries in repo_entries for e in entries if e.verdict == "prune"
-    )
-
-    print(f"Repositories: {len(repositories)}  Worktrees: {len(rows)}")
-    print()
-    print_table(["REPOSITORY", "WORKTREE", "BRANCH", "STATUS", "VERDICT", "REASON"], rows)
-
-    print()
-    if not total_removable and not total_missing:
-        log("Nothing to clean.", GREEN)
-        return
-
-    if not yes:
-        actions = []
-        if total_removable:
-            actions.append(f"remove {total_removable} worktree(s)")
-        if total_missing:
-            entries_word = "entry" if total_missing == 1 else "entries"
-            actions.append(f"prune {total_missing} missing {entries_word}")
-        log(f"Dry run. Re-run with --yes to {' and '.join(actions)}.", YELLOW)
-        return
-
-    for container, entries in repo_entries:
-        if any(e.verdict in {"remove", "prune"} for e in entries):
-            apply_clean(container, entries)
-
-    print()
-    log(
-        f"Removed {total_removable} worktree(s); pruned missing entries in {total_missing} place(s).",
-        GREEN,
-    )
-
-
-# ---------------------------------------------------------------------------
-# migrate command
-# ---------------------------------------------------------------------------
-
-
-class Rename(NamedTuple):
-    container: Path
-    path: Path
-    new_name: str
-
-    @property
-    def new_path(self) -> Path:
-        return self.path.parent / self.new_name
-
-
-def planned_renames(root: Path) -> list[Rename]:
-    """Every worktree whose name predates the current scheme, and its new name.
-
-    Names are handed out exactly as 'gra work' hands them out: the
-    repository's own preference order, skipping every name taken anywhere -
-    including the ones handed out earlier in this same plan, which is why the
-    taken set is carried across repositories rather than re-read per worktree.
-    """
-    taken = taken_worktree_names(root)
-    renames: list[Rename] = []
-    for container in containers(root):
-        identity = worktree_identity(container)
-        paths = sorted(worktree_paths(bare_dir(container)), key=lambda path: path.name)
-        for path in paths:
-            # A registered worktree whose directory is gone cannot be moved;
-            # 'gra clean' prunes those.
-            if is_generated_name(path.name) or not path.is_dir():
-                continue
-            new_name = first_free_name(identity, taken)
-            taken.add(new_name)
-            renames.append(Rename(container, path, new_name))
-    return renames
-
-
-def apply_renames(renames: list[Rename]) -> None:
-    """Move each worktree to its new name, Git metadata and all."""
-    for rename in renames:
-        log(f"Renaming '{rename.path.name}' to '{rename.new_name}' in '{rename.container.name}'")
-        run_git(
-            ["worktree", "move", rename.path, rename.new_path],
-            cwd=bare_dir(rename.container),
-        )
-
-
-def migrate(root: Path, yes: bool) -> None:
-    """Rename worktrees named by an older gra to the current scheme."""
-    repositories = containers(root)
-    print(f"Root: {root}")
-    if not repositories:
-        print("No repositories found.")
-        return
-
-    renames = planned_renames(root)
-    if not renames:
-        log("Every worktree already uses the current naming scheme.", GREEN)
-        return
-
-    rows = []
-    previous: Path | None = None
-    for rename in renames:
-        rows.append(
-            [
-                rename.container.name if rename.container != previous else "",
-                rename.path.name,
-                rename.new_name,
-            ]
-        )
-        previous = rename.container
-
-    print(f"Repositories: {len(repositories)}  Worktrees to rename: {len(renames)}")
-    print()
-    print_table(["REPOSITORY", "WORKTREE", "NEW NAME"], rows)
-    print()
-
-    if not yes:
-        log(f"Dry run. Re-run with --yes to rename {len(renames)} worktree(s).", YELLOW)
-        return
-
-    # Where the shell is standing has to be read before anything moves.
-    here = Path.cwd()
-    apply_renames(renames)
-
-    print()
-    log(f"Renamed {len(renames)} worktree(s).", GREEN)
-    for rename in renames:
-        if here == rename.path or rename.path in here.parents:
-            log(f"the directory you are in moved; 'cd {rename.new_path}'", YELLOW)
-            break
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -2022,6 +1818,20 @@ def parse_args() -> argparse.Namespace:
         )
     )
 
+    fetch_parser = subparsers.add_parser(
+        "fetch",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="fetch every repository under the gra root",
+        description=(
+            f"Run 'git fetch --prune --all' in every repository under '{root}',\n"
+            "several at a time. Only remote-tracking refs move: no worktree,\n"
+            "branch or uncommitted change is touched.\n"
+            "A repository that cannot be reached is reported and the rest are\n"
+            "still fetched."
+        ),
+    )
+    fetch_parser.set_defaults(handler=lambda args: fetch_all(args.root))
+
     ls_parser = subparsers.add_parser(
         "ls",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -2029,10 +1839,14 @@ def parse_args() -> argparse.Namespace:
         description=(
             f"List repositories and worktrees under '{root}'.\n"
             "SYNC is ahead/behind the upstream branch as of the last fetch;\n"
-            "it reads local refs only and never goes to the network."
+            "it reads local refs only and never goes to the network.\n"
+            "Use --fetch to refresh every repository first, as 'gra fetch' does."
         ),
     )
-    ls_parser.set_defaults(handler=lambda args: print_repositories(args.root))
+    ls_parser.add_argument(
+        "--fetch", action="store_true", help="fetch every repository before listing"
+    )
+    ls_parser.set_defaults(handler=lambda args: print_repositories(args.root, args.fetch))
 
     work_parser = subparsers.add_parser(
         "work",
@@ -2123,47 +1937,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     hooks_parser.set_defaults(handler=lambda args: write_missing_hooks(args.root))
-
-    clean_parser = subparsers.add_parser(
-        "clean",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="report or remove clean merged worktrees",
-        description=(
-            f"Classify worktrees in every repository under '{root}':\n"
-            "  keep  - .grakeep marker, dirty, or has commits not in origin's default branch\n"
-            "  remove - clean and merged or patch-equivalent in origin's default branch\n"
-            "  prune - the worktree path no longer exists on disk\n"
-            "Without --yes, only prints the table.\n"
-            f"Each removal runs the repository's '{DONE_HOOK}' hook first."
-        ),
-    )
-    clean_parser.add_argument(
-        "--yes", action="store_true", help="actually remove removable worktrees and prune missing ones"
-    )
-    clean_parser.add_argument(
-        "--no-fetch", action="store_true", help="skip 'git fetch --prune origin' before classifying"
-    )
-    clean_parser.set_defaults(handler=lambda args: clean(args.root, args.yes, not args.no_fetch))
-
-    migrate_parser = subparsers.add_parser(
-        "migrate",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="rename worktrees to the current naming scheme",
-        description=(
-            f"Rename every worktree under '{root}' that an older gra named,\n"
-            "using the name the current gra would have given it. Worktrees\n"
-            "already on the current scheme are left alone, so re-running\n"
-            "this does nothing. Without --yes, only prints the table.\n"
-            "Only the directory moves, with 'git worktree move'; branches,\n"
-            "commits and uncommitted changes are untouched.\n"
-            f"A tmux window opened for the old name keeps it until '{WORK_HOOK}'\n"
-            "runs again, which 'gra work' inside the worktree does."
-        ),
-    )
-    migrate_parser.add_argument(
-        "--yes", action="store_true", help="actually rename the worktrees"
-    )
-    migrate_parser.set_defaults(handler=lambda args: migrate(args.root, args.yes))
 
     args = parser.parse_args()
     args.root = root
