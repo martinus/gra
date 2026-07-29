@@ -15,7 +15,7 @@ checked out: switch branches freely inside a worktree, or start a new one and
 remove it when done.
 """
 
-__version__ = "2.5.0"
+__version__ = "3.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -74,9 +74,9 @@ WORK_HOOK = "work.sh"
 WORK_HOOK_DEFAULT = """\
 #!/bin/sh
 # Runs from inside a worktree, whenever gra leaves you in one: after
-# 'gra work' or 'gra clone' creates it, after 'gra work --switch' moves it to
-# another branch, and on demand with 'gra work --hook'. So it runs more than
-# once per worktree and must not undo work in progress.
+# 'gra work' or 'gra clone' creates it, after 'gra switch' moves it to
+# another branch, and again when 'gra work' runs inside it. So it runs more
+# than once per worktree and must not undo work in progress.
 #
 # gra runs this with these variables set:
 #
@@ -437,14 +437,24 @@ def git_toplevel(path: Path) -> Path | None:
     return Path(toplevel) if toplevel else None
 
 
+def gra_location() -> tuple[Path | None, Path | None]:
+    """Resolve (container, worktree) for the current directory, leniently.
+
+    The worktree is None in the repository folder, and both are None outside
+    gra entirely - so callers can behave differently in each place instead of
+    demanding one of them.
+    """
+    toplevel = git_toplevel(Path.cwd())
+    if toplevel and toplevel.name != BARE_DIR and is_container(toplevel.parent):
+        return toplevel.parent, toplevel
+    return find_container(Path.cwd()), None
+
+
 def current_gra_worktree(command: str) -> tuple[Path, Path]:
-    """Resolve (container, worktree) for the current directory."""
-    worktree = git_toplevel(Path.cwd())
-    if not worktree:
+    """Resolve (container, worktree) for the current directory, or fail."""
+    container, worktree = gra_location()
+    if container is None or worktree is None:
         fail(f"gra {command} must be run from inside a gra worktree")
-    container = worktree.parent
-    if not is_container(container) or worktree.name == BARE_DIR:
-        fail(f"'{worktree}' is not a gra worktree; gra {command} must be run inside one")
     return container, worktree
 
 
@@ -906,8 +916,53 @@ def print_repositories(root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Picker helpers (cd)
+# Picker helpers (cd, work, switch)
 # ---------------------------------------------------------------------------
+
+
+def fzf_table(
+    command: str, headers: list[str], entries: list[tuple[str, list[str]]]
+) -> str:
+    """Select from (key, columns) entries with fzf and return the chosen key.
+
+    Owns the whole table convention - aligned columns behind a hidden key -
+    so every picker lays out and selects the same way. A cancelled fzf exits
+    this process with fzf's own status, so callers only ever see a selection
+    that was actually made.
+    """
+    if not shutil.which("fzf"):
+        fail(f"fzf is required for '{command}'")
+
+    widths = column_widths(
+        headers, [cells for _key, cells in entries], include_headers=False
+    )
+    choices = [f"{key}\t{padded_line(cells, widths)}" for key, cells in entries]
+    header = padded_line(headers, widths)
+
+    result = subprocess.run(
+        [
+            "fzf",
+            "--height=80%",
+            "--layout=reverse",
+            "--border",
+            "--tiebreak=begin,index",
+            f"--prompt={command}> ",
+            f"--header={header}",
+            "--delimiter=\t",
+            "--with-nth=2",
+        ],
+        input="\n".join(choices) + "\n",
+        stdout=subprocess.PIPE,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+    selected = result.stdout.rstrip("\n")
+    if not selected:
+        sys.exit(1)
+    return selected.split("\t", 1)[0]
 
 
 class WorktreeRow(NamedTuple):
@@ -940,46 +995,11 @@ def local_worktree_picker_rows(root: Path) -> list[WorktreeRow]:
 PICKER_HEADERS = ["REPOSITORY", "WORKTREE", "BRANCH"]
 
 
-def worktree_picker_choices(rows: list[WorktreeRow]) -> tuple[list[str], str]:
-    """Return fzf input lines and an aligned header."""
-    widths = column_widths(PICKER_HEADERS, [row.values() for row in rows], include_headers=False)
-    choices = [f"{row.path}\t{padded_line(row.values(), widths)}" for row in rows]
-    return choices, padded_line(PICKER_HEADERS, widths)
-
-
 def select_worktree_row_from_rows(rows: list[WorktreeRow], source: str) -> WorktreeRow:
     """Select a worktree with fzf and return its picker row."""
-    choices, header = worktree_picker_choices(rows)
-    if not choices:
+    if not rows:
         fail(f"no worktrees found {source}")
-
-    if not shutil.which("fzf"):
-        fail("fzf is required for 'gra cd'")
-
-    result = subprocess.run(
-        [
-            "fzf",
-            "--height=80%",
-            "--layout=reverse",
-            "--border",
-            "--tiebreak=begin,index",
-            "--prompt=gra cd> ",
-            f"--header={header}",
-            "--delimiter=\t",
-            "--with-nth=2",
-        ],
-        input="\n".join(choices) + "\n",
-        stdout=subprocess.PIPE,
-        encoding="utf-8",
-        check=False,
-    )
-    if result.returncode != 0:
-        sys.exit(result.returncode)
-
-    selected = result.stdout.rstrip("\n")
-    if not selected:
-        sys.exit(1)
-    target = selected.split("\t", 1)[0]
+    target = fzf_table("gra cd", PICKER_HEADERS, [(row.path, row.values()) for row in rows])
     for row in rows:
         if row.path == target:
             return row
@@ -1227,15 +1247,6 @@ _gra_worktrees() {
     done
 }
 
-_gra_repos() {
-    local dir name
-    for dir in "$1"/*/; do
-        [[ -d $dir.bare ]] || continue
-        name=${dir%/}
-        printf '%s\n' "${name##*/}"
-    done
-}
-
 _gra_branches() {
     git --git-dir="$1/.bare" for-each-ref --format='%(refname:lstrip=2)' \
         refs/heads refs/remotes/origin 2>/dev/null |
@@ -1243,11 +1254,10 @@ _gra_branches() {
 }
 
 _gra() {
-    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container word words
-    local -a typed=()
+    local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
 
     if (( COMP_CWORD == 1 )); then
-        COMPREPLY=($(compgen -W 'install clone ls work done cd shell hooks clean' \
+        COMPREPLY=($(compgen -W 'install clone ls work switch done cd shell hooks clean' \
             -- "$cur"))
         return
     fi
@@ -1257,7 +1267,6 @@ _gra() {
     if [[ $cur == -* ]]; then
         case $cmd in
             clone) words='--name --no-work --no-hook --no-submodules --no-upstream' ;;
-            work) words='--switch --hook --no-hook' ;;
             done) words='--force' ;;
             clean) words='--yes --no-fetch' ;;
             install) words='--no-check' ;;
@@ -1270,28 +1279,10 @@ _gra() {
         cd|done)
             words=$(_gra_worktrees "$(_gra_root)")
             ;;
-        work)
-            # The spaces keep --no-hook out of this.
-            if [[ " ${COMP_WORDS[*]} " == *" --hook "* ]]; then
-                words=$(_gra_worktrees "$(_gra_root)")
-                COMPREPLY=($(compgen -W "$words" -- "$cur"))
-                return
-            fi
-            # Count the positionals typed so far, skipping flags: with them
-            # counted, 'gra work --switch <TAB>' looks for a repository named
-            # '--switch' and offers nothing.
-            for word in "${COMP_WORDS[@]:2:COMP_CWORD-2}"; do
-                [[ $word == -* ]] || typed+=("$word")
-            done
+        work|switch)
+            # Outside a repository the command fails anyway, so offer nothing.
             container=$(_gra_container)
-            if (( ${#typed[@]} >= 1 )); then
-                # Two arguments always mean repository then branch.
-                words=$(_gra_branches "$(_gra_root)/${typed[0]}")
-            elif [[ -n $container ]]; then
-                words=$(_gra_branches "$container")
-            else
-                words=$(_gra_repos "$(_gra_root)")
-            fi
+            [[ -n $container ]] && words=$(_gra_branches "$container")
             ;;
         shell)
             words='bash'
@@ -1333,16 +1324,67 @@ def create_missing_branch(bare: Path, branch: str) -> None:
 
 def branches_matching(bare: Path, text: str) -> list[str]:
     """Branch names containing text, local and on origin, without duplicates."""
+    return sorted(
+        name for name, _age in recent_branches(bare) if text.lower() in name.lower()
+    )
+
+
+def recent_branches(bare: Path) -> list[tuple[str, str]]:
+    """(name, last commit age) for local and origin branches, newest first.
+
+    A branch that exists both locally and on origin appears once, at the
+    fresher of the two commits - the order is for a picker, not for sync
+    bookkeeping.
+    """
     output = git_output(
-        ["for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads", "refs/remotes/origin"],
+        [
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:lstrip=2)\t%(committerdate:relative)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
         cwd=bare,
     )
-    names = set()
-    for name in (output or "").splitlines():
+    branches: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for line in (output or "").splitlines():
+        name, _, age = line.partition("\t")
         name = name.removeprefix("origin/")
-        if name and name != "HEAD" and text.lower() in name.lower():
-            names.add(name)
-    return sorted(names)
+        if name and name != "HEAD" and name not in seen:
+            seen.add(name)
+            branches.append((name, age))
+    return branches
+
+
+BRANCH_PICKER_HEADERS = ["BRANCH", "LAST COMMIT"]
+
+
+def pick_branch(container: Path, command: str, *, offer_detached: bool) -> str:
+    """Pick a branch with fzf, newest commit first; '' means detached.
+
+    Branches already checked out are left out: Git allows a branch in one
+    worktree at a time, so picking one could only end in the refusal that
+    points at the holding worktree.
+    """
+    bare = bare_dir(container)
+    checked_out = worktree_branches(bare)
+    entries: list[tuple[str, list[str]]] = []
+    if offer_detached:
+        ref = remote_default_branch(bare)
+        if ref:
+            entries.append(("", [f"{ref} (detached)", ""]))
+    entries += [
+        (name, [name, age])
+        for name, age in recent_branches(bare)
+        if name not in checked_out
+    ]
+    if not entries:
+        fail(
+            f"every branch of '{container.name}' is already checked out; "
+            "'gra cd' reaches their worktrees"
+        )
+    return fzf_table(command, BRANCH_PICKER_HEADERS, entries)
 
 
 def resolve_branch(bare: Path, branch: str) -> str:
@@ -1434,21 +1476,61 @@ def create_worktree(
 
 
 # ---------------------------------------------------------------------------
-# work command
+# work and switch commands
 # ---------------------------------------------------------------------------
 
 
-def switch_in_place(branch_input: str, no_hook: bool) -> None:
+def work(branch_input: str | None, root: Path) -> None:
+    """Work here, whatever that takes: a new worktree, or setting one up again.
+
+    Where the command runs decides what it does. In the repository folder it
+    creates a worktree - for BRANCH, or for a branch picked with fzf. Inside a
+    worktree it re-runs the work hook, unless BRANCH asks for a new worktree
+    anyway. Anywhere else there is nothing it could mean.
+    """
+    container, worktree = gra_location()
+    if container is None:
+        fail(
+            "gra work must run inside a gra repository:\n"
+            "  in the repository folder it creates a worktree - 'gra work' picks\n"
+            "  the branch with fzf, 'gra work BRANCH' names it\n"
+            f"  inside a worktree it runs the '{WORK_HOOK}' hook again\n"
+            "'gra ls' lists repositories; 'gra cd' jumps into a worktree"
+        )
+
+    if worktree and not branch_input:
+        run_work_hook(container, worktree)
+        return
+
+    if branch_input:
+        branch = resolve_branch(bare_dir(container), branch_name_from_input(branch_input))
+    else:
+        branch = pick_branch(container, "gra work", offer_detached=True)
+    create_worktree(container, root, branch, no_hook=False)
+
+
+def switch(branch_input: str | None) -> None:
     """Switch the current worktree to another branch."""
-    container, worktree = current_gra_worktree("work --switch")
+    container, worktree = gra_location()
+    if worktree is None:
+        fail(
+            "gra switch must be run from inside a gra worktree;\n"
+            "it switches that worktree to another branch - 'gra cd' jumps into one"
+        )
     bare = bare_dir(container)
-    branch = resolve_branch(bare, branch_name_from_input(branch_input))
 
     if worktree_status_output(worktree):
         fail(
             f"'{worktree}' has uncommitted changes; commit or stash them before switching"
         )
-    refuse_if_branch_is_checked_out(bare, branch, current=worktree)
+
+    if branch_input:
+        branch = resolve_branch(bare, branch_name_from_input(branch_input))
+        refuse_if_branch_is_checked_out(bare, branch, current=worktree)
+    else:
+        # The picker already left out every checked-out branch, so only a
+        # typed branch can need the refusal.
+        branch = pick_branch(container, "gra switch", offer_detached=False)
 
     log(f"Switching '{worktree}' to '{branch}'")
     if branch_needs_tracking(bare, branch):
@@ -1457,68 +1539,18 @@ def switch_in_place(branch_input: str, no_hook: bool) -> None:
         run_git(["switch", branch], cwd=worktree)
     log(f"'{worktree.name}' is now on '{branch}'", GREEN)
 
-    if not no_hook:
-        run_hook(WORK_HOOK, container, worktree, branch, cwd=worktree)
+    run_hook(WORK_HOOK, container, worktree, branch, cwd=worktree)
 
 
-def resolve_repository(name: str, root: Path) -> Path:
-    container = root / name
-    if not is_container(container):
-        fail(
-            f"no repository '{name}' under '{root}'; "
-            "use 'gra ls' to see them or 'gra clone URL' to add one"
-        )
-    return container
+def run_work_hook(container: Path, worktree: Path) -> None:
+    """Run the work hook again for the worktree we are standing in.
 
+    Setting a worktree up is not a one-shot event: the tmux window the hook
+    opened can be closed while the worktree lives on.
 
-def work_target(target: str | None, branch: str | None, root: Path) -> tuple[Path, str]:
-    """Resolve (container, branch) from up to two positional arguments.
-
-    Two arguments always mean repository then branch. One means a branch when
-    run inside a repository - the long-standing behaviour - and a repository
-    when run outside one, where a bare branch name would have nothing to
-    apply to.
+    The branch comes off the worktree, so a detached one reports the empty
+    GRA_BRANCH that creating it would have given the hook.
     """
-    if branch is not None:
-        # argparse fills positionals left to right, so target is set too.
-        return resolve_repository(str(target), root), branch_name_from_input(branch)
-
-    container = find_container(Path.cwd())
-    if container:
-        return container, branch_name_from_input(target) if target else ""
-    if not target:
-        fail(
-            "gra work needs a repository when run outside one: 'gra work REPO';\n"
-            "use 'gra ls' to see repositories or 'gra clone URL' to add one"
-        )
-    return resolve_repository(target, root), ""
-
-
-def work(target: str | None, branch_input: str | None, root: Path, no_hook: bool) -> None:
-    """Create a new worktree named after the repository."""
-    container, branch = work_target(target, branch_input, root)
-    if branch:
-        branch = resolve_branch(bare_dir(container), branch)
-    create_worktree(container, root, branch, no_hook=no_hook)
-
-
-def run_work_hook(name: str | None, root: Path) -> None:
-    """Run the work hook again for a worktree that is already there.
-
-    Setting a worktree up is not a one-shot event: the tmux window it opened
-    can be closed, and 'gra work --switch' leaves you in a worktree without
-    having created one. Names are unique across repositories, so NAME reaches
-    any worktree from anywhere; without it, the one you are standing in.
-
-    The branch comes off the worktree rather than an argument, so a detached
-    one reports the empty GRA_BRANCH that 'gra work' would have given it.
-    """
-    if name:
-        worktree = Path(resolve_worktree_name(root, name).path)
-        container = worktree.parent
-    else:
-        container, worktree = current_gra_worktree("work --hook")
-
     # Everywhere else a missing hook is silence, because something was created
     # anyway. Here it would mean the whole command did nothing without saying
     # so, and repositories cloned by gra 1.x have no hooks at all.
@@ -1876,60 +1908,39 @@ def parse_args() -> argparse.Namespace:
     work_parser = subparsers.add_parser(
         "work",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="work on a branch, in a new or the current worktree",
+        help="work on a branch in a new worktree, or set this one up again",
         description=(
-            "Create a new worktree named after an unused word for the repository.\n"
-            "With BRANCH, check it out (creating and pushing it when missing);\n"
-            "BRANCH may be part of one, so a ticket key finds the branch named\n"
-            "after it; several matches are listed rather than guessed between.\n"
-            "without, start detached at origin's default branch.\n"
-            "Run outside a repository, name one: 'gra work REPO [BRANCH]'.\n"
-            f"The repository's '{WORK_HOOK}' hook then runs inside it.\n"
-            "With --switch, reuse the current worktree instead: switch it to\n"
-            "BRANCH with the same branch resolution. Refuses when dirty.\n"
-            f"With --hook, create nothing and run '{WORK_HOOK}' for a worktree\n"
-            "that is already there: NAME from anywhere, or the current one."
+            "What this does depends on where it runs:\n"
+            "  in the repository folder: create a worktree named after an\n"
+            f"    unused word for the repository, and run '{WORK_HOOK}' inside it\n"
+            f"  inside a worktree: run the '{WORK_HOOK}' hook again, creating nothing\n"
+            "With BRANCH, always create a worktree that checks it out (creating\n"
+            "and pushing the branch when missing). BRANCH may be part of a name,\n"
+            "so a ticket key finds the branch named after it; several matches\n"
+            "are listed rather than guessed between.\n"
+            "Without BRANCH in the repository folder, pick one with fzf, newest\n"
+            "commits first - or start detached at origin's default branch."
         ),
     )
-    work_parser.add_argument(
-        "target", nargs="?", help="branch, or repository when outside one"
-    )
-    work_parser.add_argument(
-        "branch", nargs="?", help="branch to check out, when REPO was given"
-    )
-    work_parser.add_argument(
-        "--switch",
-        action="store_true",
-        help="switch the current worktree to BRANCH instead of creating one",
-    )
-    work_parser.add_argument(
-        "--hook",
-        action="store_true",
-        help=f"only run '{WORK_HOOK}', for an existing worktree NAME",
-    )
-    work_parser.add_argument(
-        "--no-hook", action="store_true", help=f"do not run the '{WORK_HOOK}' hook"
-    )
+    work_parser.add_argument("branch", nargs="?", help="branch to check out")
+    work_parser.set_defaults(handler=lambda args: work(args.branch, args.root))
 
-    def run_work(args: argparse.Namespace) -> None:
-        if args.hook:
-            if args.switch:
-                work_parser.error("--hook and --switch do different jobs; pick one")
-            if args.no_hook:
-                work_parser.error("--hook and --no-hook contradict each other")
-            if args.branch:
-                work_parser.error("--hook takes a worktree name, not REPO BRANCH")
-            run_work_hook(args.target, args.root)
-        elif args.switch:
-            if not args.target:
-                work_parser.error("--switch requires BRANCH")
-            if args.branch:
-                work_parser.error("--switch switches the current worktree; drop REPO")
-            switch_in_place(args.target, args.no_hook)
-        else:
-            work(args.target, args.branch, args.root, args.no_hook)
-
-    work_parser.set_defaults(handler=run_work)
+    switch_parser = subparsers.add_parser(
+        "switch",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="switch the current worktree to another branch",
+        description=(
+            "Switch the worktree you are standing in to BRANCH, with the same\n"
+            "branch resolution as 'gra work': part of a name is enough when it\n"
+            "matches one branch, and a missing branch can be created from\n"
+            "origin's default branch and pushed.\n"
+            "Without BRANCH, pick one with fzf, newest commits first.\n"
+            "Refuses when the worktree has uncommitted changes.\n"
+            f"Runs the repository's '{WORK_HOOK}' hook after switching."
+        ),
+    )
+    switch_parser.add_argument("branch", nargs="?", help="branch to switch to")
+    switch_parser.set_defaults(handler=lambda args: switch(args.branch))
 
     done_parser = subparsers.add_parser(
         "done",

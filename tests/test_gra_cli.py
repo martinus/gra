@@ -123,17 +123,25 @@ def work_worktree(
     home: Path, container: Path, branch: str | None = None
 ) -> Path:
     args = ["work"]
+    env_extra = None
     if branch:
         args.append(branch)
+    else:
+        # Without a branch 'gra work' opens the branch picker; select its
+        # first entry, the detached one.
+        env_extra, _fzf_input, _fzf_args = write_fzf_mock(home.parent)
     before = set(worktree_dirs(container))
-    result = run_cli(args, home, cwd=container)
+    result = run_cli(args, home, cwd=container, env_extra=env_extra)
     assert result.returncode == 0, result.stderr
     created = set(worktree_dirs(container)) - before
     assert len(created) == 1, result.stdout
     return created.pop()
 
 
-def write_fzf_mock(tmp_path: Path, *, select_line: int = 1) -> tuple[Path, Path, Path]:
+def write_fzf_mock(
+    tmp_path: Path, *, select_line: int = 1
+) -> tuple[dict[str, str], Path, Path]:
+    """Put a selecting-fzf on the PATH; returns (env for run_cli, input, args)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     fzf = bin_dir / "fzf"
@@ -146,7 +154,12 @@ def write_fzf_mock(tmp_path: Path, *, select_line: int = 1) -> tuple[Path, Path,
         f"sed -n '{select_line}p' \"$FZF_INPUT\"\n"
     )
     fzf.chmod(0o755)
-    return bin_dir, fzf_input, fzf_args
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "FZF_ARGS": str(fzf_args),
+        "FZF_INPUT": str(fzf_input),
+    }
+    return env, fzf_input, fzf_args
 
 
 def test_clone_with_no_work_creates_only_the_bare_repository(tmp_path: Path) -> None:
@@ -543,41 +556,79 @@ def test_work_missing_branch_can_be_declined(tmp_path: Path) -> None:
     assert worktree_dirs(container) == []
 
 
-def test_work_outside_repository_needs_a_repository_name(tmp_path: Path) -> None:
+def test_work_outside_a_repository_explains_both_uses(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
 
     result = run_cli(["work"], home, cwd=tmp_path)
 
     assert result.returncode == 1
-    assert "needs a repository when run outside one" in result.stderr
+    assert "repository folder" in result.stderr
+    assert "inside a worktree" in result.stderr
+    assert "gra cd" in result.stderr
 
 
-def test_work_takes_a_repository_from_anywhere(tmp_path: Path) -> None:
+def test_work_rejects_a_second_argument(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    # 'gra work REPO BRANCH' is gone: work always acts where it runs.
+    result = run_cli(["work", "project", "feature"], home, cwd=tmp_path)
+
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_work_picks_a_branch_with_fzf_in_the_repository_folder(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
-    add_feature_branch(source, "feature/search")
+    # A committer date in the future, so 'feature' outranks 'main' in the
+    # recency order no matter how fast the test ran.
+    git(["switch", "-c", "feature"], cwd=source)
+    (source / "README.md").write_text("# feature\n")
+    subprocess.run(
+        ["git", "commit", "-am", "feature"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            **GIT_IDENTITY,
+            "GIT_AUTHOR_DATE": "2036-01-01T12:00:00",
+            "GIT_COMMITTER_DATE": "2036-01-01T12:00:00",
+        },
+    )
+    git(["switch", "main"], cwd=source)
     container = clone_repo(home, source)
+    fzf_env, fzf_input, _fzf_args = write_fzf_mock(tmp_path, select_line=2)
 
-    result = run_cli(["work", "project", "feature/search"], home, cwd=tmp_path)
+    result = run_cli(["work"], home, cwd=container, env_extra=fzf_env)
 
     assert result.returncode == 0, result.stderr
+    lines = fzf_input.read_text().splitlines()
+    # The detached entry leads, then branches by newest commit.
+    assert "(detached)" in lines[0]
+    assert lines[1].split("\t")[0] == "feature"
+    assert lines[2].split("\t")[0] == "main"
     worktree = worktree_dirs(container)[0]
-    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature/search"
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
 
 
-def test_work_with_only_a_repository_starts_detached(tmp_path: Path) -> None:
+def test_work_picker_skips_branches_that_are_checked_out(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
+    container = clone_repo(home, source, work=True)  # 'main' is taken now
+    fzf_env, fzf_input, _fzf_args = write_fzf_mock(tmp_path)
 
-    result = run_cli(["work", "project"], home, cwd=tmp_path)
+    result = run_cli(["work"], home, cwd=container, env_extra=fzf_env)
 
     assert result.returncode == 0, result.stderr
-    worktree = worktree_dirs(container)[0]
-    assert git_output(["branch", "--show-current"], cwd=worktree) == ""
+    # Only the detached entry is offered: picking 'main' could never succeed.
+    lines = fzf_input.read_text().splitlines()
+    assert len(lines) == 1
+    assert "(detached)" in lines[0]
 
 
 def test_work_inside_a_repository_reads_one_argument_as_a_branch(tmp_path: Path) -> None:
@@ -586,26 +637,12 @@ def test_work_inside_a_repository_reads_one_argument_as_a_branch(tmp_path: Path)
     source = make_repo(tmp_path, "project")
     add_feature_branch(source, "feature")
     container = clone_repo(home, source)
-    # A repository named 'feature' exists too, so the argument is ambiguous
-    # on its face: inside a repository the branch has to win.
-    clone_repo(home, make_repo(tmp_path, "feature"))
 
     result = run_cli(["work", "feature"], home, cwd=container)
 
     assert result.returncode == 0, result.stderr
     worktree = worktree_dirs(container)[0]
     assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
-
-
-def test_work_reports_an_unknown_repository(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    make_repo(tmp_path, "project")
-
-    result = run_cli(["work", "nope"], home, cwd=tmp_path)
-
-    assert result.returncode == 1
-    assert "no repository 'nope'" in result.stderr
 
 
 def test_work_points_at_the_worktree_holding_the_branch(tmp_path: Path) -> None:
@@ -703,7 +740,7 @@ def test_ls_survives_a_worktree_whose_directory_is_gone(tmp_path: Path) -> None:
     assert "× missing" in result.stdout
 
 
-def test_work_switch_to_the_branch_it_is_already_on(tmp_path: Path) -> None:
+def test_switch_to_the_branch_it_is_already_on(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -711,7 +748,7 @@ def test_work_switch_to_the_branch_it_is_already_on(tmp_path: Path) -> None:
     worktree = work_worktree(home, container, "main")
 
     # The branch is checked out here, so the guard must exempt this worktree.
-    result = run_cli(["work", "--switch", "main"], home, cwd=worktree)
+    result = run_cli(["switch", "main"], home, cwd=worktree)
 
     assert result.returncode == 0, result.stderr
     assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
@@ -758,8 +795,9 @@ def test_clone_writes_a_work_hook_that_reuses_an_open_window(tmp_path: Path) -> 
 
     container = clone_repo(home, source)
 
-    # 'gra work --hook' and '--switch' run this for a worktree that already has
-    # a window; without the lookup it would open a second one of the same name.
+    # 'gra switch' and a re-run 'gra work' run this for a worktree that already
+    # has a window; without the lookup it would open a second one of the same
+    # name.
     text = (container / "work.sh").read_text()
     assert "list-windows" in text
     assert "select-window" in text
@@ -805,26 +843,7 @@ def test_work_skips_a_non_executable_hook(tmp_path: Path) -> None:
     assert not hook_out.exists()
 
 
-def test_work_no_hook_skips_the_hook(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "work.sh", recorder())
-
-    result = run_cli(
-        ["work", "--no-hook", "main"],
-        home,
-        cwd=container,
-        env_extra={"HOOK_OUT": str(hook_out)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not hook_out.exists()
-
-
-def test_work_hook_runs_the_hook_again_in_the_current_worktree(tmp_path: Path) -> None:
+def test_work_inside_a_worktree_runs_the_hook_again(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -835,7 +854,7 @@ def test_work_hook_runs_the_hook_again_in_the_current_worktree(tmp_path: Path) -
     write_hook(container, "work.sh", recorder())
 
     result = run_cli(
-        ["work", "--hook"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
+        ["work"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
     )
 
     assert result.returncode == 0, result.stderr
@@ -849,24 +868,25 @@ def test_work_hook_runs_the_hook_again_in_the_current_worktree(tmp_path: Path) -
     assert worktree_dirs(container) == [worktree]
 
 
-def test_work_hook_finds_a_worktree_by_name_from_anywhere(tmp_path: Path) -> None:
+def test_work_inside_a_worktree_with_branch_creates_a_new_worktree(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "work.sh", recorder())
 
-    result = run_cli(
-        ["work", "--hook", worktree.name],
-        home,
-        cwd=tmp_path,
-        env_extra={"HOOK_OUT": str(hook_out)},
-    )
+    # A branch means a new worktree even from inside one: a second task
+    # arriving must not require a 'cd ..' first.
+    result = run_cli(["work", "feature"], home, cwd=worktree)
 
     assert result.returncode == 0, result.stderr
-    assert hook_out.read_text().splitlines()[3] == str(worktree)
+    created = [path for path in worktree_dirs(container) if path != worktree]
+    assert len(created) == 1
+    assert git_output(["branch", "--show-current"], cwd=created[0]) == "feature"
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
 
 
 def test_work_hook_leaves_the_branch_empty_when_detached(tmp_path: Path) -> None:
@@ -879,7 +899,7 @@ def test_work_hook_leaves_the_branch_empty_when_detached(tmp_path: Path) -> None
     write_hook(container, "work.sh", recorder())
 
     result = run_cli(
-        ["work", "--hook"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
+        ["work"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
     )
 
     assert result.returncode == 0, result.stderr
@@ -894,10 +914,10 @@ def test_work_hook_says_so_when_there_is_no_hook(tmp_path: Path) -> None:
     worktree = work_worktree(home, container, "main")
     (container / "work.sh").unlink()
 
-    result = run_cli(["work", "--hook"], home, cwd=worktree)
+    result = run_cli(["work"], home, cwd=worktree)
 
-    # 'gra work' can be silent about a missing hook because it made a worktree
-    # regardless; --hook has nothing else to show for itself.
+    # 'gra work' can be silent about a missing hook when it made a worktree
+    # regardless; inside one it has nothing else to show for itself.
     assert result.returncode == 1
     assert "has no 'work.sh'" in result.stderr
     assert "gra hooks" in result.stderr
@@ -911,42 +931,14 @@ def test_work_hook_says_so_when_the_hook_is_turned_off(tmp_path: Path) -> None:
     worktree = work_worktree(home, container, "main")
     (container / "work.sh").chmod(0o644)
 
-    result = run_cli(["work", "--hook"], home, cwd=worktree)
+    result = run_cli(["work"], home, cwd=worktree)
 
     # 'chmod -x' is a decision, not a mistake, so this is not a failure.
     assert result.returncode == 0, result.stderr
     assert "turned off" in result.stdout + result.stderr
 
 
-def test_work_hook_rejects_an_unknown_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    clone_repo(home, source)
-
-    result = run_cli(["work", "--hook", "nope"], home, cwd=tmp_path)
-
-    assert result.returncode == 1
-    assert "no worktree named 'nope'" in result.stderr
-
-
-def test_work_hook_refuses_switch_and_no_hook(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-
-    with_switch = run_cli(["work", "--hook", "--switch", "main"], home, cwd=tmp_path)
-    with_no_hook = run_cli(["work", "--hook", "--no-hook"], home, cwd=tmp_path)
-    with_two = run_cli(["work", "--hook", "project", "main"], home, cwd=tmp_path)
-
-    assert with_switch.returncode == 2
-    assert "--hook and --switch" in with_switch.stderr
-    assert with_no_hook.returncode == 2
-    assert "--hook and --no-hook" in with_no_hook.stderr
-    assert with_two.returncode == 2
-    assert "--hook takes a worktree name" in with_two.stderr
-
-
-def test_work_switch_runs_the_work_hook_with_the_new_branch(tmp_path: Path) -> None:
+def test_switch_runs_the_work_hook_with_the_new_branch(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -957,7 +949,7 @@ def test_work_switch_runs_the_work_hook_with_the_new_branch(tmp_path: Path) -> N
     write_hook(container, "work.sh", recorder())
 
     result = run_cli(
-        ["work", "--switch", "feature"],
+        ["switch", "feature"],
         home,
         cwd=worktree,
         env_extra={"HOOK_OUT": str(hook_out)},
@@ -973,27 +965,6 @@ def test_work_switch_runs_the_work_hook_with_the_new_branch(tmp_path: Path) -> N
         str(worktree),
         str(worktree),
     ]
-
-
-def test_work_switch_no_hook_skips_the_hook(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "work.sh", recorder())
-
-    result = run_cli(
-        ["work", "--switch", "--no-hook", "feature"],
-        home,
-        cwd=worktree,
-        env_extra={"HOOK_OUT": str(hook_out)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not hook_out.exists()
 
 
 def test_done_runs_the_done_hook_before_removing_the_worktree(tmp_path: Path) -> None:
@@ -1120,7 +1091,7 @@ def test_work_still_offers_to_create_an_unmatched_branch(tmp_path: Path) -> None
     assert worktree_dirs(container) == []
 
 
-def test_work_switch_resolves_a_ticket_key_too(tmp_path: Path) -> None:
+def test_switch_resolves_a_ticket_key_too(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -1128,13 +1099,13 @@ def test_work_switch_resolves_a_ticket_key_too(tmp_path: Path) -> None:
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
 
-    result = run_cli(["work", "--switch", "OA-2345"], home, cwd=worktree)
+    result = run_cli(["switch", "OA-2345"], home, cwd=worktree)
 
     assert result.returncode == 0, result.stderr
     assert git_output(["branch", "--show-current"], cwd=worktree) == "mla/OA-2345-thing"
 
 
-def test_work_switch_changes_branch_in_place(tmp_path: Path) -> None:
+def test_switch_changes_branch_in_place(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -1142,7 +1113,7 @@ def test_work_switch_changes_branch_in_place(tmp_path: Path) -> None:
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
 
-    result = run_cli(["work", "--switch", "feature"], home, cwd=worktree)
+    result = run_cli(["switch", "feature"], home, cwd=worktree)
 
     assert result.returncode == 0, result.stderr
     assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
@@ -1150,7 +1121,7 @@ def test_work_switch_changes_branch_in_place(tmp_path: Path) -> None:
     assert worktree_dirs(container) == [worktree]
 
 
-def test_work_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
+def test_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -1159,21 +1130,47 @@ def test_work_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
     worktree = work_worktree(home, container, "main")
     (worktree / "README.md").write_text("# local edit\n")
 
-    result = run_cli(["work", "--switch", "feature"], home, cwd=worktree)
+    result = run_cli(["switch", "feature"], home, cwd=worktree)
 
     assert result.returncode == 1
     assert "uncommitted changes" in result.stderr
     assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
 
 
-def test_work_switch_requires_branch(tmp_path: Path) -> None:
+def test_switch_picks_a_branch_with_fzf(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    fzf_env, fzf_input, _fzf_args = write_fzf_mock(tmp_path)
 
-    result = run_cli(["work", "--switch"], home, cwd=tmp_path)
+    result = run_cli(["switch"], home, cwd=worktree, env_extra=fzf_env)
 
-    assert result.returncode == 2
-    assert "--switch requires BRANCH" in result.stderr
+    assert result.returncode == 0, result.stderr
+    # 'main' is checked out right here and there is no detached entry, so the
+    # picker offers exactly the one branch a switch could reach.
+    assert [line.split("\t")[0] for line in fzf_input.read_text().splitlines()] == [
+        "feature"
+    ]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
+
+
+def test_switch_outside_a_worktree_fails_with_guidance(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+
+    outside = run_cli(["switch", "main"], home, cwd=tmp_path)
+    in_container = run_cli(["switch", "main"], home, cwd=container)
+
+    # The repository folder is not a worktree either: there is no checkout
+    # there whose branch a switch could change.
+    for result in (outside, in_container):
+        assert result.returncode == 1
+        assert "gra switch" in result.stderr
+        assert "gra cd" in result.stderr
 
 
 def test_done_removes_merged_worktree_and_branch(tmp_path: Path) -> None:
@@ -1343,18 +1340,9 @@ def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
 
-    bin_dir, fzf_input, fzf_args = write_fzf_mock(tmp_path)
+    fzf_env, fzf_input, fzf_args = write_fzf_mock(tmp_path)
 
-    result = run_cli(
-        ["cd"],
-        home,
-        cwd=tmp_path,
-        env_extra={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "FZF_ARGS": str(fzf_args),
-            "FZF_INPUT": str(fzf_input),
-        },
-    )
+    result = run_cli(["cd"], home, cwd=tmp_path, env_extra=fzf_env)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{worktree}\n"
@@ -1449,35 +1437,6 @@ def test_completion_offers_worktree_names(tmp_path: Path) -> None:
     assert complete(home, ["gra", "done", "-"], tmp_path) == ["--force"]
 
 
-def test_completion_offers_worktree_names_after_work_hook(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    # --hook names an existing worktree, so the branch menu would be wrong -
-    # from inside the repository, where branches are what 'work' usually offers.
-    assert complete(home, ["gra", "work", "--hook", ""], container) == [worktree.name]
-    # --no-hook must not be mistaken for it, and a flag before the positional
-    # is not the REPO of a 'REPO BRANCH' pair, so branches are still the menu.
-    assert "feature" in complete(home, ["gra", "work", "--no-hook", ""], container)
-    assert "feature" in complete(home, ["gra", "work", "--switch", ""], container)
-    assert "--hook" in complete(home, ["gra", "work", "-"], container)
-
-
-def test_completion_offers_repositories_outside_one(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    clone_repo(home, make_repo(tmp_path, "project"))
-    clone_repo(home, make_repo(tmp_path, "other"))
-
-    words = complete(home, ["gra", "work", ""], tmp_path)
-
-    assert "project" in words and "other" in words
-
-
 def test_completion_offers_branches_inside_a_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -1485,24 +1444,24 @@ def test_completion_offers_branches_inside_a_repository(tmp_path: Path) -> None:
     add_feature_branch(source, "feature/search")
     container = clone_repo(home, source)
 
-    words = complete(home, ["gra", "work", ""], container)
-
-    assert "main" in words
-    assert "feature/search" in words
-    # Inside a repository one argument is a branch, so repositories are not offered.
-    assert "project" not in words
+    for cmd in ("work", "switch"):
+        words = complete(home, ["gra", cmd, ""], container)
+        assert "main" in words
+        assert "feature/search" in words
 
 
-def test_completion_offers_branches_of_a_named_repository(tmp_path: Path) -> None:
+def test_completion_offers_nothing_for_work_outside_a_repository(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source, "feature/search")
-    clone_repo(home, source)
+    clone_repo(home, make_repo(tmp_path, "project"))
 
-    words = complete(home, ["gra", "work", "project", "feature"], tmp_path)
-
-    assert words == ["feature/search"]
+    # 'gra work' fails outside a repository, so there is nothing to offer -
+    # certainly not repository names, which are no longer arguments.
+    assert complete(home, ["gra", "work", ""], tmp_path) == []
+    # 'gra work' has no flags left either.
+    assert complete(home, ["gra", "work", "-"], tmp_path) == []
 
 
 def test_shell_bash_prints_shell_helper(tmp_path: Path) -> None:
