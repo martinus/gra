@@ -8,24 +8,24 @@ next to them:
 ~/gra
 └── oans
   ├── .bare
-  ├── hare
-  └── rose
+  ├── warmhare
+  └── goldfish
 ```
 
 There is no default checkout: no branch is ever pinned by a checkout you do not
 use, so any worktree can be on `main`, rebase onto it, or switch to any branch
 freely.
 
-Worktree names are short words (`hare`, `rose`, `wolf`, ...), all four letters,
-unique across **all** repositories, and unrelated to the branch they have
-checked out. They are derived from the repository rather than drawn at random,
-so cloning `oans` on your laptop and on your desktop gives you the same name in
-both places. A worktree is just a workspace: create one with `gra work`,
-switch branches inside it with `gra switch`, and throw it away with
+Worktree names are word pairs (`warmhare`, `goldfish`, `snowwolf`, ...), always
+eight letters, unique across **all** repositories, and unrelated to the branch
+they have checked out. They are derived from the repository rather than drawn
+at random, so cloning `oans` on your laptop and on your desktop gives you the
+same name in both places. A worktree is just a workspace: create one with
+`gra work`, switch branches inside it with `gra switch`, and throw it away with
 `gra done`.
-Because names are globally unique, a word like `wolf` identifies one worktree
-across the whole machine - in `gra cd wolf`, in the tmux window names the
-default hook gives them, and in conversation.
+Because names are globally unique, a name like `snowwolf` identifies one
+worktree across the whole machine - in `gra cd snowwolf`, in the tmux window
+names the default hook gives them, and in conversation.
 
 The default root is `~/gra`. Configure a different root in `~/.gitconfig`:
 
@@ -111,7 +111,7 @@ This creates:
 ```text
 ~/gra/oans
 ├── .bare
-└── hare        <- checked out main
+└── warmhare    <- checked out main
 ```
 
 The worktree is ready to work in: it checks out origin's default branch as a
@@ -176,8 +176,8 @@ What `gra work` does depends on where you run it:
 * **inside a worktree**: run its `work.sh` hook again, creating nothing,
 * **anywhere else**: fail, and say exactly this.
 
-Creating a worktree picks an unused four-letter word for the repository and
-checks the branch out next to `.bare`:
+Creating a worktree picks an unused name for the repository and checks the
+branch out next to `.bare`:
 
 ```sh
 gra work feature/search
@@ -186,7 +186,7 @@ gra work feature/search
 ```text
 ~/gra/oans
 ├── .bare
-└── hare        <- checked out feature/search
+└── warmhare    <- checked out feature/search
 ```
 
 With a branch, `gra work` checks it out - and a branch always means a new
@@ -208,7 +208,7 @@ If the branch you name is already checked out somewhere, `gra` names that
 worktree instead of leaving you with Git's message:
 
 ```text
-ERROR: 'main' is already checked out in 'puma'; work there with 'gra cd puma'
+ERROR: 'main' is already checked out in 'calmpuma'; work there with 'gra cd calmpuma'
 ```
 
 If the repository has submodules, they are initialized in the new worktree,
@@ -217,7 +217,7 @@ unless the repository has `gra.submodules = false` - see
 
 `gra work` then runs the repository's `work.sh` hook inside the new worktree.
 As written by `gra clone` that opens a tmux window named `<repo>/<worktree>`,
-for example `oans/hare`.
+for example `oans/warmhare`.
 
 ### Setting a worktree up again
 
@@ -266,10 +266,13 @@ from origin's default branch. The same resolution applies to `gra switch`.
 
 ### How names are chosen
 
-A hash of the repository's remote - `owner/repo`, so an SSH clone and an HTTPS
-clone agree - shuffles the whole word pool into an order private to that
-repository. `gra work` takes the first name in that order which no worktree
-anywhere under the gra root is using.
+A name is a descriptor and a noun run together, each from its own list of
+four-letter words - `warmhare`, `goldfish`, `snowwolf`. A hash of the
+repository's remote - `owner/repo`, so an SSH clone and an HTTPS clone agree -
+shuffles both lists into an order private to that repository, and the shuffled
+lists are paired so that every combination appears exactly once, with
+consecutive names sharing neither word. `gra work` takes the first name in
+that order which no worktree anywhere under the gra root is using.
 
 Every choice starts at the front of the list, so a repository's second worktree
 gets its second name simply because the first one is occupied. A name held by
@@ -308,7 +311,7 @@ Both receive:
 | -------------- | ------------------------------------------- |
 | `GRA_WORKTREE` | absolute path to the worktree               |
 | `GRA_REPO`     | repository name, e.g. `nanobench`           |
-| `GRA_WORD`     | worktree name, e.g. `hare`                  |
+| `GRA_WORD`     | worktree name, e.g. `warmhare`              |
 | `GRA_BRANCH`   | checked-out branch, or empty when detached  |
 
 `gra clone` writes both, executable and working: out of the box `work.sh`
@@ -387,8 +390,8 @@ Run `gra done` inside a worktree when the work in it is finished, or name one
 from anywhere:
 
 ```sh
-gra done        # the worktree you are in
-gra done wolf   # from anywhere
+gra done            # the worktree you are in
+gra done snowwolf   # from anywhere
 ```
 
 `gra done` refuses when the worktree is dirty or when its commits are not in
@@ -419,8 +422,8 @@ Root: /home/me/gra
 Repositories: 2  Worktrees: 2
 
 REPOSITORY  WORKTREE  BRANCH          SYNC   STATUS   REMOTE
-gra         wolf      main            ↑2     ✓ clean  git@github.com:martinus/gra
-oans        hare      feature/search  ↓1     ● dirty  git@github.com:martinus/oans
+gra         snowwolf  main            ↑2     ✓ clean  git@github.com:martinus/gra
+oans        warmhare  feature/search  ↓1     ● dirty  git@github.com:martinus/oans
 ```
 
 Because worktree names carry no meaning, the `BRANCH` column is the primary
@@ -460,8 +463,8 @@ Root: /home/me/gra
 Repositories: 2  Worktrees: 2
 
 REPOSITORY  WORKTREE  BRANCH   STATUS   VERDICT  REASON
-gra         wolf      feature  ● dirty  keep     uncommitted changes
-oans        hare      old-fix  ✓ clean  remove   merged into origin/main
+gra         snowwolf  feature  ● dirty  keep     uncommitted changes
+oans        warmhare  old-fix  ✓ clean  remove   merged into origin/main
 
 Dry run. Re-run with --yes to remove 1 worktree(s).
 ```
@@ -498,8 +501,8 @@ Run `gra cd` to choose any worktree under the gra root with `fzf`, or pass a
 worktree name to jump directly:
 
 ```sh
-gra cd        # pick with fzf
-gra cd wolf   # jump straight to the worktree named wolf
+gra cd            # pick with fzf
+gra cd snowwolf   # jump straight to the worktree named snowwolf
 ```
 
 The command prints the selected path. To make `gra cd` change the current Bash
@@ -517,8 +520,8 @@ The same line installs Bash completion, so there is nothing else to set up:
 
 ```text
 gra <TAB>              install clone ls work switch done cd shell hooks clean
-gra cd <TAB>           hare rose wolf          worktree names
-gra done <TAB>         hare rose wolf --force
+gra cd <TAB>           warmhare goldfish snowwolf    worktree names
+gra done <TAB>         warmhare goldfish snowwolf --force
 gra work <TAB>         branches, inside a repository
 gra switch <TAB>       branches, inside a repository
 gra done -<TAB>        --force

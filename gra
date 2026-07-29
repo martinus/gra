@@ -7,15 +7,15 @@ layout. Each repository lives in a bare checkout, and work happens in
 short-named worktrees next to it:
 
     ~/gra/<repo>/.bare
-    ~/gra/<repo>/<word>
+    ~/gra/<repo>/<name>
 
-Worktree names are short words derived from the repository - the same on every
-machine - unique across all repositories, and unrelated to the branch they have
-checked out: switch branches freely inside a worktree, or start a new one and
-remove it when done.
+Worktree names are word pairs like warmhare derived from the repository - the
+same on every machine - unique across all repositories, and unrelated to the
+branch they have checked out: switch branches freely inside a worktree, or
+start a new one and remove it when done.
 """
 
-__version__ = "3.0.0"
+__version__ = "4.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -82,7 +82,7 @@ WORK_HOOK_DEFAULT = """\
 #
 #     GRA_WORKTREE   absolute path to the worktree
 #     GRA_REPO       repository name, e.g. nanobench
-#     GRA_WORD       worktree name, e.g. hare
+#     GRA_WORD       worktree name, e.g. warmhare
 #     GRA_BRANCH     checked-out branch, or empty when detached
 #
 # It is personal to this machine and never committed. Edit it freely; gra
@@ -130,7 +130,7 @@ DONE_HOOK_DEFAULT = """\
 #
 #     GRA_WORKTREE   absolute path to the worktree
 #     GRA_REPO       repository name, e.g. nanobench
-#     GRA_WORD       worktree name, e.g. hare
+#     GRA_WORD       worktree name, e.g. warmhare
 #     GRA_BRANCH     checked-out branch, or empty when detached
 #
 # It is personal to this machine and never committed. Edit it freely; gra
@@ -147,35 +147,34 @@ tmux list-windows -a -F '#{window_name} #{window_id}' | while read -r name id; d
 done
 """
 
-# Worktree names come from this pool: short, memorable, all the same length,
-# and never colliding with a gra command name. A name is taken as long as any
-# repository under the gra root uses it, so a word identifies one worktree
-# across the whole machine.
-WORDS = (
-    "aloe", "aria", "atom", "axle", "beam", "bean", "bear", "bell", "bird",
-    "blue", "boar", "boat", "bolt", "bowl", "buck", "bush", "byte", "cake",
-    "calf", "cane", "carp", "cart", "cask", "cave", "chai", "clay", "coin",
-    "colt", "cork", "corn", "cove", "crab", "crag", "crow", "cube", "cyan",
-    "dale", "dawn", "deer", "dell", "dish", "dodo", "dome", "door", "dove",
-    "drum", "duck", "dune", "dusk", "echo", "epic", "fawn", "fell", "fern",
-    "flag", "foal", "foam", "ford", "fork", "frog", "gale", "gate", "gear",
-    "glen", "goat", "gold", "gong", "gray", "gulf", "gull", "hail", "hare",
-    "harp", "hawk", "haze", "helm", "herb", "hill", "hook", "horn", "hull",
-    "hymn", "ibex", "ibis", "iris", "iron", "isle", "jade", "kale", "kelp",
-    "kite", "kiwi", "knob", "lake", "lamb", "lamp", "lark", "lava", "leaf",
-    "lens", "lily", "lime", "lion", "lock", "loon", "lynx", "malt", "mare",
-    "mask", "mast", "mead", "mesa", "mink", "mint", "mist", "mole", "moon",
-    "moor", "moss", "moth", "mule", "myth", "naan", "nail", "newt", "nova",
-    "oats", "okra", "onyx", "opal", "orca", "oryx", "pail", "palm", "pane",
-    "peak", "pear", "pika", "pine", "pink", "pipe", "pita", "plow", "plum",
-    "poem", "pond", "pony", "pool", "prow", "puma", "quay", "raft", "rail",
-    "rain", "ramp", "reed", "reef", "rice", "rift", "ring", "rock", "rope",
-    "rose", "ruby", "rune", "rust", "saga", "sage", "sail", "salt", "sand",
-    "seal", "seed", "silt", "sled", "slug", "snow", "sole", "spar", "star",
-    "surf", "swan", "tarn", "taro", "teal", "tern", "tide", "tile", "toad",
-    "tofu", "tray", "tuna", "twig", "udon", "vale", "vane", "vase", "vine",
-    "vole", "volt", "wand", "wasp", "watt", "wave", "well", "wick", "wind",
-    "wold", "wolf", "wood", "worm", "wren", "yarn", "yoke", "zeal", "zinc",
+# Worktree names are a descriptor and a noun run together, e.g. warmhare:
+# memorable, always eight letters, and never colliding with a gra command
+# name. Both lists hold only common, concrete four-letter words that are easy
+# to read aloud for non-native speakers - the fixed word length means every
+# name splits unambiguously into its two words. A name is taken as long as
+# any repository under the gra root uses it, so a name identifies one
+# worktree across the whole machine.
+DESCRIPTORS = (
+    "aqua", "blue", "bold", "busy", "calm", "cold", "cool", "cozy", "cute",
+    "dark", "dawn", "deep", "easy", "epic", "fair", "fast", "fine", "fire",
+    "flat", "free", "glad", "gold", "good", "gray", "hard", "high", "huge",
+    "iron", "jade", "kind", "lazy", "lime", "long", "loud", "mega", "mini",
+    "mint", "moon", "navy", "neat", "neon", "nice", "open", "pale", "pink",
+    "pure", "rare", "real", "rich", "ruby", "safe", "slim", "slow", "snow",
+    "soft", "solo", "star", "thin", "tidy", "tiny", "true", "twin", "warm",
+    "wide", "wild", "wise",
+)
+
+NOUNS = (
+    "atom", "bear", "bell", "bike", "bird", "boat", "bolt", "book", "bull",
+    "byte", "cake", "cave", "coin", "corn", "crab", "crow", "cube", "deer",
+    "dodo", "dove", "drum", "duck", "dune", "fern", "fish", "flag", "fork",
+    "frog", "gate", "gear", "goat", "hare", "harp", "hawk", "hill", "horn",
+    "kite", "kiwi", "lake", "lamp", "leaf", "lens", "lion", "lynx", "mask",
+    "moss", "nest", "nova", "orca", "palm", "park", "peak", "pear", "pine",
+    "plum", "pond", "pony", "puma", "raft", "reef", "rice", "ring", "rock",
+    "rope", "rose", "sail", "sand", "seed", "ship", "song", "swan", "taco",
+    "taxi", "tent", "tofu", "tree", "tuna", "vase", "wave", "wolf", "wood",
 )
 
 _quiet = False
@@ -640,15 +639,31 @@ def worktree_identity(container: Path) -> str:
     return f"{owner}/{parsed.repo}" if owner else parsed.repo
 
 
-def name_candidates(identity: str) -> list[str]:
-    """The repository's preference order over the whole word pool, best first.
+def _shuffled(words: tuple[str, ...], identity: str, domain: str) -> list[str]:
+    """The word list in an order private to this repository.
 
-    A shuffle of every name rather than a stream of independent draws, so the
-    list cannot repeat itself or run out. SHA-256 rather than hash(), which is
-    randomized per process for strings and so would not even be stable between
-    two runs on one machine.
+    SHA-256 rather than hash(), which is randomized per process for strings
+    and so would not even be stable between two runs on one machine. The
+    domain decorrelates the two lists' orders.
     """
-    return sorted(WORDS, key=lambda word: hashlib.sha256(f"{identity}#{word}".encode()).digest())
+    return sorted(words, key=lambda word: hashlib.sha256(f"{domain}:{identity}#{word}".encode()).digest())
+
+
+def name_candidates(identity: str) -> list[str]:
+    """The repository's preference order over every name, best first.
+
+    Descriptors and nouns are paired as a Latin square: both positions advance
+    together, so consecutive names share neither word, and every combination
+    appears exactly once before the list ends - it can neither repeat itself
+    nor run out.
+    """
+    descriptors = _shuffled(DESCRIPTORS, identity, "descriptor")
+    nouns = _shuffled(NOUNS, identity, "noun")
+    return [
+        descriptor + nouns[(column + row) % len(nouns)]
+        for row in range(len(nouns))
+        for column, descriptor in enumerate(descriptors)
+    ]
 
 
 def pick_worktree_name(root: Path, identity: str) -> str:
@@ -1007,7 +1022,7 @@ def select_worktree_row_from_rows(rows: list[WorktreeRow], source: str) -> Workt
 
 
 def resolve_worktree_name(root: Path, name: str) -> WorktreeRow:
-    """Resolve a worktree name like 'wolf' to its row.
+    """Resolve a worktree name like 'snowwolf' to its row.
 
     Names are unique across all repositories and worktrees always live directly
     under their container, so a filesystem probe finds the worktree without
@@ -1852,7 +1867,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             f"Clone a repository into '{root}/<repo>/{BARE_DIR}'.\n"
             "The local name is the repository name; use --name to override it.\n"
-            "A worktree named after an unused word for the repository is\n"
+            "A worktree named after an unused name for the repository is\n"
             "created next to it, checked out on origin's default branch;\n"
             f"use --no-work to skip it. Writes '{WORK_HOOK}' and '{DONE_HOOK}'\n"
             f"hooks next to '{BARE_DIR}' and runs the first.\n"
@@ -1912,7 +1927,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "What this does depends on where it runs:\n"
             "  in the repository folder: create a worktree named after an\n"
-            f"    unused word for the repository, and run '{WORK_HOOK}' inside it\n"
+            f"    unused name for the repository, and run '{WORK_HOOK}' inside it\n"
             f"  inside a worktree: run the '{WORK_HOOK}' hook again, creating nothing\n"
             "With BRANCH, always create a worktree that checks it out (creating\n"
             "and pushing the branch when missing). BRANCH may be part of a name,\n"
@@ -1955,7 +1970,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     done_parser.add_argument(
-        "name", nargs="?", help="worktree name, for example 'wolf'"
+        "name", nargs="?", help="worktree name, for example 'snowwolf'"
     )
     done_parser.add_argument(
         "--force", action="store_true", help="remove even when dirty or unmerged"
@@ -1971,7 +1986,7 @@ def parse_args() -> argparse.Namespace:
             "Use 'eval \"$(gra shell bash)\"' to make 'gra cd' change directories."
         ),
     )
-    cd_parser.add_argument("name", nargs="?", help="worktree name, for example 'wolf'")
+    cd_parser.add_argument("name", nargs="?", help="worktree name, for example 'snowwolf'")
     cd_parser.set_defaults(handler=lambda args: print_cd_target(args.root, args.name))
 
     shell_parser = subparsers.add_parser(
