@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "5.0.0"
+__version__ = "5.1.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -83,6 +83,7 @@ WORK_HOOK_DEFAULT = """\
 #     GRA_REPO       repository name, e.g. nanobench
 #     GRA_WORD       worktree name, e.g. warmhare
 #     GRA_BRANCH     checked-out branch, or empty when detached
+#     GRA_PID        the gra running this
 #
 # It is personal to this machine and never committed. Edit it freely; gra
 # only runs it. 'chmod -x' turns it off.
@@ -131,18 +132,36 @@ DONE_HOOK_DEFAULT = """\
 #     GRA_REPO       repository name, e.g. nanobench
 #     GRA_WORD       worktree name, e.g. warmhare
 #     GRA_BRANCH     checked-out branch, or empty when detached
+#     GRA_PID        the gra running this, to outlive it (see below)
 #
 # It is personal to this machine and never committed. Edit it freely; gra
 # only runs it. 'chmod -x' turns it off.
 
-[ -n "$TMUX" ] || exit 0
-
 # The name work.sh gave the window. Change it there too.
 window_name="$GRA_REPO/$GRA_WORD"
 
-# Close that window, in whichever session it ended up in.
-tmux list-windows -a -F '#{window_name} #{window_id}' | while read -r name id; do
-    [ "$name" = "$window_name" ] && tmux kill-window -t "$id"
+# The window this hook is running in, if any. 'gra done' is usually run from
+# the very window that is about to be closed, and closing that one now would
+# kill gra along with it - before it removes anything.
+here=""
+[ -n "$TMUX_PANE" ] &&
+    here=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)
+
+# Close the window, in whichever session it ended up in. Runs from outside
+# tmux too, so 'gra done <name>' from a plain terminal closes it as well.
+tmux list-windows -a -F '#{window_name} #{window_id}' 2>/dev/null |
+while read -r name id; do
+    [ "$name" = "$window_name" ] || continue
+    if [ "$id" != "$here" ]; then
+        tmux kill-window -t "$id"
+        continue
+    fi
+    # The one we are standing in: hand it to the tmux server, which outlives
+    # this window, and let it wait for gra to exit. It closes the window only
+    # when the worktree really went away, so a removal that fails keeps it.
+    tmux run-shell -b "\\
+        while kill -0 $GRA_PID 2>/dev/null; do sleep 0.2; done
+        [ -d '$GRA_WORKTREE' ] || tmux kill-window -t $id"
 done
 """
 
@@ -1126,6 +1145,9 @@ def run_hook(name: str, container: Path, worktree: Path, branch: str, cwd: Path)
         "GRA_REPO": container.name,
         "GRA_WORD": worktree.name,
         "GRA_BRANCH": branch,
+        # So a hook can outlive gra rather than take it down: 'done.sh' closes
+        # the window gra is running in, which has to wait for gra to exit.
+        "GRA_PID": str(os.getpid()),
     }
     log(f"running '{script}'")
     result = subprocess.run([str(script)], cwd=cwd, env=env, check=False)

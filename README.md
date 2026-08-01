@@ -537,6 +537,7 @@ Both receive:
 | `GRA_REPO` | repository name, e.g. `nanobench` |
 | `GRA_WORD` | worktree name, e.g. `warmhare` |
 | `GRA_BRANCH` | checked-out branch, or empty when detached |
+| `GRA_PID` | the `gra` running the hook, for work that has to outlive it |
 
 `gra clone` writes both, executable and working: out of the box `work.sh`
 opens a tmux window for the new worktree and `done.sh` closes it again. They
@@ -585,6 +586,23 @@ the two have to agree on, so change it in both. The rest of `work.sh` is a
 commented-out pane layout - a `claude` pane, an editor, a monitor - to
 uncomment or replace.
 
+The second rule only `done.sh` has to follow: **do not close the window you
+are running in.** `gra done` is normally run from the very window that is
+about to be closed, and closing it takes `gra` with it - before it removes
+anything. So the hook checks whether the window it found is its own, and hands
+that one to the tmux server, which outlives it:
+
+```sh
+tmux run-shell -b "\
+    while kill -0 $GRA_PID 2>/dev/null; do sleep 0.2; done
+    [ -d '$GRA_WORKTREE' ] || tmux kill-window -t $id"
+```
+
+`GRA_PID` is what makes the wait possible, and the `-d` test is what makes it
+safe: a removal that failed leaves the worktree there, and then the window
+stays open too. Any other work that has to outlive `gra` can wait the same
+way.
+
 </details>
 
 <details>
@@ -592,11 +610,24 @@ uncomment or replace.
 
 <br>
 
+`gra` never rewrites a hook you have - `gra hooks` only writes the missing
+ones - so a hook from an older `gra` keeps whatever it was written with, and
+two of them are worth patching by hand.
+
+A `done.sh` written before `gra` 5.1 closes its window straight away. Run
+`gra done` from inside that window and it kills `gra` mid-removal: the window
+disappears and the worktree is still there, still registered with Git. Paste
+the deferred close from above in, or replace the whole hook with the current
+one:
+
+```sh
+mv done.sh done.sh.bak && gra hooks    # per repository
+```
+
 A `work.sh` written before re-running it was possible has no window lookup,
-and `gra` will not add one: it never rewrites a hook you have, and `gra hooks`
-only writes the missing ones. Until you paste the lookup in, `gra switch` and
-a re-run `gra work` open a second window of the same name - which `done.sh`
-then closes one of. Copy the block above in ahead of `new-window`.
+and until you paste it in, `gra switch` and a re-run `gra work` open a second
+window of the same name - which `done.sh` then closes one of. Copy that block
+in ahead of `new-window`.
 
 Repositories cloned with `gra` 1.x have no hooks at all and open no windows;
 `gra hooks` gives every repository the hooks it is missing, in one go. A
