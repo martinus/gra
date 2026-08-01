@@ -768,6 +768,53 @@ def write_hook(container: Path, name: str, body: str, *, executable: bool = True
     hook.chmod(0o755 if executable else 0o644)
 
 
+def write_tmux_mock(tmp_path: Path, windows: str) -> tuple[dict[str, str], Path]:
+    """Put a recording tmux on the PATH; returns (env for the hook, log file).
+
+    It answers the two queries the hooks make - the window list and the pane's
+    own window - and logs every call instead of touching a real tmux.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    tmux = bin_dir / "tmux"
+    tmux.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "$TMUX_LOG"\n'
+        'case "$1" in\n'
+        '    list-windows) printf \'%s\\n\' "$TMUX_WINDOWS" ;;\n'
+        '    display-message) printf \'%s\\n\' "$TMUX_HERE" ;;\n'
+        "esac\n"
+    )
+    tmux.chmod(0o755)
+    log = tmp_path / "tmux-log"
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "TMUX_LOG": str(log),
+        "TMUX_WINDOWS": windows,
+    }
+    return env, log
+
+
+def run_done_hook(container: Path, word: str, worktree: Path, env: dict[str, str]) -> None:
+    """Run a repository's done.sh the way gra runs it, from the container."""
+    result = subprocess.run(
+        [str(container / "done.sh")],
+        cwd=container,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "GRA_WORKTREE": str(worktree),
+            "GRA_REPO": container.name,
+            "GRA_WORD": word,
+            "GRA_BRANCH": "main",
+            "GRA_PID": str(os.getpid()),
+            **env,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_clone_writes_both_hooks_ready_to_run(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -785,6 +832,50 @@ def test_clone_writes_both_hooks_ready_to_run(tmp_path: Path) -> None:
         for var in ("GRA_WORKTREE", "GRA_REPO", "GRA_WORD", "GRA_BRANCH"):
             assert var in text
         assert "tmux" in text
+
+
+def test_done_hook_closes_a_window_it_is_not_running_in(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    env, log = write_tmux_mock(tmp_path, "project/warmhare @1\nsomething/else @2")
+
+    # No TMUX_PANE: run from a plain terminal, or from another window.
+    run_done_hook(container, "warmhare", container / "warmhare", env)
+
+    calls = log.read_text()
+    assert "kill-window -t @1" in calls
+    assert "@2" not in calls
+    # Nothing to defer when gra is not standing in the window.
+    assert "run-shell" not in calls
+
+
+def test_done_hook_defers_closing_the_window_it_is_running_in(tmp_path: Path) -> None:
+    """The regression: killing that window now would kill gra with it.
+
+    'gra done' is normally run from the very window the hook has to close, so
+    closing it right away takes gra down before it removes the worktree.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = container / "warmhare"
+    env, log = write_tmux_mock(tmp_path, "project/warmhare @1")
+    env.update({"TMUX_PANE": "%7", "TMUX_HERE": "@1"})
+
+    run_done_hook(container, "warmhare", worktree, env)
+
+    calls = log.read_text()
+    # Nothing is killed while gra is running - only handed to the tmux server.
+    assert not any(line.startswith("kill-window") for line in calls.splitlines())
+    assert "run-shell -b" in calls
+
+    # What was handed over waits for gra to exit, then closes the window only
+    # if the worktree really went away - a removal that failed keeps it.
+    deferred = calls.split("run-shell -b", 1)[1]
+    assert str(os.getpid()) in deferred
+    assert str(worktree) in deferred
+    assert "kill-window -t @1" in deferred
 
 
 def test_clone_writes_a_work_hook_that_reuses_an_open_window(tmp_path: Path) -> None:
@@ -973,11 +1064,14 @@ def test_done_runs_the_done_hook_before_removing_the_worktree(tmp_path: Path) ->
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
     hook_out = tmp_path / "hook-out"
-    # The hook records whether the worktree is still there while it runs.
+    # The hook records whether the worktree is still there while it runs, and
+    # whether GRA_PID names a gra it could wait for.
     write_hook(
         container,
         "done.sh",
-        recorder() + '[ -d "$GRA_WORKTREE" ] && echo present >> "$HOOK_OUT"\n',
+        recorder()
+        + '[ -d "$GRA_WORKTREE" ] && echo present >> "$HOOK_OUT"\n'
+        + 'kill -0 "$GRA_PID" && echo alive >> "$HOOK_OUT"\n',
     )
 
     result = run_cli(["done"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)})
@@ -991,6 +1085,7 @@ def test_done_runs_the_done_hook_before_removing_the_worktree(tmp_path: Path) ->
         str(worktree),
         str(container),
         "present",
+        "alive",
     ]
 
 
