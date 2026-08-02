@@ -690,6 +690,43 @@ def test_hooks_writes_only_the_missing_ones(tmp_path: Path) -> None:
     assert "1 hook(s) written" in result.stdout
 
 
+def test_hooks_force_replaces_an_edited_hook_and_keeps_the_old_one(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    mine = "#!/bin/sh\n# mine\n"
+    (container / "work.sh").write_text(mine)
+
+    result = run_cli(["hooks", "--force"], home)
+
+    assert result.returncode == 0, result.stderr
+    # The default is back, executable, and what was there is still reachable.
+    assert "tmux" in (container / "work.sh").read_text()
+    assert os.access(container / "work.sh", os.X_OK)
+    assert (container / "work.sh.bak").read_text() == mine
+    assert "1 hook(s) written" in result.stdout
+    # done.sh already was the default, so it is not rewritten or backed up.
+    assert not (container / "done.sh.bak").exists()
+
+
+def test_hooks_force_is_idempotent(tmp_path: Path) -> None:
+    """A second --force must not stack up backups of gra's own defaults."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    (container / "work.sh").write_text("#!/bin/sh\n# mine\n")
+
+    run_cli(["hooks", "--force"], home)
+    backup = (container / "work.sh.bak").read_text()
+    result = run_cli(["hooks", "--force"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert "already have their hooks" in result.stdout
+    assert (container / "work.sh.bak").read_text() == backup
+
+
 def test_ls_shows_ahead_and_behind(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

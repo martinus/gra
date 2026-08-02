@@ -472,13 +472,33 @@ fetched 11 of 12 repositories
 ## `gra hooks`
 
 ```sh
-gra hooks
+gra hooks           # write the ones that are missing
+gra hooks --force   # put every repository on the current defaults
 ```
 
 Writes `work.sh` and `done.sh` into every repository under the gra root that
 is missing them, and leaves existing ones alone - so it cannot overwrite your
 edits and is safe to re-run. Repositories cloned before hooks existed are what
 this is for.
+
+`--force` replaces the hooks that differ from the current defaults, keeping
+each one it replaces as `<hook>.bak`:
+
+```text
+kept the old 'done.sh' as 'done.sh.bak'
+wrote '/home/me/gra/oans/done.sh'
+1 hook(s) written across 12 repositories
+```
+
+That is how a hook an older `gra` wrote gets brought up to date. A hook that
+already *is* the current default is not touched at all, so `--force` is
+idempotent - a second run writes nothing and stacks up no second backup - and
+it never turns a `chmod -x` back on by itself.
+
+> [!WARNING]
+> `--force` reaches into every repository under the gra root. Your edits are
+> not lost - each replaced hook is kept next to the new one as `<hook>.bak` -
+> but re-applying them is on you.
 
 ## `gra install`
 
@@ -611,23 +631,26 @@ way.
 <br>
 
 `gra` never rewrites a hook you have - `gra hooks` only writes the missing
-ones - so a hook from an older `gra` keeps whatever it was written with, and
-two of them are worth patching by hand.
+ones - so a hook from an older `gra` keeps whatever it was written with. Two
+of them are worth bringing up to date:
 
-A `done.sh` written before `gra` 5.1 closes its window straight away. Run
-`gra done` from inside that window and it kills `gra` mid-removal: the window
-disappears and the worktree is still there, still registered with Git. Paste
-the deferred close from above in, or replace the whole hook with the current
-one:
+* a **`done.sh` written before `gra` 5.1** closes its window straight away.
+  Run `gra done` from inside that window and it kills `gra` mid-removal: the
+  window disappears and the worktree is still there, still registered with
+  Git.
+* a **`work.sh` written before re-running it was possible** has no window
+  lookup, so `gra switch` and a re-run `gra work` open a second window of the
+  same name - which `done.sh` then closes one of.
+
+If you never edited them, one command fixes every repository at once:
 
 ```sh
-mv done.sh done.sh.bak && gra hooks    # per repository
+gra hooks --force
 ```
 
-A `work.sh` written before re-running it was possible has no window lookup,
-and until you paste it in, `gra switch` and a re-run `gra work` open a second
-window of the same name - which `done.sh` then closes one of. Copy that block
-in ahead of `new-window`.
+If you did edit them, paste the blocks above into your own hooks instead - or
+run `--force` anyway and lift your changes back out of the `.bak` files it
+leaves behind.
 
 Repositories cloned with `gra` 1.x have no hooks at all and open no windows;
 `gra hooks` gives every repository the hooks it is missing, in one go. A
