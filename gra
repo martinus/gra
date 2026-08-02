@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "5.1.0"
+__version__ = "5.2.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -164,6 +164,10 @@ while read -r name id; do
         [ -d '$GRA_WORKTREE' ] || tmux kill-window -t $id"
 done
 """
+
+# What 'gra hooks --force' leaves the hook it replaced under. An edited hook
+# is the one thing here gra could not write again.
+HOOK_BACKUP_SUFFIX = ".bak"
 
 # Worktree names are a descriptor and a noun run together, e.g. warmhare:
 # memorable, always eight letters, and never colliding with a gra command
@@ -791,34 +795,46 @@ def add_local_excludes(bare: Path) -> None:
                 file.write(f"{pattern}\n")
 
 
-def write_default_hooks(container: Path) -> int:
+def write_default_hooks(container: Path, *, force: bool = False) -> int:
     """Drop working work.sh and done.sh hooks in the container, and count them.
 
     Executable, so a fresh clone opens and closes tmux windows without any
     setup - that behaviour lives in these scripts now, not in gra. Hooks that
-    already exist are left alone, edits and all.
+    already exist are left alone, edits and all; force replaces them with the
+    current defaults instead, keeping each one it replaces as '<hook>.bak'
+    because an edited hook is not something gra could write again.
+
+    A hook that already is the default is left untouched either way, so this
+    stays idempotent and never turns a 'chmod -x' back on by itself.
     """
     written = 0
     for name, default in ((WORK_HOOK, WORK_HOOK_DEFAULT), (DONE_HOOK, DONE_HOOK_DEFAULT)):
         script = container / name
-        if not script.exists():
-            script.write_text(default, encoding="utf-8")
-            script.chmod(0o755)
-            log(f"wrote '{script}'")
-            written += 1
+        if script.exists():
+            if not force or script.read_bytes() == default.encode():
+                continue
+            backup = script.with_name(name + HOOK_BACKUP_SUFFIX)
+            script.replace(backup)
+            log(f"kept the old '{name}' as '{backup.name}'", YELLOW)
+        script.write_text(default, encoding="utf-8")
+        script.chmod(0o755)
+        log(f"wrote '{script}'")
+        written += 1
     return written
 
 
-def write_missing_hooks(root: Path) -> None:
+def write_hooks(root: Path, force: bool) -> None:
     """Give every repository under the root the hooks it is missing.
 
     Repositories cloned before hooks existed have none, and only 'gra clone'
-    writes them, so without this they would stay silent forever.
+    writes them, so without this they would stay silent forever. With force,
+    every repository ends up on the current defaults - which is how a hook
+    that an older gra wrote gets fixed.
     """
     repositories = repositories_or_report(root)
     if not repositories:
         return
-    written = sum(write_default_hooks(container) for container in repositories)
+    written = sum(write_default_hooks(container, force=force) for container in repositories)
     log(
         f"{written} hook(s) written across {len(repositories)} repositories"
         if written
@@ -1365,7 +1381,7 @@ _gra() {
     if [[ $cur == -* ]]; then
         case $cmd in
             clone) words='--name --no-work --no-hook --no-submodules --no-upstream' ;;
-            done) words='--force' ;;
+            done|hooks) words='--force' ;;
             ls) words='--fetch' ;;
             install) words='--no-check' ;;
         esac
@@ -1955,10 +1971,18 @@ def parse_args() -> argparse.Namespace:
         description=(
             f"Write '{WORK_HOOK}' and '{DONE_HOOK}' into every repository under\n"
             f"'{root}' that is missing them. Existing hooks are left alone,\n"
-            "so this is safe to re-run and cannot overwrite your edits."
+            "so this is safe to re-run and cannot overwrite your edits.\n"
+            "--force puts every repository on the current defaults instead,\n"
+            f"keeping each hook it replaces as '<hook>{HOOK_BACKUP_SUFFIX}'. A hook that\n"
+            "already is the default is left untouched either way."
         ),
     )
-    hooks_parser.set_defaults(handler=lambda args: write_missing_hooks(args.root))
+    hooks_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=f"replace edited hooks, keeping the old one as '<hook>{HOOK_BACKUP_SUFFIX}'",
+    )
+    hooks_parser.set_defaults(handler=lambda args: write_hooks(args.root, args.force))
 
     args = parser.parse_args()
     args.root = root
