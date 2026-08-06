@@ -382,7 +382,7 @@ anywhere:
 ```sh
 gra done            # the worktree you are in
 gra done snowwolf   # from anywhere
-gra done --force    # dirty or unmerged, remove it anyway
+gra done --force    # dirty or unmerged, remove it without asking
 ```
 
 On removal the [`done.sh`](#hooks) hook runs while the worktree is still
@@ -393,10 +393,39 @@ branch, the branch is kept.
 With the bash shell integration, `gra done` also moves your shell out of the
 removed directory into the repository folder.
 
-> [!WARNING]
-> `gra done` refuses when the worktree is dirty, or when its commits are not
-> in origin's default branch. Squash and cherry-pick merges are recognized via
-> patch equivalence, so the usual PR workflow does not need `--force`.
+Before removing anything it fetches, works out where the branch stands, and
+asks when something is not in order:
+
+```text
+'/home/me/gra/oans/snowwolf':
+  ✔ commits pushed to branch origin/snow-tier2
+  ✔ no local modifications
+  ✘ not yet merged to origin/main
+  ✘ pull request #4711 open, changes requested
+
+  branch 'snow-tier2' will be kept
+
+continue? [y/N]
+```
+
+The dim lines under the checks are what removal costs: modifications that
+will be lost, commits a detached HEAD leaves to the reflog, and whether the
+branch is deleted or kept.
+
+The fetch is the point of the whole thing: every check reads a
+remote-tracking ref, so without it a branch that was squash-merged an hour
+ago still looks unmerged. Squash and cherry-pick merges are recognized via
+patch equivalence, and a branch the remote deleted after merging counts as
+finished, so the usual PR workflow ends in ticks and no question at all.
+
+The pull request line needs [gh](https://cli.github.com/) and a GitHub
+remote; without either - or without a network - it simply does not appear.
+A half-finished rebase, merge, cherry-pick or bisect gets a line of its own,
+since that is the one state removal cannot give back.
+
+Anything but `y` keeps the worktree, so a plain Enter is always the safe
+answer. `--force` answers yes without asking and skips the fetch - useful in
+scripts, where an unanswered question counts as no.
 
 ## `gra cd`
 
