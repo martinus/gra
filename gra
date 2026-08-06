@@ -15,11 +15,12 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "5.2.0"
+__version__ = "5.3.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -1744,6 +1745,176 @@ def remove_worktree(container: Path, worktree: Path, *, force: bool, branch_merg
 # ---------------------------------------------------------------------------
 
 
+def commit_count(path: Path, args: list[str]) -> int:
+    """Count the commits a rev-list expression selects, 0 when it fails."""
+    output = git_output(["rev-list", "--count", *args], cwd=path)
+    return int(output) if output and output.isdigit() else 0
+
+
+def plural(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def push_state(
+    worktree: Path, bare: Path, branch: str | None, merged: bool
+) -> tuple[bool, str]:
+    """Report whether the worktree's commits are on its branch in origin.
+
+    Being pushed is not the same as being merged: work waiting in a pull
+    request is safe to remove even though the default branch has never seen
+    it. Merged work in turn needs no branch, because the usual pull request
+    workflow deletes it on the remote.
+    """
+    if not branch:
+        if merged:
+            return True, "detached HEAD, its commits are in origin"
+        return False, "detached HEAD, no branch to push"
+    remote = f"origin/{branch}"
+    if not remote_branch_exists(bare, branch):
+        if merged:
+            return True, f"branch '{branch}' is gone from origin, its work is merged"
+        return False, f"branch '{branch}' does not exist on origin"
+    unpushed = commit_count(worktree, ["HEAD", f"^{remote}"])
+    if unpushed:
+        return False, f"{plural(unpushed, 'commit')} not pushed to branch {remote}"
+    return True, f"commits pushed to branch {remote}"
+
+
+def local_change_state(worktree: Path) -> tuple[bool, str]:
+    """Report whether the worktree has changes that removal would throw away."""
+    changed = worktree_status_output(worktree).splitlines()
+    if not changed:
+        return True, "no local modifications"
+    return False, plural(len(changed), "local modification")
+
+
+def merge_state(merged: bool, default_ref: str | None) -> tuple[bool, str]:
+    if not default_ref:
+        return False, "origin has no default branch to merge into"
+    if not merged:
+        return False, f"not yet merged to {default_ref}"
+    return True, f"merged to {default_ref}"
+
+
+# Git leaves one of these behind in the worktree's git directory while an
+# operation is half finished, and removing the worktree throws that state away.
+IN_PROGRESS_OPERATIONS = (
+    ("rebase-merge", "a rebase"),
+    ("rebase-apply", "a rebase or 'git am'"),
+    ("MERGE_HEAD", "a merge"),
+    ("CHERRY_PICK_HEAD", "a cherry-pick"),
+    ("REVERT_HEAD", "a revert"),
+    ("BISECT_LOG", "a bisect"),
+)
+
+
+def in_progress_state(worktree: Path) -> tuple[bool, str] | None:
+    """Report a half-finished Git operation, or None when there is none.
+
+    Nothing in progress is the normal case and worth no line of its own.
+    """
+    for name, description in IN_PROGRESS_OPERATIONS:
+        path = git_output(["rev-parse", "--git-path", name], cwd=worktree)
+        if path and (worktree / path).exists():
+            return False, f"{description} is in progress"
+    return None
+
+
+REVIEW_DECISIONS = {
+    "APPROVED": "approved",
+    "CHANGES_REQUESTED": "changes requested",
+    "REVIEW_REQUIRED": "review required",
+}
+
+
+def pull_request_state(
+    worktree: Path, branch: str | None, merged: bool
+) -> tuple[bool, str] | None:
+    """Report the state of the branch's pull request, if gh can tell us.
+
+    Only GitHub has pull requests and only gh knows their state, so every way
+    of not knowing - no gh, no GitHub remote, no login, no network - drops the
+    line instead of failing the command. 'gh pr list' is what makes that
+    possible: it answers an empty list where 'gh pr view' would exit non-zero,
+    so 'no pull request' stays distinguishable from 'cannot ask'.
+    """
+    if not branch or not shutil.which("gh"):
+        return None
+    output = command_output(
+        [
+            "gh", "pr", "list",
+            "--head", branch,
+            "--state", "all",
+            "--limit", "1",
+            "--json", "number,state,reviewDecision",
+        ],
+        cwd=worktree,
+    )
+    if output is None:
+        return None
+    try:
+        requests = json.loads(output)
+    except ValueError:
+        return None
+
+    if not requests:
+        # Merging without one is a normal workflow; only unmerged work makes
+        # a missing pull request worth pointing out.
+        if merged:
+            return None
+        return False, f"no pull request for branch '{branch}'"
+
+    request = requests[0]
+    number, state = request.get("number"), request.get("state")
+    if state == "MERGED":
+        return True, f"pull request #{number} merged"
+    if state == "CLOSED":
+        return False, f"pull request #{number} closed without merging"
+    decision = REVIEW_DECISIONS.get(request.get("reviewDecision") or "")
+    return False, f"pull request #{number} open" + (f", {decision}" if decision else "")
+
+
+def removal_preview(worktree: Path, branch: str | None, merged: bool) -> list[str]:
+    """Describe what removing the worktree does, losses first.
+
+    The checks say what is unfinished; this says what it costs, which is what
+    the answer actually turns on.
+    """
+    lines = []
+    changed = len(worktree_status_output(worktree).splitlines())
+    if changed:
+        lines.append(f"{plural(changed, 'local modification')} will be lost")
+    if not branch:
+        # A branch keeps its commits reachable after the worktree is gone; a
+        # detached HEAD leaves them to the reflog and 'git gc'.
+        orphaned = commit_count(worktree, ["HEAD", "--not", "--branches", "--remotes"])
+        if orphaned:
+            lines.append(f"{plural(orphaned, 'commit')} will only be in the reflog")
+    else:
+        lines.append(f"branch '{branch}' will be " + ("deleted" if merged else "kept"))
+    return lines
+
+
+def confirm_removal(
+    worktree: Path, checks: list[tuple[bool, str]], preview: list[str]
+) -> bool:
+    """Show what the checks found and ask whether to remove anyway.
+
+    Goes to stderr next to the question, so that -q silences the running
+    commentary without hiding what the answer decides.
+    """
+    print(f"'{worktree}':", file=sys.stderr)
+    for ok, message in checks:
+        symbol = style("✔", GREEN) if ok else style("✘", RED)
+        print(f"  {symbol} {message}", file=sys.stderr)
+    if preview:
+        print(file=sys.stderr)
+        for line in preview:
+            print(style(f"  {line}", DIM), file=sys.stderr)
+    print(file=sys.stderr)
+    return ask_yes_no("continue?")
+
+
 def done(name: str | None, root: Path, force: bool) -> None:
     """Remove a worktree once its work is safely in origin."""
     if name:
@@ -1753,19 +1924,38 @@ def done(name: str | None, root: Path, force: bool) -> None:
         container, worktree = current_gra_worktree("done")
     bare = bare_dir(container)
 
-    if worktree_status_output(worktree) and not force:
-        fail(f"'{worktree}' has uncommitted changes; commit them or use --force")
+    if not force:
+        # Every check below reads a remote-tracking ref, so all of them are
+        # only as true as the last fetch: a squash-merged branch looks
+        # unmerged until origin's default branch has been updated here.
+        error = fetch_repository(bare)
+        if error:
+            log(f"could not fetch origin, judging by what is here: {error}", YELLOW)
 
+    branch = git_output(["branch", "--show-current"], cwd=worktree)
     default_ref = remote_default_branch(bare)
     merged = bool(default_ref) and (
         is_merged_into(worktree, default_ref)
         or has_patch_equivalent_changes_in(worktree, default_ref)
     )
-    if not merged and not force:
-        fail(
-            f"'{worktree}' has commits not in {default_ref or 'origin'}; "
-            "push and merge them first, or use --force"
-        )
+
+    if not force:
+        checks = [
+            push_state(worktree, bare, branch, merged),
+            local_change_state(worktree),
+            in_progress_state(worktree),
+            merge_state(merged, default_ref),
+            pull_request_state(worktree, branch, merged),
+        ]
+        found = [check for check in checks if check is not None]
+        # A worktree that passes everything is removed without a word; only
+        # the unfinished ones are worth a question, and a yes to it stands in
+        # for --force through the removal itself.
+        if not all(ok for ok, _ in found):
+            preview = removal_preview(worktree, branch, merged)
+            if not confirm_removal(worktree, found, preview):
+                fail(f"kept '{worktree}'")
+            force = True
 
     remove_worktree(container, worktree, force=force, branch_merged=merged)
 
@@ -1930,8 +2120,12 @@ def parse_args() -> argparse.Namespace:
         description=(
             f"Remove a worktree, running the repository's '{DONE_HOOK}' hook\n"
             "first. Removes the current one, or NAME from anywhere.\n"
-            "Refuses when the worktree is dirty or has commits that are not\n"
-            "merged into origin's default branch; --force overrides both.\n"
+            "Fetches, then checks that the commits are pushed, that nothing\n"
+            "is modified locally, that no Git operation is half finished,\n"
+            "that the work is merged into origin's default branch, and what\n"
+            "gh says about its pull request. Anything unfinished is listed\n"
+            "with what removal would cost and asked about, which --force\n"
+            "answers with yes without fetching.\n"
             "The branch is deleted only when its changes are in origin."
         ),
     )
@@ -1939,7 +2133,7 @@ def parse_args() -> argparse.Namespace:
         "name", nargs="?", help="worktree name, for example 'snowwolf'"
     )
     done_parser.add_argument(
-        "--force", action="store_true", help="remove even when dirty or unmerged"
+        "--force", action="store_true", help="remove without asking, dirty or unmerged"
     )
     done_parser.set_defaults(handler=lambda args: done(args.name, args.root, args.force))
 

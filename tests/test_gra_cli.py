@@ -73,7 +73,19 @@ def git_output(args: list[str], cwd: Path | None = None) -> str:
 
 
 def git_fails(args: list[str], cwd: Path | None = None) -> bool:
-    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    """Run Git expecting it to fail, with the identity 'git' above also uses.
+
+    Without it a command that commits fails on the missing identity rather
+    than on what the test is about - which is exactly right on a machine with
+    no global git config, such as CI.
+    """
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **GIT_IDENTITY},
+    )
     return result.returncode != 0
 
 
@@ -1302,7 +1314,7 @@ def test_done_removes_merged_worktree_and_branch(tmp_path: Path) -> None:
     assert f"removed '{worktree.name}'" in result.stdout
 
 
-def test_done_refuses_dirty_worktree(tmp_path: Path) -> None:
+def test_done_asks_about_local_modifications(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -1310,14 +1322,22 @@ def test_done_refuses_dirty_worktree(tmp_path: Path) -> None:
     worktree = work_worktree(home, container, "main")
     (worktree / "scratch.txt").write_text("wip\n")
 
-    result = run_cli(["done"], home, cwd=worktree)
+    refused = run_cli(["done"], home, cwd=worktree, input_text="n\n")
 
-    assert result.returncode == 1
-    assert "uncommitted changes" in result.stderr
+    assert refused.returncode == 1
+    assert "✘ 1 local modification" in refused.stderr
+    assert "continue? [y/N]" in refused.stderr
     assert worktree.exists()
 
+    # Yes stands in for --force: the untracked file alone would make a plain
+    # 'git worktree remove' refuse.
+    accepted = run_cli(["done"], home, cwd=worktree, input_text="y\n")
 
-def test_done_refuses_unmerged_branch_but_force_keeps_it(tmp_path: Path) -> None:
+    assert accepted.returncode == 0, accepted.stderr
+    assert not worktree.exists()
+
+
+def test_done_asks_about_an_unmerged_branch_and_keeps_it(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
@@ -1326,15 +1346,100 @@ def test_done_refuses_unmerged_branch_but_force_keeps_it(tmp_path: Path) -> None
     worktree = work_worktree(home, container, "feature")
     bare = container / BARE_DIR
 
-    refused = run_cli(["done"], home, cwd=worktree)
+    refused = run_cli(["done"], home, cwd=worktree, input_text="n\n")
 
     assert refused.returncode == 1
-    assert "commits not in origin/main" in refused.stderr
+    assert "✔ commits pushed to branch origin/feature" in refused.stderr
+    assert "✔ no local modifications" in refused.stderr
+    assert "✘ not yet merged to origin/main" in refused.stderr
+    assert f"kept '{worktree}'" in refused.stderr
     assert worktree.exists()
 
-    forced = run_cli(["done", "--force"], home, cwd=worktree)
+    accepted = run_cli(["done"], home, cwd=worktree, input_text="y\n")
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert not worktree.exists()
+    git(["show-ref", "--verify", "--quiet", "refs/heads/feature"], cwd=bare)
+    assert "kept branch 'feature'" in accepted.stdout
+
+
+def test_done_reports_commits_that_are_not_pushed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "feature")
+    (worktree / "local.txt").write_text("local\n")
+    git(["add", "local.txt"], cwd=worktree)
+    git(["commit", "-m", "local only"], cwd=worktree)
+
+    refused = run_cli(["done"], home, cwd=worktree, input_text="n\n")
+
+    assert refused.returncode == 1
+    assert "✘ 1 commit not pushed to branch origin/feature" in refused.stderr
+    assert "branch 'feature' will be kept" in refused.stderr
+    assert worktree.exists()
+
+
+def test_done_fetches_before_judging_and_accepts_a_deleted_branch(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "feature")
+    bare = container / BARE_DIR
+
+    # The pull request workflow, after the clone: the branch is merged and
+    # then deleted on the remote. Both are invisible without a fetch.
+    git(["merge", "--no-ff", "-m", "merge feature", "feature"], cwd=source)
+    git(["branch", "-D", "feature"], cwd=source)
+
+    result = run_cli(["done"], home, cwd=worktree, input_text="")
+
+    assert result.returncode == 0, result.stderr
+    assert "continue?" not in result.stderr
+    assert not worktree.exists()
+    assert git_fails(["show-ref", "--verify", "--quiet", "refs/heads/feature"], cwd=bare)
+
+
+def test_done_reports_an_interrupted_git_operation(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    # Both branches rewrote README.md, so main and feature cannot be merged
+    # without a hand: exactly the half-finished state to warn about.
+    (source / "README.md").write_text("# moved on\n")
+    git(["commit", "-am", "main moves on"], cwd=source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "feature")
+
+    assert git_fails(["merge", "origin/main"], cwd=worktree)
+
+    refused = run_cli(["done"], home, cwd=worktree, input_text="n\n")
+
+    assert refused.returncode == 1
+    assert "✘ a merge is in progress" in refused.stderr
+    assert worktree.exists()
+
+
+def test_done_force_removes_an_unmerged_worktree_without_asking(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "feature")
+    bare = container / BARE_DIR
+
+    forced = run_cli(["done", "--force"], home, cwd=worktree, input_text="")
 
     assert forced.returncode == 0, forced.stderr
+    assert "continue?" not in forced.stderr
     assert not worktree.exists()
     git(["show-ref", "--verify", "--quiet", "refs/heads/feature"], cwd=bare)
     assert "kept branch 'feature'" in forced.stdout
