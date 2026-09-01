@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "8.0.0"
+__version__ = "8.1.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -806,6 +806,37 @@ def fetch_repositories(repositories: list[Path]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# each command
+# ---------------------------------------------------------------------------
+
+
+def run_in_each_repository(root: Path, command: list[str]) -> None:
+    """Run a command in every repository's bare checkout, one at a time.
+
+    One at a time on purpose: the command's output goes straight to the
+    terminal, and interleaving the repositories would make it unreadable.
+    A repository where the command fails does not stop the others; the
+    failures are reported at the end.
+    """
+    if not command:
+        fail(
+            "gra each needs a command to run, for example:\n"
+            "  gra each git fetch --all --tags"
+        )
+    failed: list[str] = []
+    for container in repositories_or_report(root):
+        log(f"{container.name}: {shlex.join(command)}")
+        try:
+            result = subprocess.run(command, cwd=bare_dir(container), check=False)
+        except OSError as error:
+            fail(f"cannot run '{command[0]}': {error}")
+        if result.returncode != 0:
+            failed.append(container.name)
+    if failed:
+        fail(f"failed in: {', '.join(failed)}")
+
+
+# ---------------------------------------------------------------------------
 # ls command
 # ---------------------------------------------------------------------------
 
@@ -1241,7 +1272,7 @@ _gra() {
     local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
 
     if (( COMP_CWORD == 1 )); then
-        COMPREPLY=($(compgen -W 'install clone ls work done cd shell' \
+        COMPREPLY=($(compgen -W 'install clone ls each work done cd shell' \
             -- "$cur"))
         return
     fi
@@ -1268,6 +1299,11 @@ _gra() {
             words=$(_gra_worktrees "$(_gra_root)")
             container=$(_gra_container)
             [[ -n $container ]] && words+=$'\n'$(_gra_branches "$container")
+            ;;
+        each)
+            # Everything after 'each' is a command of your own: complete the
+            # command name, and leave its arguments to it.
+            (( COMP_CWORD == 2 )) && words=$(compgen -c -- "$cur")
             ;;
         shell)
             words='bash'
@@ -1898,6 +1934,30 @@ def parse_args() -> argparse.Namespace:
         "--fetch", action="store_true", help="fetch every repository before listing"
     )
     ls_parser.set_defaults(handler=lambda args: print_repositories(args.root, args.fetch))
+
+    each_parser = subparsers.add_parser(
+        "each",
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="run a command in every repository",
+        description=(
+            f"Run COMMAND once in every repository under '{root}', one\n"
+            f"repository at a time, in its '{BARE_DIR}' directory - so Git\n"
+            "commands act on the repository itself, for example:\n"
+            "  gra each git fetch --all --tags\n"
+            "Everything after 'each' is passed through untouched, flags\n"
+            "and all. A failure does not stop the other repositories; the\n"
+            "failed ones are listed at the end and gra exits with an error."
+        ),
+    )
+    each_parser.add_argument(
+        "command",
+        nargs=argparse.REMAINDER,
+        metavar="command",
+        help="the command and its arguments",
+    )
+    each_parser.set_defaults(
+        handler=lambda args: run_in_each_repository(args.root, args.command)
+    )
 
     work_parser = subparsers.add_parser(
         "work",
