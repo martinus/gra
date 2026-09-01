@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "6.0.0"
+__version__ = "7.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -277,7 +277,7 @@ def add_upstream_remote(bare: Path, url: str) -> None:
     run_git(["remote", "add", UPSTREAM_REMOTE, parent], cwd=bare)
     log(
         f"added remote '{UPSTREAM_REMOTE}' -> {parent}; "
-        "run 'gra fetch' for its branches",
+        "run 'gra ls --fetch' for its branches",
         GREEN,
     )
 
@@ -463,7 +463,7 @@ def worktree_branches(bare: Path) -> dict[str, Path]:
     return {branch: path for path, branch in worktree_entries(bare) if branch}
 
 
-def refuse_if_branch_is_checked_out(bare: Path, branch: str, current: Path | None = None) -> None:
+def refuse_if_branch_is_checked_out(bare: Path, branch: str) -> None:
     """Point at the worktree already holding a branch, instead of letting Git fail.
 
     Git's own message names neither the worktree nor a way forward, and this
@@ -471,7 +471,7 @@ def refuse_if_branch_is_checked_out(bare: Path, branch: str, current: Path | Non
     it again by name is a natural next move.
     """
     holder = worktree_branches(bare).get(branch)
-    if holder is None or holder == current:
+    if holder is None:
         return
     fail(
         f"'{branch}' is already checked out in '{holder.name}'; "
@@ -757,7 +757,7 @@ def clone(
 
 
 # ---------------------------------------------------------------------------
-# fetch command
+# Fetch helpers, for 'gra ls --fetch' and 'gra done'
 # ---------------------------------------------------------------------------
 
 
@@ -803,13 +803,6 @@ def fetch_repositories(repositories: list[Path]) -> None:
         log(f"fetched {count - len(failed)} of {count} {word}", YELLOW)
     else:
         log(f"fetched {count} {word}", GREEN)
-
-
-def fetch_all(root: Path) -> None:
-    """Fetch every repository under the gra root."""
-    repositories = repositories_or_report(root)
-    if repositories:
-        fetch_repositories(repositories)
 
 
 # ---------------------------------------------------------------------------
@@ -874,7 +867,7 @@ def print_repositories(root: Path, fetch: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Picker helpers (cd, work, switch)
+# Picker helpers (cd, work)
 # ---------------------------------------------------------------------------
 
 
@@ -1304,7 +1297,7 @@ _gra() {
     local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
 
     if (( COMP_CWORD == 1 )); then
-        COMPREPLY=($(compgen -W 'install clone fetch ls work switch done cd shell' \
+        COMPREPLY=($(compgen -W 'install clone ls work done cd shell' \
             -- "$cur"))
         return
     fi
@@ -1331,11 +1324,6 @@ _gra() {
             words=$(_gra_worktrees "$(_gra_root)")
             container=$(_gra_container)
             [[ -n $container ]] && words+=$'\n'$(_gra_branches "$container")
-            ;;
-        switch)
-            # Outside a repository the command fails anyway, so offer nothing.
-            container=$(_gra_container)
-            [[ -n $container ]] && words=$(_gra_branches "$container")
             ;;
         shell)
             words='bash'
@@ -1413,7 +1401,7 @@ def recent_branches(bare: Path) -> list[tuple[str, str]]:
 BRANCH_PICKER_HEADERS = ["BRANCH", "LAST COMMIT"]
 
 
-def pick_branch(container: Path, command: str, *, offer_detached: bool) -> str:
+def pick_branch(container: Path, command: str) -> str:
     """Pick a branch with fzf, newest commit first; '' means detached.
 
     Branches already checked out are left out: Git allows a branch in one
@@ -1423,10 +1411,9 @@ def pick_branch(container: Path, command: str, *, offer_detached: bool) -> str:
     bare = bare_dir(container)
     checked_out = worktree_branches(bare)
     entries: list[tuple[str, list[str]]] = []
-    if offer_detached:
-        ref = remote_default_branch(bare)
-        if ref:
-            entries.append(("", [f"{ref} (detached)", ""]))
+    ref = remote_default_branch(bare)
+    if ref:
+        entries.append(("", [f"{ref} (detached)", ""]))
     entries += [
         (name, [name, age])
         for name, age in recent_branches(bare)
@@ -1529,7 +1516,7 @@ def create_worktree(
 
 
 # ---------------------------------------------------------------------------
-# work and switch commands
+# work command
 # ---------------------------------------------------------------------------
 
 
@@ -1566,41 +1553,8 @@ def work(target: str | None, root: Path) -> None:
     if target:
         branch = resolve_branch(bare_dir(container), branch_name_from_input(target))
     else:
-        branch = pick_branch(container, "gra work", offer_detached=True)
+        branch = pick_branch(container, "gra work")
     create_worktree(container, root, branch)
-
-
-def switch(branch_input: str | None) -> None:
-    """Switch the current worktree to another branch."""
-    container, worktree = gra_location()
-    if worktree is None:
-        fail(
-            "gra switch must be run from inside a gra worktree;\n"
-            "it switches that worktree to another branch - 'gra cd' jumps into one"
-        )
-    bare = bare_dir(container)
-
-    if worktree_status_output(worktree):
-        fail(
-            f"'{worktree}' has uncommitted changes; commit or stash them before switching"
-        )
-
-    if branch_input:
-        branch = resolve_branch(bare, branch_name_from_input(branch_input))
-        refuse_if_branch_is_checked_out(bare, branch, current=worktree)
-    else:
-        # The picker already left out every checked-out branch, so only a
-        # typed branch can need the refusal.
-        branch = pick_branch(container, "gra switch", offer_detached=False)
-
-    log(f"Switching '{worktree}' to '{branch}'")
-    if branch_needs_tracking(bare, branch):
-        run_git(["switch", "--track", f"origin/{branch}"], cwd=worktree)
-    else:
-        run_git(["switch", branch], cwd=worktree)
-    log(f"'{worktree.name}' is now on '{branch}'", GREEN)
-
-    open_tmux_window(worktree)
 
 
 def set_up_worktree(worktree: Path) -> None:
@@ -1982,20 +1936,6 @@ def parse_args() -> argparse.Namespace:
         )
     )
 
-    fetch_parser = subparsers.add_parser(
-        "fetch",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="fetch every repository under the gra root",
-        description=(
-            f"Run 'git fetch --prune --all' in every repository under '{root}',\n"
-            "several at a time. Only remote-tracking refs move: no worktree,\n"
-            "branch or uncommitted change is touched.\n"
-            "A repository that cannot be reached is reported and the rest are\n"
-            "still fetched."
-        ),
-    )
-    fetch_parser.set_defaults(handler=lambda args: fetch_all(args.root))
-
     ls_parser = subparsers.add_parser(
         "ls",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -2004,7 +1944,10 @@ def parse_args() -> argparse.Namespace:
             f"List repositories and worktrees under '{root}'.\n"
             "SYNC is ahead/behind the upstream branch as of the last fetch;\n"
             "it reads local refs only and never goes to the network.\n"
-            "Use --fetch to refresh every repository first, as 'gra fetch' does."
+            "Use --fetch to run 'git fetch --prune --all' in every repository\n"
+            "first, several at a time. Only remote-tracking refs move: no\n"
+            "worktree, branch or uncommitted change is touched. A repository\n"
+            "that cannot be reached is reported and the rest are still fetched."
         ),
     )
     ls_parser.add_argument(
@@ -2035,23 +1978,6 @@ def parse_args() -> argparse.Namespace:
     )
     work_parser.add_argument("target", nargs="?", help="worktree name or branch")
     work_parser.set_defaults(handler=lambda args: work(args.target, args.root))
-
-    switch_parser = subparsers.add_parser(
-        "switch",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="switch the current worktree to another branch",
-        description=(
-            "Switch the worktree you are standing in to BRANCH, with the same\n"
-            "branch resolution as 'gra work': part of a name is enough when it\n"
-            "matches one branch, and a missing branch can be created from\n"
-            "origin's default branch and pushed.\n"
-            "Without BRANCH, pick one with fzf, newest commits first.\n"
-            "Refuses when the worktree has uncommitted changes.\n"
-            "Opens or switches to the worktree's tmux window afterwards."
-        ),
-    )
-    switch_parser.add_argument("branch", nargs="?", help="branch to switch to")
-    switch_parser.set_defaults(handler=lambda args: switch(args.branch))
 
     done_parser = subparsers.add_parser(
         "done",
