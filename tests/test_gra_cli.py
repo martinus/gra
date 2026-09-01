@@ -1404,6 +1404,51 @@ def test_each_reports_failures_and_keeps_going(tmp_path: Path) -> None:
     assert "working" not in result.stderr
 
 
+def test_each_wt_runs_in_every_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    first = clone_repo(home, make_repo(tmp_path, "one"))
+    second = clone_repo(home, make_repo(tmp_path, "two"))
+    first_worktree = work_worktree(home, first, "main")
+    second_worktree = work_worktree(home, second, "main")
+
+    result = run_cli(["each", "--wt", "touch", "marker"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert (first_worktree / "marker").is_file()
+    assert (second_worktree / "marker").is_file()
+    # The worktrees ran, not the repositories.
+    assert not (first / BARE_DIR / "marker").exists()
+    assert f"one/{first_worktree.name}:" in result.stdout
+
+
+def test_each_wt_names_the_failing_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    good = work_worktree(home, container, "main")
+    bad = work_worktree(home, container)
+    (good / "marker").write_text("")
+
+    result = run_cli(["each", "--wt", "test", "-e", "marker"], home, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert f"failed in: project/{bad.name}" in result.stderr
+
+
+def test_each_wt_without_worktrees_says_so(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    clone_repo(home, make_repo(tmp_path, "project"))
+
+    result = run_cli(["each", "--wt", "touch", "marker"], home, cwd=tmp_path)
+
+    # Doing nothing is correct here, but doing it silently would look like
+    # the command ran.
+    assert result.returncode == 0, result.stderr
+    assert "No worktrees found." in result.stdout
+
+
 def test_each_without_a_command_fails_with_an_example(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -1565,6 +1610,8 @@ def test_completion_offers_command_names_for_each(tmp_path: Path) -> None:
     home.mkdir()
 
     assert "git" in complete(home, ["gra", "each", "g"], tmp_path)
+    assert "git" in complete(home, ["gra", "each", "--wt", "g"], tmp_path)
+    assert complete(home, ["gra", "each", "-"], tmp_path) == ["--wt"]
     # The arguments belong to that command, so nothing is offered for them.
     assert complete(home, ["gra", "each", "git", ""], tmp_path) == []
 
