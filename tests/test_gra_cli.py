@@ -734,20 +734,6 @@ def test_ls_survives_a_worktree_whose_directory_is_gone(tmp_path: Path) -> None:
     assert "× missing" in result.stdout
 
 
-def test_switch_to_the_branch_it_is_already_on(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    # The branch is checked out here, so the guard must exempt this worktree.
-    result = run_cli(["switch", "main"], home, cwd=worktree)
-
-    assert result.returncode == 0, result.stderr
-    assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
-
-
 # ---------------------------------------------------------------------------
 # tmux windows
 # ---------------------------------------------------------------------------
@@ -893,7 +879,7 @@ def test_work_prefers_a_worktree_name_over_a_branch_of_the_same_name(
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
     add_feature_branch(source, worktree.name)
-    run_cli(["fetch"], home)
+    git(["fetch", "origin"], cwd=container / BARE_DIR)
     env, log = write_tmux_mock(tmp_path)
 
     result = run_cli(["work", worktree.name], home, cwd=container, env_extra=env)
@@ -930,22 +916,6 @@ def test_work_inside_a_worktree_says_so_outside_tmux(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "not inside tmux" in result.stdout + result.stderr
     assert tmux_calls(log) == []
-
-
-def test_switch_opens_the_window_of_the_worktree_it_switched(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    env, log = write_tmux_mock(tmp_path)
-
-    result = run_cli(["switch", "feature"], home, cwd=worktree, env_extra=env)
-
-    assert result.returncode == 0, result.stderr
-    # The window is named after the worktree, so switching branches keeps it.
-    assert f"new-window -n project/{worktree.name} -c {worktree}" in tmux_calls(log)
 
 
 def test_done_closes_a_window_it_is_not_running_in(tmp_path: Path) -> None:
@@ -1008,7 +978,7 @@ def test_done_without_a_window_removes_the_worktree_anyway(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
-# work and switch
+# work
 # ---------------------------------------------------------------------------
 
 
@@ -1110,88 +1080,6 @@ def test_work_still_offers_to_create_an_unmatched_branch(tmp_path: Path) -> None
     assert result.returncode == 1
     assert "does not exist. Create it from" in result.stderr
     assert worktree_dirs(container) == []
-
-
-def test_switch_resolves_a_ticket_key_too(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source, "mla/OA-2345-thing")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    result = run_cli(["switch", "OA-2345"], home, cwd=worktree)
-
-    assert result.returncode == 0, result.stderr
-    assert git_output(["branch", "--show-current"], cwd=worktree) == "mla/OA-2345-thing"
-
-
-def test_switch_changes_branch_in_place(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-
-    result = run_cli(["switch", "feature"], home, cwd=worktree)
-
-    assert result.returncode == 0, result.stderr
-    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
-    assert (worktree / "README.md").read_text() == "# feature\n"
-    assert worktree_dirs(container) == [worktree]
-
-
-def test_switch_refuses_dirty_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    (worktree / "README.md").write_text("# local edit\n")
-
-    result = run_cli(["switch", "feature"], home, cwd=worktree)
-
-    assert result.returncode == 1
-    assert "uncommitted changes" in result.stderr
-    assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
-
-
-def test_switch_picks_a_branch_with_fzf(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    fzf_env, fzf_input, _fzf_args = write_fzf_mock(tmp_path)
-
-    result = run_cli(["switch"], home, cwd=worktree, env_extra=fzf_env)
-
-    assert result.returncode == 0, result.stderr
-    # 'main' is checked out right here and there is no detached entry, so the
-    # picker offers exactly the one branch a switch could reach.
-    assert [line.split("\t")[0] for line in fzf_input.read_text().splitlines()] == [
-        "feature"
-    ]
-    assert git_output(["branch", "--show-current"], cwd=worktree) == "feature"
-
-
-def test_switch_outside_a_worktree_fails_with_guidance(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    container = clone_repo(home, make_repo(tmp_path, "project"))
-
-    outside = run_cli(["switch", "main"], home, cwd=tmp_path)
-    in_container = run_cli(["switch", "main"], home, cwd=container)
-
-    # The repository folder is not a worktree either: there is no checkout
-    # there whose branch a switch could change.
-    for result in (outside, in_container):
-        assert result.returncode == 1
-        assert "gra switch" in result.stderr
-        assert "gra cd" in result.stderr
 
 
 def test_done_removes_merged_worktree_and_branch(tmp_path: Path) -> None:
@@ -1373,7 +1261,7 @@ def test_ls_lists_all_repositories_and_worktrees(tmp_path: Path) -> None:
     assert "● dirty" in result.stdout
 
 
-def test_fetch_updates_and_prunes_every_repository(tmp_path: Path) -> None:
+def test_ls_fetch_updates_and_prunes_every_repository(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     first = make_repo(tmp_path, "one")
@@ -1387,7 +1275,7 @@ def test_fetch_updates_and_prunes_every_repository(tmp_path: Path) -> None:
         add_feature_branch(source, "later")
         git(["branch", "-D", "feature"], cwd=source)
 
-    result = run_cli(["fetch"], home, cwd=tmp_path)
+    result = run_cli(["ls", "--fetch"], home, cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
     assert "fetched 2 repositories" in result.stdout
@@ -1401,7 +1289,7 @@ def test_fetch_updates_and_prunes_every_repository(tmp_path: Path) -> None:
         )
 
 
-def test_fetch_updates_every_remote_not_just_origin(tmp_path: Path) -> None:
+def test_ls_fetch_updates_every_remote_not_just_origin(tmp_path: Path) -> None:
     """A fork's 'upstream' is exactly the remote that goes stale."""
     home = tmp_path / "home"
     home.mkdir()
@@ -1411,7 +1299,7 @@ def test_fetch_updates_every_remote_not_just_origin(tmp_path: Path) -> None:
     git(["remote", "add", "upstream", str(parent)], cwd=bare)
     add_feature_branch(parent)
 
-    result = run_cli(["fetch"], home, cwd=tmp_path)
+    result = run_cli(["ls", "--fetch"], home, cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
     assert not git_fails(
@@ -1419,7 +1307,7 @@ def test_fetch_updates_every_remote_not_just_origin(tmp_path: Path) -> None:
     )
 
 
-def test_fetch_reports_an_unreachable_repository_and_fetches_the_rest(
+def test_ls_fetch_reports_an_unreachable_repository_and_fetches_the_rest(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1430,7 +1318,7 @@ def test_fetch_reports_an_unreachable_repository_and_fetches_the_rest(
     git(["remote", "set-url", "origin", str(tmp_path / "gone")], cwd=broken_bare)
     add_feature_branch(working)
 
-    result = run_cli(["fetch"], home, cwd=tmp_path)
+    result = run_cli(["ls", "--fetch"], home, cwd=tmp_path)
 
     # One repository nobody can reach must not cost the others their fetch.
     assert result.returncode == 0, result.stderr
@@ -1441,11 +1329,11 @@ def test_fetch_reports_an_unreachable_repository_and_fetches_the_rest(
     )
 
 
-def test_fetch_without_repositories_says_so(tmp_path: Path) -> None:
+def test_ls_fetch_without_repositories_says_so(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
 
-    result = run_cli(["fetch"], home, cwd=tmp_path)
+    result = run_cli(["ls", "--fetch"], home, cwd=tmp_path)
 
     assert result.returncode == 0, result.stderr
     assert "No repositories found." in result.stdout
@@ -1562,7 +1450,7 @@ def test_completion_offers_the_subcommands(tmp_path: Path) -> None:
     home.mkdir()
 
     assert "work" in complete(home, ["gra", ""], tmp_path)
-    assert complete(home, ["gra", "f"], tmp_path) == ["fetch"]
+    assert complete(home, ["gra", "w"], tmp_path) == ["work"]
 
 
 def test_completion_offers_every_subcommand(tmp_path: Path) -> None:
@@ -1608,10 +1496,9 @@ def test_completion_offers_branches_inside_a_repository(tmp_path: Path) -> None:
     add_feature_branch(source, "feature/search")
     container = clone_repo(home, source)
 
-    for cmd in ("work", "switch"):
-        words = complete(home, ["gra", cmd, ""], container)
-        assert "main" in words
-        assert "feature/search" in words
+    words = complete(home, ["gra", "work", ""], container)
+    assert "main" in words
+    assert "feature/search" in words
 
 
 def test_completion_offers_worktree_names_for_work_outside_a_repository(

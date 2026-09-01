@@ -23,7 +23,6 @@ gra clone git@github.com:martinus/oans.git   # into ~/gra/oans, with a worktree 
 gra cd warmhare                              # jump into that worktree, from anywhere
 gra work OA-2345                             # another worktree, on that branch
 gra work warmhare                            # back to that worktree's tmux window
-gra switch main                              # or reuse the one you are standing in
 gra done                                     # throw it away once the work is merged
 gra ls                                       # what do I have, and where is it?
 ```
@@ -112,15 +111,13 @@ git config --global gra.root ~/develop
 | ------- | ------------ |
 | [`gra clone <url>`](#gra-clone) | Clone into `~/gra/<repo>` as a bare checkout, with a worktree ready to use |
 | [`gra work [target]`](#gra-work) | Create a worktree for a branch - or open a worktree's tmux window |
-| [`gra switch [branch]`](#gra-switch) | Move the worktree you are standing in to another branch |
 | [`gra done [name]`](#gra-done) | Remove a worktree once its work is in origin |
 | [`gra cd [name]`](#gra-cd) | Jump to a worktree, by name or with `fzf` |
 | [`gra ls [--fetch]`](#gra-ls) | One table of every repository and worktree |
-| [`gra fetch`](#gra-fetch) | `git fetch --prune --all` in every repository, in parallel |
 | [`gra install`](#gra-install) | Install or upgrade `gra` itself |
 
 Everything runs from anywhere. The exceptions are the commands that act on
-*where you are standing*: `gra switch`, and a bare `gra work` or `gra done`.
+*where you are standing*: a bare `gra work` or `gra done`.
 
 ---
 
@@ -171,7 +168,7 @@ repository it was forked from:
 
 ```text
 added remote 'upstream' -> git@github.com:upstream/oans.git
-run 'gra fetch' for its branches
+run 'gra ls --fetch' for its branches
 ```
 
 A fork is a GitHub concept rather than a Git one, so `gra` asks `gh`, which
@@ -264,8 +261,7 @@ with the newest commits first - the branch you are here for is almost always
 near the top. Branches already checked out in a worktree are not offered,
 because Git allows a branch in only one worktree at a time. The first entry
 starts the worktree detached at origin's default branch instead - instantly
-usable for looking around, running builds, or letting a later `gra switch`
-pick the real work.
+usable for looking around or running builds.
 
 If the branch you name is already checked out somewhere, `gra` names that
 worktree instead of leaving you with Git's message:
@@ -302,7 +298,7 @@ ERROR: 'OA-7777' matches several branches; name one:
 ```
 
 Nothing matching means the old behaviour: `gra` offers to create the branch
-from origin's default branch. The same resolution applies to `gra switch`.
+from origin's default branch.
 
 </details>
 
@@ -352,33 +348,6 @@ next `gra work` to reclaim. Machines only disagree when one of them let another
 repository claim a contested name first, and then only that repository shifts.
 
 </details>
-
-## `gra switch`
-
-To reuse the worktree you are standing in for other work instead of creating
-a new one:
-
-```sh
-gra switch feature/search   # by name, or part of one
-gra switch                  # pick with fzf
-```
-
-Branch resolution is the same as [`gra work`](#gra-work)'s: existing local
-branches are switched to, `origin/<branch>` gets a local tracking branch,
-missing branches can be created from origin's default branch and pushed, and
-part of a name is enough when it matches one branch. Without a branch, an
-`fzf` picker offers all branches, newest commits first - minus those already
-checked out in a worktree, which a switch could never reach.
-
-Afterwards the worktree's [tmux window](#tmux-windows) is opened or switched
-to. The window is named after the worktree, not the branch, so a switch keeps
-the window it already has.
-
-> [!IMPORTANT]
-> `gra switch` refuses when the worktree has uncommitted changes - commit or
-> stash first. Switching to a branch checked out elsewhere is refused too,
-> naming the worktree that holds it. Run anywhere but inside a worktree it
-> fails: there is no checkout there whose branch it could change.
 
 ## `gra done`
 
@@ -474,26 +443,12 @@ meaning, `BRANCH` is the primary information - the name is just an address.
 push, `↓1` is one to pull, blank is in sync or has no upstream, and `-` means
 the question does not apply (detached, or no upstream). It reads local refs
 only - `gra ls` never goes to the network - so it is as fresh as your last
-fetch. `--fetch` is [`gra fetch`](#gra-fetch) followed by `gra ls`.
+fetch.
 
-## `gra fetch`
-
-Runs `git fetch --prune --all` in every repository under the gra root, several
-at a time:
-
-```sh
-gra fetch
-```
-
-```text
-Fetching 12 repositories
-fetched 12 repositories
-```
-
-Every remote, not just `origin`: a fork's `upstream` is exactly the remote
-that goes stale. Only remote-tracking refs move - no worktree, branch, or
-uncommitted change is touched - so it is safe to run at any time, and it is
-what makes the `SYNC` column of `gra ls` current.
+`--fetch` first runs `git fetch --prune --all` in every repository, several at
+a time. Every remote, not just `origin`: a fork's `upstream` is exactly the
+remote that goes stale. Only remote-tracking refs move - no worktree, branch,
+or uncommitted change is touched - so it is safe to run at any time.
 
 A repository that cannot be reached is named with the reason, and the others
 are still fetched:
@@ -552,7 +507,6 @@ Inside tmux, a worktree gets one window, named `<repo>/<worktree>`:
 | ------- | -------------------------- |
 | `gra clone`, `gra work <branch>` | opened for the new worktree |
 | `gra work <worktree>`, bare `gra work` inside one | opened, or switched to when already open |
-| `gra switch` | opened or switched to, keeping its name |
 | `gra done` | closed |
 
 The name is the whole mechanism. There is no config file, nothing to install,
@@ -561,8 +515,8 @@ acts on the answer. Two consequences follow.
 
 **A window is never duplicated.** A worktree outlives its window, and every
 command that leaves you in a worktree looks the name up before opening
-anything - so `gra switch`, a second `gra work`, and reopening a window you
-closed yesterday all land in the same place.
+anything - so a second `gra work`, and reopening a window you closed
+yesterday, land in the same place.
 
 **The window need not be in this session.** `gra` looks at every session, so
 `gra done snowwolf` closes the window even when it lives in a session you are
@@ -636,11 +590,10 @@ The `eval` line installs Bash completion too, so there is nothing else to set
 up:
 
 ```text
-gra <TAB>              install clone fetch ls work switch done cd shell
+gra <TAB>              install clone ls work done cd shell
 gra cd <TAB>           warmhare goldfish snowwolf    worktree names
 gra done <TAB>         warmhare goldfish snowwolf --force
 gra work <TAB>         worktree names, plus branches inside a repository
-gra switch <TAB>       branches, inside a repository
 gra done -<TAB>        --force
 ```
 
@@ -659,13 +612,14 @@ every time.
 
 <br>
 
-The layout is designed so that a coding agent can manage branches itself
-inside one worktree. A useful convention for a repository's `CLAUDE.md`:
+The layout is designed so that a coding agent can manage branches itself. A
+useful convention for a repository's `CLAUDE.md`:
 
-* to work on another branch in this worktree: commit or stash, then
-  `gra switch <branch>`,
-* `gra switch` also creates missing branches (from origin's default branch,
-  pushed and tracking) after asking for confirmation.
+* to work on another branch: `gra work <branch>` gives it a worktree of its
+  own, and creates a missing branch (from origin's default branch, pushed and
+  tracking) after asking for confirmation,
+* to reuse the worktree you are in: commit or stash, then plain
+  `git switch <branch>`.
 
 For parallel agents, give each its own worktree with `gra work` - one branch
 can only be checked out in one worktree at a time.
