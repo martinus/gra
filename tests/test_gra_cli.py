@@ -1360,6 +1360,72 @@ def test_ls_fetch_refreshes_the_sync_column(tmp_path: Path) -> None:
     assert "↓1" in fetched.stdout
 
 
+def test_each_runs_the_command_in_every_repository(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    first = clone_repo(home, make_repo(tmp_path, "one"))
+    second = clone_repo(home, make_repo(tmp_path, "two"))
+
+    result = run_cli(["each", "touch", "marker"], home, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    # The command runs in the bare checkout, so Git commands act on the
+    # repository itself rather than on one worktree.
+    assert (first / BARE_DIR / "marker").is_file()
+    assert (second / BARE_DIR / "marker").is_file()
+
+
+def test_each_passes_flags_through_to_the_command(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    clone_repo(home, make_repo(tmp_path, "project"))
+
+    result = run_cli(
+        ["each", "git", "rev-parse", "--is-bare-repository"], home, cwd=tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "true" in result.stdout
+
+
+def test_each_reports_failures_and_keeps_going(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    clone_repo(home, make_repo(tmp_path, "broken"))
+    working = clone_repo(home, make_repo(tmp_path, "working"))
+    (working / BARE_DIR / "marker").write_text("")
+
+    result = run_cli(["each", "test", "-e", "marker"], home, cwd=tmp_path)
+
+    # One repository where the command fails must not cost the others their
+    # run, but it must show up in the exit status and be named.
+    assert result.returncode == 1
+    assert "failed in: broken" in result.stderr
+    assert "working" not in result.stderr
+
+
+def test_each_without_a_command_fails_with_an_example(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    clone_repo(home, make_repo(tmp_path, "project"))
+
+    result = run_cli(["each"], home, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "needs a command" in result.stderr
+
+
+def test_each_with_an_unknown_command_says_so(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    clone_repo(home, make_repo(tmp_path, "project"))
+
+    result = run_cli(["each", "no-such-command-zzzz"], home, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "cannot run 'no-such-command-zzzz'" in result.stderr
+
+
 def test_cd_with_name_prints_worktree_path(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -1492,6 +1558,15 @@ def test_completion_offers_branches_inside_a_repository(tmp_path: Path) -> None:
     words = complete(home, ["gra", "work", ""], container)
     assert "main" in words
     assert "feature/search" in words
+
+
+def test_completion_offers_command_names_for_each(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+
+    assert "git" in complete(home, ["gra", "each", "g"], tmp_path)
+    # The arguments belong to that command, so nothing is offered for them.
+    assert complete(home, ["gra", "each", "git", ""], tmp_path) == []
 
 
 def test_completion_offers_worktree_names_for_work_outside_a_repository(
