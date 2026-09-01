@@ -113,7 +113,7 @@ git config --global gra.root ~/develop
 | [`gra done [name]`](#gra-done) | Remove a worktree once its work is in origin |
 | [`gra cd <name>`](#gra-cd) | Jump to a worktree by name |
 | [`gra ls [--fetch]`](#gra-ls) | One table of every repository and worktree |
-| [`gra each <command>`](#gra-each) | Run a command once in every repository |
+| [`gra each [--wt] <command>`](#gra-each) | Run a command once in every repository or worktree |
 | [`gra install`](#gra-install) | Install or upgrade `gra` itself |
 
 Everything runs from anywhere. The exceptions are the commands that act on
@@ -471,11 +471,11 @@ gra each git gc
 gra each du -sh .
 ```
 
-Everything after `each` is the command - `gra` passes it through untouched,
-flags and all. It runs in each repository's `.bare` directory, so Git
-commands act on the repository itself, not on one worktree. The repositories
-run one at a time, each announced by name, with the command's output shown
-as it runs:
+Everything after `each` - apart from its own `--wt` - is the command; `gra`
+passes it through untouched, flags and all. It runs in each repository's
+`.bare` directory, so Git commands act on the repository itself, not on one
+worktree. The repositories run one at a time, each announced by name, with
+the command's output shown as it runs:
 
 ```text
 gra: git fetch --all --tags
@@ -483,6 +483,14 @@ Fetching origin
 oans: git fetch --all --tags
 Fetching origin
 Fetching upstream
+```
+
+With `--wt` the command runs in every worktree instead, one run per
+worktree, labelled `<repo>/<worktree>`:
+
+```sh
+gra each --wt git merge --ff-only   # fast-forward every worktree
+gra each --wt git status --short
 ```
 
 A repository where the command fails does not stop the others. The failed
@@ -629,6 +637,7 @@ gra done <TAB>         warmhare goldfish snowwolf --force
 gra work <TAB>         worktree names, plus branches inside a repository
 gra each <TAB>         commands on your PATH
 gra done -<TAB>        --force
+gra each -<TAB>        --wt
 ```
 
 What it offers follows the same rule the commands do, so the completion and

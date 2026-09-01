@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "8.1.0"
+__version__ = "8.2.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -810,13 +810,33 @@ def fetch_repositories(repositories: list[Path]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_in_each_repository(root: Path, command: list[str]) -> None:
-    """Run a command in every repository's bare checkout, one at a time.
+def each_targets(root: Path, worktrees: bool) -> list[tuple[str, Path]]:
+    """The (label, directory) pairs 'gra each' runs in.
+
+    Without --wt one per repository, its bare checkout; with --wt one per
+    worktree, labelled '<repo>/<worktree>' the way tmux windows are.
+    """
+    repositories = repositories_or_report(root)
+    if not worktrees:
+        return [(container.name, bare_dir(container)) for container in repositories]
+    targets = [
+        (f"{container.name}/{path.name}", path)
+        for container in repositories
+        for path in worktree_paths(bare_dir(container))
+        if path.is_dir()
+    ]
+    if repositories and not targets:
+        print("No worktrees found.")
+    return targets
+
+
+def run_in_each(root: Path, command: list[str], *, worktrees: bool) -> None:
+    """Run a command in every repository or worktree, one at a time.
 
     One at a time on purpose: the command's output goes straight to the
-    terminal, and interleaving the repositories would make it unreadable.
-    A repository where the command fails does not stop the others; the
-    failures are reported at the end.
+    terminal, and interleaving the runs would make it unreadable. A place
+    where the command fails does not stop the others; the failures are
+    reported at the end.
     """
     if not command:
         fail(
@@ -824,14 +844,14 @@ def run_in_each_repository(root: Path, command: list[str]) -> None:
             "  gra each git fetch --all --tags"
         )
     failed: list[str] = []
-    for container in repositories_or_report(root):
-        log(f"{container.name}: {shlex.join(command)}")
+    for label, directory in each_targets(root, worktrees):
+        log(f"{label}: {shlex.join(command)}")
         try:
-            result = subprocess.run(command, cwd=bare_dir(container), check=False)
+            result = subprocess.run(command, cwd=directory, check=False)
         except OSError as error:
             fail(f"cannot run '{command[0]}': {error}")
         if result.returncode != 0:
-            failed.append(container.name)
+            failed.append(label)
     if failed:
         fail(f"failed in: {', '.join(failed)}")
 
@@ -1270,6 +1290,7 @@ _gra_branches() {
 
 _gra() {
     local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
+    local prev=${COMP_WORDS[COMP_CWORD-1]-}
 
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=($(compgen -W 'install clone ls each work done cd shell' \
@@ -1284,6 +1305,7 @@ _gra() {
             clone) words='--name --no-work --no-tmux --no-submodules --no-upstream' ;;
             done) words='--force' ;;
             ls) words='--fetch' ;;
+            each) words='--wt' ;;
             install) words='--no-check' ;;
         esac
         COMPREPLY=($(compgen -W "$words" -- "$cur"))
@@ -1301,9 +1323,9 @@ _gra() {
             [[ -n $container ]] && words+=$'\n'$(_gra_branches "$container")
             ;;
         each)
-            # Everything after 'each' is a command of your own: complete the
-            # command name, and leave its arguments to it.
-            (( COMP_CWORD == 2 )) && words=$(compgen -c -- "$cur")
+            # Everything after 'each' (and its own --wt) is a command of your
+            # own: complete the command name, and leave its arguments to it.
+            [[ $prev == each || $prev == --wt ]] && words=$(compgen -c -- "$cur")
             ;;
         shell)
             words='bash'
@@ -1938,16 +1960,24 @@ def parse_args() -> argparse.Namespace:
     each_parser = subparsers.add_parser(
         "each",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="run a command in every repository",
+        help="run a command in every repository or worktree",
         description=(
             f"Run COMMAND once in every repository under '{root}', one\n"
             f"repository at a time, in its '{BARE_DIR}' directory - so Git\n"
             "commands act on the repository itself, for example:\n"
             "  gra each git fetch --all --tags\n"
-            "Everything after 'each' is passed through untouched, flags\n"
-            "and all. A failure does not stop the other repositories; the\n"
-            "failed ones are listed at the end and gra exits with an error."
+            "With --wt it runs in every worktree instead:\n"
+            "  gra each --wt git merge --ff-only\n"
+            "Everything after 'each' (and its own --wt) is passed through\n"
+            "untouched, flags and all. A failure does not stop the other\n"
+            "runs; the failed ones are listed at the end and gra exits\n"
+            "with an error."
         ),
+    )
+    each_parser.add_argument(
+        "--wt",
+        action="store_true",
+        help="run in every worktree instead of every repository",
     )
     each_parser.add_argument(
         "command",
@@ -1956,7 +1986,7 @@ def parse_args() -> argparse.Namespace:
         help="the command and its arguments",
     )
     each_parser.set_defaults(
-        handler=lambda args: run_in_each_repository(args.root, args.command)
+        handler=lambda args: run_in_each(args.root, args.command, worktrees=args.wt)
     )
 
     work_parser = subparsers.add_parser(
