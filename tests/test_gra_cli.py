@@ -112,6 +112,7 @@ def clone_repo(
     *,
     work: bool = False,
     extra: list[str] | None = None,
+    env_extra: dict[str, str] | None = None,
 ) -> Path:
     """Clone for tests that create their own worktrees, so --no-work by default."""
     args = ["clone", str(source)]
@@ -120,7 +121,7 @@ def clone_repo(
     if not work:
         args.append("--no-work")
     args += extra or []
-    result = run_cli(args, home)
+    result = run_cli(args, home, env_extra=env_extra)
     assert result.returncode == 0, result.stderr
     return home / "gra" / (name or source.name)
 
@@ -567,15 +568,15 @@ def test_work_missing_branch_can_be_declined(tmp_path: Path) -> None:
     assert worktree_dirs(container) == []
 
 
-def test_work_outside_a_repository_explains_both_uses(tmp_path: Path) -> None:
+def test_work_outside_a_repository_explains_every_use(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
 
     result = run_cli(["work"], home, cwd=tmp_path)
 
     assert result.returncode == 1
+    assert "gra work WORKTREE" in result.stderr
     assert "repository folder" in result.stderr
-    assert "inside a worktree" in result.stderr
     assert "gra cd" in result.stderr
 
 
@@ -684,61 +685,6 @@ def test_done_removes_a_named_worktree_from_anywhere(tmp_path: Path) -> None:
     assert not worktree.exists()
 
 
-def test_hooks_writes_only_the_missing_ones(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    container = clone_repo(home, make_repo(tmp_path, "project"))
-    # Stand in for a repository cloned before hooks existed, and for one whose
-    # hook the user already edited.
-    (container / "done.sh").unlink()
-    (container / "work.sh").write_text("#!/bin/sh\n# mine\n")
-
-    result = run_cli(["hooks"], home)
-
-    assert result.returncode == 0, result.stderr
-    assert (container / "done.sh").is_file()
-    assert os.access(container / "done.sh", os.X_OK)
-    assert (container / "work.sh").read_text() == "#!/bin/sh\n# mine\n"
-    assert "1 hook(s) written" in result.stdout
-
-
-def test_hooks_force_replaces_an_edited_hook_and_keeps_the_old_one(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    container = clone_repo(home, make_repo(tmp_path, "project"))
-    mine = "#!/bin/sh\n# mine\n"
-    (container / "work.sh").write_text(mine)
-
-    result = run_cli(["hooks", "--force"], home)
-
-    assert result.returncode == 0, result.stderr
-    # The default is back, executable, and what was there is still reachable.
-    assert "tmux" in (container / "work.sh").read_text()
-    assert os.access(container / "work.sh", os.X_OK)
-    assert (container / "work.sh.bak").read_text() == mine
-    assert "1 hook(s) written" in result.stdout
-    # done.sh already was the default, so it is not rewritten or backed up.
-    assert not (container / "done.sh.bak").exists()
-
-
-def test_hooks_force_is_idempotent(tmp_path: Path) -> None:
-    """A second --force must not stack up backups of gra's own defaults."""
-    home = tmp_path / "home"
-    home.mkdir()
-    container = clone_repo(home, make_repo(tmp_path, "project"))
-    (container / "work.sh").write_text("#!/bin/sh\n# mine\n")
-
-    run_cli(["hooks", "--force"], home)
-    backup = (container / "work.sh.bak").read_text()
-    result = run_cli(["hooks", "--force"], home)
-
-    assert result.returncode == 0, result.stderr
-    assert "already have their hooks" in result.stdout
-    assert (container / "work.sh.bak").read_text() == backup
-
-
 def test_ls_shows_ahead_and_behind(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -802,26 +748,20 @@ def test_switch_to_the_branch_it_is_already_on(tmp_path: Path) -> None:
     assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
 
 
-def recorder() -> str:
-    """A hook that writes its environment and working directory to HOOK_OUT."""
-    return (
-        "#!/bin/sh\n"
-        '{ echo "$GRA_REPO"; echo "$GRA_WORD"; echo "$GRA_BRANCH";'
-        ' echo "$GRA_WORKTREE"; pwd; } > "$HOOK_OUT"\n'
-    )
+# ---------------------------------------------------------------------------
+# tmux windows
+# ---------------------------------------------------------------------------
 
 
-def write_hook(container: Path, name: str, body: str, *, executable: bool = True) -> None:
-    hook = container / name
-    hook.write_text(body)
-    hook.chmod(0o755 if executable else 0o644)
+def write_tmux_mock(
+    tmp_path: Path, windows: str = "", *, attached: bool = True
+) -> tuple[dict[str, str], Path]:
+    """Put a recording tmux on the PATH; returns (env for gra, log file).
 
-
-def write_tmux_mock(tmp_path: Path, windows: str) -> tuple[dict[str, str], Path]:
-    """Put a recording tmux on the PATH; returns (env for the hook, log file).
-
-    It answers the two queries the hooks make - the window list and the pane's
-    own window - and logs every call instead of touching a real tmux.
+    It answers the two queries gra makes - the window list and the pane's own
+    window - and logs every call instead of touching a real tmux. Without
+    attached it stands for a plain terminal, where gra opens no windows but
+    still closes the ones it finds.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -836,175 +776,241 @@ def write_tmux_mock(tmp_path: Path, windows: str) -> tuple[dict[str, str], Path]
     )
     tmux.chmod(0o755)
     log = tmp_path / "tmux-log"
+    log.write_text("")
     env = {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "TMUX_LOG": str(log),
         "TMUX_WINDOWS": windows,
     }
+    if attached:
+        env["TMUX"] = "/tmp/tmux-test,1,0"
     return env, log
 
 
-def run_done_hook(container: Path, word: str, worktree: Path, env: dict[str, str]) -> None:
-    """Run a repository's done.sh the way gra runs it, from the container."""
-    result = subprocess.run(
-        [str(container / "done.sh")],
-        cwd=container,
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "GRA_WORKTREE": str(worktree),
-            "GRA_REPO": container.name,
-            "GRA_WORD": word,
-            "GRA_BRANCH": "main",
-            "GRA_PID": str(os.getpid()),
-            **env,
-        },
-    )
-    assert result.returncode == 0, result.stderr
+def tmux_calls(log: Path) -> list[str]:
+    return log.read_text().splitlines()
 
 
-def test_clone_writes_both_hooks_ready_to_run(tmp_path: Path) -> None:
+def test_clone_opens_a_tmux_window_for_the_new_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
+    env, log = write_tmux_mock(tmp_path)
 
-    container = clone_repo(home, source)
+    container = clone_repo(home, source, work=True, env_extra=env)
 
-    for name in ("work.sh", "done.sh"):
-        hook = container / name
-        assert hook.is_file()
-        # Executable from the start: the tmux behaviour gra used to provide
-        # itself now lives here, so a fresh clone must work without setup.
-        assert os.access(hook, os.X_OK)
-        text = hook.read_text()
-        for var in ("GRA_WORKTREE", "GRA_REPO", "GRA_WORD", "GRA_BRANCH"):
-            assert var in text
-        assert "tmux" in text
-
-
-def test_done_hook_closes_a_window_it_is_not_running_in(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    container = clone_repo(home, make_repo(tmp_path, "project"))
-    env, log = write_tmux_mock(tmp_path, "project/warmhare @1\nsomething/else @2")
-
-    # No TMUX_PANE: run from a plain terminal, or from another window.
-    run_done_hook(container, "warmhare", container / "warmhare", env)
-
-    calls = log.read_text()
-    assert "kill-window -t @1" in calls
-    assert "@2" not in calls
-    # Nothing to defer when gra is not standing in the window.
-    assert "run-shell" not in calls
-
-
-def test_done_hook_defers_closing_the_window_it_is_running_in(tmp_path: Path) -> None:
-    """The regression: killing that window now would kill gra with it.
-
-    'gra done' is normally run from the very window the hook has to close, so
-    closing it right away takes gra down before it removes the worktree.
-    """
-    home = tmp_path / "home"
-    home.mkdir()
-    container = clone_repo(home, make_repo(tmp_path, "project"))
-    worktree = container / "warmhare"
-    env, log = write_tmux_mock(tmp_path, "project/warmhare @1")
-    env.update({"TMUX_PANE": "%7", "TMUX_HERE": "@1"})
-
-    run_done_hook(container, "warmhare", worktree, env)
-
-    calls = log.read_text()
-    # Nothing is killed while gra is running - only handed to the tmux server.
-    assert not any(line.startswith("kill-window") for line in calls.splitlines())
-    assert "run-shell -b" in calls
-
-    # What was handed over waits for gra to exit, then closes the window only
-    # if the worktree really went away - a removal that failed keeps it.
-    deferred = calls.split("run-shell -b", 1)[1]
-    assert str(os.getpid()) in deferred
-    assert str(worktree) in deferred
-    assert "kill-window -t @1" in deferred
-
-
-def test_clone_writes_a_work_hook_that_reuses_an_open_window(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-
-    container = clone_repo(home, source)
-
-    # 'gra switch' and a re-run 'gra work' run this for a worktree that already
-    # has a window; without the lookup it would open a second one of the same
-    # name.
-    text = (container / "work.sh").read_text()
-    assert "list-windows" in text
-    assert "select-window" in text
-    assert text.index("list-windows") < text.index("new-window")
-
-
-def test_work_runs_the_work_hook_inside_the_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "work.sh", recorder())
-
-    result = run_cli(
-        ["work", "main"], home, cwd=container, env_extra={"HOOK_OUT": str(hook_out)}
-    )
-
-    assert result.returncode == 0, result.stderr
     worktree = worktree_dirs(container)[0]
-    assert hook_out.read_text().splitlines() == [
-        "project",
-        worktree.name,
-        "main",
-        str(worktree),
-        str(worktree),
-    ]
+    calls = tmux_calls(log)
+    assert f"new-window -n project/{worktree.name} -c {worktree}" in calls
 
 
-def test_work_skips_a_non_executable_hook(tmp_path: Path) -> None:
+def test_clone_no_tmux_creates_the_worktree_without_a_window(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "work.sh", recorder(), executable=False)
+    env, log = write_tmux_mock(tmp_path)
 
-    result = run_cli(
-        ["work", "main"], home, cwd=container, env_extra={"HOOK_OUT": str(hook_out)}
-    )
+    container = clone_repo(home, source, work=True, extra=["--no-tmux"], env_extra=env)
+
+    assert len(worktree_dirs(container)) == 1
+    assert tmux_calls(log) == []
+
+
+def test_work_opens_no_window_outside_tmux(tmp_path: Path) -> None:
+    """Outside tmux there is no session a new window would belong to."""
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    env, log = write_tmux_mock(tmp_path, attached=False)
+    container = clone_repo(home, source, env_extra=env)
+
+    result = run_cli(["work", "main"], home, cwd=container, env_extra=env)
 
     assert result.returncode == 0, result.stderr
-    assert not hook_out.exists()
+    assert tmux_calls(log) == []
 
 
-def test_work_inside_a_worktree_runs_the_hook_again(tmp_path: Path) -> None:
+def test_work_survives_tmux_not_being_installed(tmp_path: Path) -> None:
+    """A missing tmux must not cost you the git work that came with it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    # A PATH with git on it and no tmux, while TMUX says we are in a session.
+    only_git = tmp_path / "only-git"
+    only_git.mkdir()
+    (only_git / "git").symlink_to(shutil.which("git"))
+    env = {"PATH": str(only_git), "TMUX": "/tmp/tmux-test,1,0"}
+
+    result = run_cli(["work", "main"], home, cwd=container, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert len(worktree_dirs(container)) == 1
+
+
+def test_work_with_a_worktree_name_opens_its_window_from_anywhere(
+    tmp_path: Path,
+) -> None:
+    """A name identifies one worktree on the machine, so no repository needed."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path)
+
+    result = run_cli(["work", worktree.name], home, cwd=tmp_path, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert f"new-window -n project/{worktree.name} -c {worktree}" in tmux_calls(log)
+    # Naming a worktree sets it up; it never creates another one.
+    assert worktree_dirs(container) == [worktree]
+
+
+def test_work_with_a_worktree_name_switches_to_an_open_window(tmp_path: Path) -> None:
+    """The window survives everything but 'gra done'; do not open a second."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(
+        tmp_path, f"@1 project/{worktree.name}\n@2 something/else"
+    )
+
+    result = run_cli(["work", worktree.name], home, cwd=tmp_path, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    calls = tmux_calls(log)
+    assert "select-window -t @1" in calls
+    assert not any(call.startswith("new-window") for call in calls)
+
+
+def test_work_prefers_a_worktree_name_over_a_branch_of_the_same_name(
+    tmp_path: Path,
+) -> None:
+    """The name is the disambiguation rule; a branch must not steal it."""
     home = tmp_path / "home"
     home.mkdir()
     source = make_repo(tmp_path, "project")
     container = clone_repo(home, source)
     worktree = work_worktree(home, container, "main")
-    hook_out = tmp_path / "hook-out"
-    # Written after the worktree exists, so only the re-run can record anything.
-    write_hook(container, "work.sh", recorder())
+    add_feature_branch(source, worktree.name)
+    run_cli(["fetch"], home)
+    env, log = write_tmux_mock(tmp_path)
 
-    result = run_cli(
-        ["work"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
-    )
+    result = run_cli(["work", worktree.name], home, cwd=container, env_extra=env)
 
     assert result.returncode == 0, result.stderr
-    assert hook_out.read_text().splitlines() == [
-        "project",
-        worktree.name,
-        "main",
-        str(worktree),
-        str(worktree),
-    ]
     assert worktree_dirs(container) == [worktree]
+    assert f"new-window -n project/{worktree.name} -c {worktree}" in tmux_calls(log)
+
+
+def test_work_inside_a_worktree_opens_its_window(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path)
+
+    result = run_cli(["work"], home, cwd=worktree, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert f"new-window -n project/{worktree.name} -c {worktree}" in tmux_calls(log)
+    assert worktree_dirs(container) == [worktree]
+
+
+def test_work_inside_a_worktree_says_so_outside_tmux(tmp_path: Path) -> None:
+    """Opening the window is the whole command here, so silence would lie."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path, attached=False)
+
+    result = run_cli(["work"], home, cwd=worktree, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "not inside tmux" in result.stdout + result.stderr
+    assert tmux_calls(log) == []
+
+
+def test_switch_opens_the_window_of_the_worktree_it_switched(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path)
+
+    result = run_cli(["switch", "feature"], home, cwd=worktree, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    # The window is named after the worktree, so switching branches keeps it.
+    assert f"new-window -n project/{worktree.name} -c {worktree}" in tmux_calls(log)
+
+
+def test_done_closes_a_window_it_is_not_running_in(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(
+        tmp_path,
+        f"@1 project/{worktree.name}\n@2 something/else",
+        attached=False,
+    )
+
+    result = run_cli(["done", worktree.name], home, cwd=tmp_path, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert not worktree.exists()
+    calls = tmux_calls(log)
+    assert "kill-window -t @1" in calls
+    assert not any("@2" in call for call in calls)
+    # Nothing to defer when gra is not standing in the window.
+    assert not any(call.startswith("run-shell") for call in calls)
+
+
+def test_done_defers_closing_the_window_it_is_running_in(tmp_path: Path) -> None:
+    """Killing that window now would kill gra before it removes anything."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path, f"@1 project/{worktree.name}")
+    env.update({"TMUX_PANE": "%7", "TMUX_HERE": "@1"})
+
+    result = run_cli(["done"], home, cwd=worktree, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert not worktree.exists()
+    calls = tmux_calls(log)
+    assert not any(call.startswith("kill-window") for call in calls)
+    deferred = next(call for call in calls if call.startswith("run-shell -b"))
+    # What was handed over waits for gra to exit, then closes the window only
+    # if the worktree really went away - a removal that failed keeps it.
+    assert "kill -0 " in deferred
+    assert str(worktree) in deferred
+    assert "kill-window -t @1" in deferred
+
+
+def test_done_without_a_window_removes_the_worktree_anyway(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path, "@2 something/else", attached=False)
+
+    result = run_cli(["done", worktree.name], home, cwd=tmp_path, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert not worktree.exists()
+    assert not any(call.startswith("kill-window") for call in tmux_calls(log))
+
+
+# ---------------------------------------------------------------------------
+# work and switch
+# ---------------------------------------------------------------------------
+
 
 
 def test_work_inside_a_worktree_with_branch_creates_a_new_worktree(
@@ -1026,116 +1032,6 @@ def test_work_inside_a_worktree_with_branch_creates_a_new_worktree(
     assert len(created) == 1
     assert git_output(["branch", "--show-current"], cwd=created[0]) == "feature"
     assert git_output(["branch", "--show-current"], cwd=worktree) == "main"
-
-
-def test_work_hook_leaves_the_branch_empty_when_detached(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container)
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "work.sh", recorder())
-
-    result = run_cli(
-        ["work"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)}
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert hook_out.read_text().splitlines()[2] == ""
-
-
-def test_work_hook_says_so_when_there_is_no_hook(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    (container / "work.sh").unlink()
-
-    result = run_cli(["work"], home, cwd=worktree)
-
-    # 'gra work' can be silent about a missing hook when it made a worktree
-    # regardless; inside one it has nothing else to show for itself.
-    assert result.returncode == 1
-    assert "has no 'work.sh'" in result.stderr
-    assert "gra hooks" in result.stderr
-
-
-def test_work_hook_says_so_when_the_hook_is_turned_off(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    (container / "work.sh").chmod(0o644)
-
-    result = run_cli(["work"], home, cwd=worktree)
-
-    # 'chmod -x' is a decision, not a mistake, so this is not a failure.
-    assert result.returncode == 0, result.stderr
-    assert "turned off" in result.stdout + result.stderr
-
-
-def test_switch_runs_the_work_hook_with_the_new_branch(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    add_feature_branch(source)
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    hook_out = tmp_path / "hook-out"
-    write_hook(container, "work.sh", recorder())
-
-    result = run_cli(
-        ["switch", "feature"],
-        home,
-        cwd=worktree,
-        env_extra={"HOOK_OUT": str(hook_out)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    # The window keeps its name across a switch, so the branch is the one thing
-    # the hook has to be told again.
-    assert hook_out.read_text().splitlines() == [
-        "project",
-        worktree.name,
-        "feature",
-        str(worktree),
-        str(worktree),
-    ]
-
-
-def test_done_runs_the_done_hook_before_removing_the_worktree(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
-    hook_out = tmp_path / "hook-out"
-    # The hook records whether the worktree is still there while it runs, and
-    # whether GRA_PID names a gra it could wait for.
-    write_hook(
-        container,
-        "done.sh",
-        recorder()
-        + '[ -d "$GRA_WORKTREE" ] && echo present >> "$HOOK_OUT"\n'
-        + 'kill -0 "$GRA_PID" && echo alive >> "$HOOK_OUT"\n',
-    )
-
-    result = run_cli(["done"], home, cwd=worktree, env_extra={"HOOK_OUT": str(hook_out)})
-
-    assert result.returncode == 0, result.stderr
-    assert not worktree.exists()
-    assert hook_out.read_text().splitlines() == [
-        "project",
-        worktree.name,
-        "main",
-        str(worktree),
-        str(container),
-        "present",
-        "alive",
-    ]
 
 
 def test_work_finds_a_branch_by_ticket_key(tmp_path: Path) -> None:
@@ -1718,18 +1614,36 @@ def test_completion_offers_branches_inside_a_repository(tmp_path: Path) -> None:
         assert "feature/search" in words
 
 
-def test_completion_offers_nothing_for_work_outside_a_repository(
+def test_completion_offers_worktree_names_for_work_outside_a_repository(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    clone_repo(home, make_repo(tmp_path, "project"))
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
 
-    # 'gra work' fails outside a repository, so there is nothing to offer -
-    # certainly not repository names, which are no longer arguments.
-    assert complete(home, ["gra", "work", ""], tmp_path) == []
-    # 'gra work' has no flags left either.
+    # 'gra work WORKTREE' works from anywhere, so the names are worth offering
+    # even outside a repository - unlike branches, and unlike repository
+    # names, which are no longer arguments.
+    assert complete(home, ["gra", "work", ""], tmp_path) == [worktree.name]
+    # 'gra work' has no flags.
     assert complete(home, ["gra", "work", "-"], tmp_path) == []
+
+
+def test_completion_offers_worktree_names_and_branches_for_work(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source, "feature/search")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+
+    words = complete(home, ["gra", "work", ""], container)
+
+    assert worktree.name in words
+    assert "feature/search" in words
 
 
 def test_shell_bash_prints_shell_helper(tmp_path: Path) -> None:

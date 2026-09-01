@@ -66,7 +66,7 @@ def test_words_are_short_unique_and_safe() -> None:
     # Both words run together, and nothing gra reserves is that long - which is
     # what keeps a name from ever being read as a command or a repository path.
     assert all(len(name) == 8 for name in names)
-    reserved = {"install", "clone", "fetch", "ls", "work", "switch", "done", "cd", "shell", "hooks"}
+    reserved = {"install", "clone", "fetch", "ls", "work", "switch", "done", "cd", "shell"}
     assert not (reserved | {"main", "bare", "root", gra.BARE_DIR}) & names
     # A doubled letter where the words meet is fine (snowwolf); three in a row
     # (talllion, pureeels) is not readable, so one of the two words has to go.

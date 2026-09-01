@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "5.3.0"
+__version__ = "6.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -63,112 +64,6 @@ GITHUB_HOST = "github.com"
 UPSTREAM_REMOTE = "upstream"
 UPSTREAM_CONFIG = "gra.upstream"
 LOCAL_EXCLUDES = (CLAUDE_WORKTREES_EXCLUDE,)
-
-# Per-repository hooks, run when a worktree is created and before one is
-# removed. They live in the container (next to `.bare`), so they are personal
-# and per-machine, never committed. gra knows nothing about what is in them;
-# the defaults below happen to drive tmux, and are yours to change or delete.
-# Each is written verbatim, so what you read here is the file you get.
-
-WORK_HOOK = "work.sh"
-WORK_HOOK_DEFAULT = """\
-#!/bin/sh
-# Runs from inside a worktree, whenever gra leaves you in one: after
-# 'gra work' or 'gra clone' creates it, after 'gra switch' moves it to
-# another branch, and again when 'gra work' runs inside it. So it runs more
-# than once per worktree and must not undo work in progress.
-#
-# gra runs this with these variables set:
-#
-#     GRA_WORKTREE   absolute path to the worktree
-#     GRA_REPO       repository name, e.g. nanobench
-#     GRA_WORD       worktree name, e.g. warmhare
-#     GRA_BRANCH     checked-out branch, or empty when detached
-#     GRA_PID        the gra running this
-#
-# It is personal to this machine and never committed. Edit it freely; gra
-# only runs it. 'chmod -x' turns it off.
-
-[ -n "$TMUX" ] || exit 0
-
-# done.sh finds the window by this name. Change it there too.
-window_name="$GRA_REPO/$GRA_WORD"
-
-# The window survives everything but 'gra done', so on a re-run go to the one
-# that is already open rather than opening a second window of the same name.
-open=$(tmux list-windows -a -F '#{window_id} #{window_name}' \
-    | awk -v name="$window_name" '$2 == name { print $1; exit }')
-if [ -n "$open" ]; then
-    tmux select-window -t "$open"
-    exit 0
-fi
-
-window=$(tmux new-window -P -F '#{window_id}' \
-    -n "$window_name" -c "$GRA_WORKTREE")
-
-# --- prepare the worktree -------------------------------------------------
-# ln -sf ../shared/compile_commands.json .
-# cp ../.env .
-
-# --- lay out panes --------------------------------------------------------
-# The window has one pane in the worktree; send it a command, then split off
-# more panes and send commands to those.
-# tmux send-keys    -t "$window" 'claude' Enter
-# tmux split-window -h -t "$window" -c "$GRA_WORKTREE"
-# tmux send-keys    -t "$window" 'hx .' Enter
-# tmux split-window -v -t "$window" -c "$GRA_WORKTREE"
-# tmux send-keys    -t "$window" 'htop' Enter
-# tmux select-pane  -t "$window".0
-"""
-
-DONE_HOOK = "done.sh"
-DONE_HOOK_DEFAULT = """\
-#!/bin/sh
-# Runs before 'gra done' removes a worktree, from the repository directory.
-# The worktree still exists while this runs.
-#
-# gra runs this with these variables set:
-#
-#     GRA_WORKTREE   absolute path to the worktree
-#     GRA_REPO       repository name, e.g. nanobench
-#     GRA_WORD       worktree name, e.g. warmhare
-#     GRA_BRANCH     checked-out branch, or empty when detached
-#     GRA_PID        the gra running this, to outlive it (see below)
-#
-# It is personal to this machine and never committed. Edit it freely; gra
-# only runs it. 'chmod -x' turns it off.
-
-# The name work.sh gave the window. Change it there too.
-window_name="$GRA_REPO/$GRA_WORD"
-
-# The window this hook is running in, if any. 'gra done' is usually run from
-# the very window that is about to be closed, and closing that one now would
-# kill gra along with it - before it removes anything.
-here=""
-[ -n "$TMUX_PANE" ] &&
-    here=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)
-
-# Close the window, in whichever session it ended up in. Runs from outside
-# tmux too, so 'gra done <name>' from a plain terminal closes it as well.
-tmux list-windows -a -F '#{window_name} #{window_id}' 2>/dev/null |
-while read -r name id; do
-    [ "$name" = "$window_name" ] || continue
-    if [ "$id" != "$here" ]; then
-        tmux kill-window -t "$id"
-        continue
-    fi
-    # The one we are standing in: hand it to the tmux server, which outlives
-    # this window, and let it wait for gra to exit. It closes the window only
-    # when the worktree really went away, so a removal that fails keeps it.
-    tmux run-shell -b "\\
-        while kill -0 $GRA_PID 2>/dev/null; do sleep 0.2; done
-        [ -d '$GRA_WORKTREE' ] || tmux kill-window -t $id"
-done
-"""
-
-# What 'gra hooks --force' leaves the hook it replaced under. An edited hook
-# is the one thing here gra could not write again.
-HOOK_BACKUP_SUFFIX = ".bak"
 
 # Worktree names are a descriptor and a noun run together, e.g. warmhare:
 # memorable, always eight letters, and never colliding with a gra command
@@ -796,61 +691,13 @@ def add_local_excludes(bare: Path) -> None:
                 file.write(f"{pattern}\n")
 
 
-def write_default_hooks(container: Path, *, force: bool = False) -> int:
-    """Drop working work.sh and done.sh hooks in the container, and count them.
-
-    Executable, so a fresh clone opens and closes tmux windows without any
-    setup - that behaviour lives in these scripts now, not in gra. Hooks that
-    already exist are left alone, edits and all; force replaces them with the
-    current defaults instead, keeping each one it replaces as '<hook>.bak'
-    because an edited hook is not something gra could write again.
-
-    A hook that already is the default is left untouched either way, so this
-    stays idempotent and never turns a 'chmod -x' back on by itself.
-    """
-    written = 0
-    for name, default in ((WORK_HOOK, WORK_HOOK_DEFAULT), (DONE_HOOK, DONE_HOOK_DEFAULT)):
-        script = container / name
-        if script.exists():
-            if not force or script.read_bytes() == default.encode():
-                continue
-            backup = script.with_name(name + HOOK_BACKUP_SUFFIX)
-            script.replace(backup)
-            log(f"kept the old '{name}' as '{backup.name}'", YELLOW)
-        script.write_text(default, encoding="utf-8")
-        script.chmod(0o755)
-        log(f"wrote '{script}'")
-        written += 1
-    return written
-
-
-def write_hooks(root: Path, force: bool) -> None:
-    """Give every repository under the root the hooks it is missing.
-
-    Repositories cloned before hooks existed have none, and only 'gra clone'
-    writes them, so without this they would stay silent forever. With force,
-    every repository ends up on the current defaults - which is how a hook
-    that an older gra wrote gets fixed.
-    """
-    repositories = repositories_or_report(root)
-    if not repositories:
-        return
-    written = sum(write_default_hooks(container, force=force) for container in repositories)
-    log(
-        f"{written} hook(s) written across {len(repositories)} repositories"
-        if written
-        else f"all {len(repositories)} repositories already have their hooks",
-        GREEN,
-    )
-
-
 def clone(
     url: str,
     name: str | None,
     root: Path,
     *,
     no_work: bool,
-    no_hook: bool,
+    no_tmux: bool,
     no_submodules: bool,
     no_upstream: bool,
 ) -> None:
@@ -883,7 +730,6 @@ def clone(
         if no_submodules:
             run_git(["config", SUBMODULES_CONFIG, "false"], cwd=bare)
         add_local_excludes(bare)
-        write_default_hooks(container)
     except Exception:
         if container.exists():
             shutil.rmtree(container)
@@ -907,7 +753,7 @@ def clone(
             YELLOW,
         )
         return
-    create_worktree(container, root, ref.removeprefix("origin/"), no_hook=no_hook)
+    create_worktree(container, root, ref.removeprefix("origin/"), no_tmux=no_tmux)
 
 
 # ---------------------------------------------------------------------------
@@ -1118,18 +964,28 @@ def select_worktree_row_from_rows(rows: list[WorktreeRow], source: str) -> Workt
     fail(f"invalid worktree selection '{target}'")
 
 
-def resolve_worktree_name(root: Path, name: str) -> WorktreeRow:
-    """Resolve a worktree name like 'snowwolf' to its row.
+def find_worktree_path(root: Path, name: str) -> Path | None:
+    """The worktree directory called name, or None when there is no such name.
 
     Names are unique across all repositories and worktrees always live directly
     under their container, so a filesystem probe finds the worktree without
     querying Git in every repository.
     """
+    if name == BARE_DIR:
+        return None
     for container in containers(root):
         path = container / name
-        if name != BARE_DIR and path.is_dir():
-            return WorktreeRow(str(path), container.name, name, worktree_ref(path))
-    fail(f"no worktree named '{name}' under '{root}'")
+        if path.is_dir():
+            return path
+    return None
+
+
+def resolve_worktree_name(root: Path, name: str) -> WorktreeRow:
+    """Resolve a worktree name like 'snowwolf' to its row."""
+    path = find_worktree_path(root, name)
+    if path is None:
+        fail(f"no worktree named '{name}' under '{root}'")
+    return WorktreeRow(str(path), path.parent.name, name, worktree_ref(path))
 
 
 def pick_worktree_row(root: Path, name: str | None = None) -> WorktreeRow:
@@ -1147,29 +1003,105 @@ def print_cd_target(root: Path, name: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Worktree hooks
+# tmux windows
 # ---------------------------------------------------------------------------
 
+# A worktree gets one tmux window, named '<repo>/<word>', opened whenever gra
+# leaves you in the worktree and closed again when 'gra done' removes it. The
+# name is how the two find each other, and it is the only state gra keeps
+# about a window - there is no file to configure and nothing to install.
 
-def run_hook(name: str, container: Path, worktree: Path, branch: str, cwd: Path) -> None:
-    """Run one of the container's hooks, if it is there and executable."""
-    script = container / name
-    if not (script.is_file() and os.access(script, os.X_OK)):
+
+def tmux_window_name(worktree: Path) -> str:
+    """The window name for a worktree, e.g. 'oans/warmhare'."""
+    return f"{worktree.parent.name}/{worktree.name}"
+
+
+def tmux(args: list[str]) -> str | None:
+    """Run tmux and return its output, or None when it is not there or fails.
+
+    tmux does not have to be installed, and a command can fail because the
+    window it names just went away, so nothing here is worth failing gra over.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", *args], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def find_tmux_window(name: str) -> str | None:
+    """The id of the window called name, in whichever session it is in.
+
+    Every session, not just the current one, because a window outlives the
+    session it was opened in and 'gra done' also runs from a plain terminal.
+    """
+    output = tmux(["list-windows", "-a", "-F", "#{window_id} #{window_name}"])
+    for line in (output or "").splitlines():
+        window_id, _, window_name = line.partition(" ")
+        if window_name == name:
+            return window_id
+    return None
+
+
+def current_tmux_window() -> str | None:
+    """The id of the window gra itself is running in, if any."""
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return None
+    output = tmux(["display-message", "-p", "-t", pane, "#{window_id}"])
+    return output.strip() if output else None
+
+
+def open_tmux_window(worktree: Path) -> None:
+    """Open the worktree's window, or go to the one that is already open.
+
+    Only from inside tmux: elsewhere there is no session the window would
+    belong to. The window survives everything but 'gra done', so a second
+    'gra work' has to find it rather than open a second window of the name.
+    """
+    if not os.environ.get("TMUX"):
         return
-    env = {
-        **os.environ,
-        "GRA_WORKTREE": str(worktree),
-        "GRA_REPO": container.name,
-        "GRA_WORD": worktree.name,
-        "GRA_BRANCH": branch,
-        # So a hook can outlive gra rather than take it down: 'done.sh' closes
-        # the window gra is running in, which has to wait for gra to exit.
-        "GRA_PID": str(os.getpid()),
-    }
-    log(f"running '{script}'")
-    result = subprocess.run([str(script)], cwd=cwd, env=env, check=False)
-    if result.returncode != 0:
-        log(f"'{script}' exited with {result.returncode}", YELLOW)
+    name = tmux_window_name(worktree)
+    open_window = find_tmux_window(name)
+    if open_window:
+        tmux(["select-window", "-t", open_window])
+        log(f"switched to tmux window '{name}'")
+        return
+    if tmux(["new-window", "-n", name, "-c", str(worktree)]) is None:
+        return
+    log(f"opened tmux window '{name}'")
+
+
+def close_tmux_window(worktree: Path) -> None:
+    """Close the worktree's window, before the worktree is removed.
+
+    Runs outside tmux too, so 'gra done <name>' from a plain terminal closes
+    the window as well.
+    """
+    name = tmux_window_name(worktree)
+    window = find_tmux_window(name)
+    if not window:
+        return
+    if window != current_tmux_window():
+        tmux(["kill-window", "-t", window])
+        log(f"closed tmux window '{name}'")
+        return
+    # The window gra is standing in: killing it now would take gra down before
+    # it removes anything. Hand it to the tmux server, which outlives the
+    # window, and let it wait for gra to exit. It closes the window only when
+    # the worktree really went away, so a removal that fails keeps it.
+    tmux(
+        [
+            "run-shell",
+            "-b",
+            f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 0.2; done; "
+            f"[ -d {shlex.quote(str(worktree))} ] || tmux kill-window -t {window}",
+        ]
+    )
+    log(f"tmux window '{name}' closes once gra exits")
 
 
 # ---------------------------------------------------------------------------
@@ -1372,7 +1304,7 @@ _gra() {
     local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]-} container words
 
     if (( COMP_CWORD == 1 )); then
-        COMPREPLY=($(compgen -W 'install clone fetch ls work switch done cd shell hooks' \
+        COMPREPLY=($(compgen -W 'install clone fetch ls work switch done cd shell' \
             -- "$cur"))
         return
     fi
@@ -1381,8 +1313,8 @@ _gra() {
     # completes on its own rather than sharing a menu with --force.
     if [[ $cur == -* ]]; then
         case $cmd in
-            clone) words='--name --no-work --no-hook --no-submodules --no-upstream' ;;
-            done|hooks) words='--force' ;;
+            clone) words='--name --no-work --no-tmux --no-submodules --no-upstream' ;;
+            done) words='--force' ;;
             ls) words='--fetch' ;;
             install) words='--no-check' ;;
         esac
@@ -1394,7 +1326,13 @@ _gra() {
         cd|done)
             words=$(_gra_worktrees "$(_gra_root)")
             ;;
-        work|switch)
+        work)
+            # A worktree name works from anywhere; branches need a repository.
+            words=$(_gra_worktrees "$(_gra_root)")
+            container=$(_gra_container)
+            [[ -n $container ]] && words+=$'\n'$(_gra_branches "$container")
+            ;;
+        switch)
             # Outside a repository the command fails anyway, so offer nothing.
             container=$(_gra_container)
             [[ -n $container ]] && words=$(_gra_branches "$container")
@@ -1561,7 +1499,7 @@ def init_submodules(bare: Path, worktree: Path) -> None:
 
 
 def create_worktree(
-    container: Path, root: Path, branch: str, *, no_hook: bool
+    container: Path, root: Path, branch: str, *, no_tmux: bool = False
 ) -> None:
     """Create a worktree named after the repository next to the bare checkout.
 
@@ -1586,8 +1524,8 @@ def create_worktree(
     init_submodules(bare, target)
     log(f"created '{target}'", GREEN)
 
-    if not no_hook:
-        run_hook(WORK_HOOK, container, target, branch, cwd=target)
+    if not no_tmux:
+        open_tmux_window(target)
 
 
 # ---------------------------------------------------------------------------
@@ -1595,33 +1533,41 @@ def create_worktree(
 # ---------------------------------------------------------------------------
 
 
-def work(branch_input: str | None, root: Path) -> None:
-    """Work here, whatever that takes: a new worktree, or setting one up again.
+def work(target: str | None, root: Path) -> None:
+    """Work here, whatever that takes: a new worktree, or opening one again.
 
-    Where the command runs decides what it does. In the repository folder it
-    creates a worktree - for BRANCH, or for a branch picked with fzf. Inside a
-    worktree it re-runs the work hook, unless BRANCH asks for a new worktree
-    anyway. Anywhere else there is nothing it could mean.
+    A worktree name - 'gra work warmhare' - goes to that worktree's tmux
+    window from anywhere, because a name identifies one worktree on the whole
+    machine. Anything else is a branch, and then where the command runs
+    decides: in the repository folder it creates a worktree, for BRANCH or for
+    a branch picked with fzf, and inside a worktree a bare 'gra work' opens
+    that worktree's window again.
     """
+    if target:
+        existing = find_worktree_path(root, target)
+        if existing is not None:
+            set_up_worktree(existing)
+            return
+
     container, worktree = gra_location()
     if container is None:
         fail(
-            "gra work must run inside a gra repository:\n"
+            "gra work needs a worktree name, or a gra repository to run in:\n"
+            "  'gra work WORKTREE' opens that worktree's tmux window\n"
             "  in the repository folder it creates a worktree - 'gra work' picks\n"
             "  the branch with fzf, 'gra work BRANCH' names it\n"
-            f"  inside a worktree it runs the '{WORK_HOOK}' hook again\n"
             "'gra ls' lists repositories; 'gra cd' jumps into a worktree"
         )
 
-    if worktree and not branch_input:
-        run_work_hook(container, worktree)
+    if worktree and not target:
+        set_up_worktree(worktree)
         return
 
-    if branch_input:
-        branch = resolve_branch(bare_dir(container), branch_name_from_input(branch_input))
+    if target:
+        branch = resolve_branch(bare_dir(container), branch_name_from_input(target))
     else:
         branch = pick_branch(container, "gra work", offer_detached=True)
-    create_worktree(container, root, branch, no_hook=False)
+    create_worktree(container, root, branch)
 
 
 def switch(branch_input: str | None) -> None:
@@ -1654,30 +1600,20 @@ def switch(branch_input: str | None) -> None:
         run_git(["switch", branch], cwd=worktree)
     log(f"'{worktree.name}' is now on '{branch}'", GREEN)
 
-    run_hook(WORK_HOOK, container, worktree, branch, cwd=worktree)
+    open_tmux_window(worktree)
 
 
-def run_work_hook(container: Path, worktree: Path) -> None:
-    """Run the work hook again for the worktree we are standing in.
+def set_up_worktree(worktree: Path) -> None:
+    """Set an existing worktree up again - which today means its tmux window.
 
-    Setting a worktree up is not a one-shot event: the tmux window the hook
-    opened can be closed while the worktree lives on.
-
-    The branch comes off the worktree, so a detached one reports the empty
-    GRA_BRANCH that creating it would have given the hook.
+    Setting a worktree up is not a one-shot event: the window can be closed
+    while the worktree lives on. Unlike creating a worktree, this is the whole
+    command, so outside tmux it says that it had nothing to do.
     """
-    # Everywhere else a missing hook is silence, because something was created
-    # anyway. Here it would mean the whole command did nothing without saying
-    # so, and repositories cloned by gra 1.x have no hooks at all.
-    script = container / WORK_HOOK
-    if not script.is_file():
-        fail(f"'{container}' has no '{WORK_HOOK}'; 'gra hooks' writes missing hooks")
-    if not os.access(script, os.X_OK):
-        log(f"'{script}' is turned off; 'chmod +x' it to run it", YELLOW)
+    if not os.environ.get("TMUX"):
+        log(f"not inside tmux; nothing to set up for '{worktree.name}'", YELLOW)
         return
-
-    branch = git_output(["branch", "--show-current"], cwd=worktree) or ""
-    run_hook(WORK_HOOK, container, worktree, branch, cwd=worktree)
+    open_tmux_window(worktree)
 
 
 # ---------------------------------------------------------------------------
@@ -1721,9 +1657,9 @@ def remove_worktree(container: Path, worktree: Path, *, force: bool, branch_merg
     bare = bare_dir(container)
     branch = git_output(["branch", "--show-current"], cwd=worktree)
 
-    # Before removal, so the hook can still look at the worktree, and from the
-    # container, so its working directory is not the one about to disappear.
-    run_hook(DONE_HOOK, container, worktree, branch or "", cwd=container)
+    # Before removal: closing the window is deferred until gra exits when gra
+    # is running in it, and that check needs the window to still be there.
+    close_tmux_window(worktree)
 
     log(f"Removing worktree '{worktree}'")
     remove_args: list[str | Path] = ["worktree", "remove"]
@@ -2007,8 +1943,8 @@ def parse_args() -> argparse.Namespace:
             "The local name is the repository name; use --name to override it.\n"
             "A worktree named after an unused name for the repository is\n"
             "created next to it, checked out on origin's default branch;\n"
-            f"use --no-work to skip it. Writes '{WORK_HOOK}' and '{DONE_HOOK}'\n"
-            f"hooks next to '{BARE_DIR}' and runs the first.\n"
+            "use --no-work to skip it, and --no-tmux to create it without\n"
+            "opening a tmux window for it.\n"
             f"--no-submodules records '{SUBMODULES_CONFIG}=false', which every\n"
             "later 'gra work' in this repository honours too.\n"
             f"A GitHub fork gets an '{UPSTREAM_REMOTE}' remote pointing at the\n"
@@ -2022,7 +1958,7 @@ def parse_args() -> argparse.Namespace:
         "--no-work", action="store_true", help="clone only, without a worktree"
     )
     clone_parser.add_argument(
-        "--no-hook", action="store_true", help=f"do not run the '{WORK_HOOK}' hook"
+        "--no-tmux", action="store_true", help="do not open a tmux window"
     )
     clone_parser.add_argument(
         "--no-submodules",
@@ -2040,7 +1976,7 @@ def parse_args() -> argparse.Namespace:
             args.name,
             args.root,
             no_work=args.no_work,
-            no_hook=args.no_hook,
+            no_tmux=args.no_tmux,
             no_submodules=args.no_submodules,
             no_upstream=args.no_upstream,
         )
@@ -2079,22 +2015,26 @@ def parse_args() -> argparse.Namespace:
     work_parser = subparsers.add_parser(
         "work",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="work on a branch in a new worktree, or set this one up again",
+        help="work on a branch in a new worktree, or open a worktree's window",
         description=(
-            "What this does depends on where it runs:\n"
+            "TARGET is a worktree name or a branch.\n"
+            "A worktree name - 'gra work warmhare' - opens that worktree's tmux\n"
+            "window, or switches to it when it is already open. It works from\n"
+            "anywhere, because a name identifies one worktree on the machine.\n"
+            "Anything else is a branch, and always creates a worktree that\n"
+            "checks it out (creating and pushing the branch when missing).\n"
+            "BRANCH may be part of a name, so a ticket key finds the branch\n"
+            "named after it; several matches are listed rather than guessed\n"
+            "between.\n"
+            "Without TARGET, what this does depends on where it runs:\n"
             "  in the repository folder: create a worktree named after an\n"
-            f"    unused name for the repository, and run '{WORK_HOOK}' inside it\n"
-            f"  inside a worktree: run the '{WORK_HOOK}' hook again, creating nothing\n"
-            "With BRANCH, always create a worktree that checks it out (creating\n"
-            "and pushing the branch when missing). BRANCH may be part of a name,\n"
-            "so a ticket key finds the branch named after it; several matches\n"
-            "are listed rather than guessed between.\n"
-            "Without BRANCH in the repository folder, pick one with fzf, newest\n"
-            "commits first - or start detached at origin's default branch."
+            "    unused name for the repository, on a branch picked with fzf,\n"
+            "    newest commits first - or detached at origin's default branch\n"
+            "  inside a worktree: open that worktree's window, creating nothing"
         ),
     )
-    work_parser.add_argument("branch", nargs="?", help="branch to check out")
-    work_parser.set_defaults(handler=lambda args: work(args.branch, args.root))
+    work_parser.add_argument("target", nargs="?", help="worktree name or branch")
+    work_parser.set_defaults(handler=lambda args: work(args.target, args.root))
 
     switch_parser = subparsers.add_parser(
         "switch",
@@ -2107,7 +2047,7 @@ def parse_args() -> argparse.Namespace:
             "origin's default branch and pushed.\n"
             "Without BRANCH, pick one with fzf, newest commits first.\n"
             "Refuses when the worktree has uncommitted changes.\n"
-            f"Runs the repository's '{WORK_HOOK}' hook after switching."
+            "Opens or switches to the worktree's tmux window afterwards."
         ),
     )
     switch_parser.add_argument("branch", nargs="?", help="branch to switch to")
@@ -2118,8 +2058,8 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawTextHelpFormatter,
         help="remove a worktree when its work is in origin",
         description=(
-            f"Remove a worktree, running the repository's '{DONE_HOOK}' hook\n"
-            "first. Removes the current one, or NAME from anywhere.\n"
+            "Remove a worktree, closing its tmux window first. Removes the\n"
+            "current one, or NAME from anywhere.\n"
             "Fetches, then checks that the commits are pushed, that nothing\n"
             "is modified locally, that no Git operation is half finished,\n"
             "that the work is merged into origin's default branch, and what\n"
@@ -2157,26 +2097,6 @@ def parse_args() -> argparse.Namespace:
     )
     shell_parser.add_argument("shell", choices=["bash"], help="shell to initialize")
     shell_parser.set_defaults(handler=lambda args: print_shell_init(args.shell))
-
-    hooks_parser = subparsers.add_parser(
-        "hooks",
-        formatter_class=argparse.RawTextHelpFormatter,
-        help="write missing hooks into every repository",
-        description=(
-            f"Write '{WORK_HOOK}' and '{DONE_HOOK}' into every repository under\n"
-            f"'{root}' that is missing them. Existing hooks are left alone,\n"
-            "so this is safe to re-run and cannot overwrite your edits.\n"
-            "--force puts every repository on the current defaults instead,\n"
-            f"keeping each hook it replaces as '<hook>{HOOK_BACKUP_SUFFIX}'. A hook that\n"
-            "already is the default is left untouched either way."
-        ),
-    )
-    hooks_parser.add_argument(
-        "--force",
-        action="store_true",
-        help=f"replace edited hooks, keeping the old one as '<hook>{HOOK_BACKUP_SUFFIX}'",
-    )
-    hooks_parser.set_defaults(handler=lambda args: write_hooks(args.root, args.force))
 
     args = parser.parse_args()
     args.root = root
