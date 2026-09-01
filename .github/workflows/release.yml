@@ -3,9 +3,16 @@ name: release
 # Pushing an annotated tag like v8.2.0 publishes a GitHub release for it,
 # with the tag's own message as the release notes. Write the notes into the
 # tag (git tag -a --cleanup=verbatim -F notes.md vX.Y.Z) and push it.
+# A failed publish can be retried for a tag that is already pushed by
+# dispatching this workflow with the tag's name.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing v* tag to publish the release for"
+        required: true
 
 permissions:
   contents: write
@@ -13,8 +20,14 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --notes-from-tag --title "gra ${TAG#v}"
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+      - uses: actions/checkout@v4
+      # actions/checkout turns the annotated tag into a lightweight one
+      # pointing straight at the commit; fetch the real tag back, because
+      # its message is the release notes.
+      - run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+      - run: git tag -l --format='%(contents)' "$TAG" > "$RUNNER_TEMP/notes.md"
+      - run: gh release create "$TAG" --verify-tag --title "gra ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md"
