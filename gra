@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "7.0.0"
+__version__ = "8.0.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -867,7 +867,7 @@ def print_repositories(root: Path, fetch: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Picker helpers (cd, work)
+# Worktree name lookup, and the fzf table behind the branch picker
 # ---------------------------------------------------------------------------
 
 
@@ -876,10 +876,9 @@ def fzf_table(
 ) -> str:
     """Select from (key, columns) entries with fzf and return the chosen key.
 
-    Owns the whole table convention - aligned columns behind a hidden key -
-    so every picker lays out and selects the same way. A cancelled fzf exits
-    this process with fzf's own status, so callers only ever see a selection
-    that was actually made.
+    Owns the whole table convention - aligned columns behind a hidden key.
+    A cancelled fzf exits this process with fzf's own status, so callers
+    only ever see a selection that was actually made.
     """
     if not shutil.which("fzf"):
         fail(f"fzf is required for '{command}'")
@@ -916,47 +915,6 @@ def fzf_table(
     return selected.split("\t", 1)[0]
 
 
-class WorktreeRow(NamedTuple):
-    """One worktree in pickers and machine-readable listings."""
-
-    path: str
-    repo: str
-    word: str
-    ref: str
-
-    def values(self) -> list[str]:
-        return [self.repo, self.word, self.ref]
-
-
-def local_worktree_picker_rows(root: Path) -> list[WorktreeRow]:
-    """Return local worktree picker rows under the gra root."""
-    entries = [
-        (container.name, path)
-        for container in containers(root)
-        for path in worktree_paths(bare_dir(container))
-        if path.is_dir()
-    ]
-    refs = parallel_map(lambda entry: worktree_ref(entry[1]), entries)
-    return [
-        WorktreeRow(str(path), repo, path.name, ref)
-        for (repo, path), ref in zip(entries, refs)
-    ]
-
-
-PICKER_HEADERS = ["REPOSITORY", "WORKTREE", "BRANCH"]
-
-
-def select_worktree_row_from_rows(rows: list[WorktreeRow], source: str) -> WorktreeRow:
-    """Select a worktree with fzf and return its picker row."""
-    if not rows:
-        fail(f"no worktrees found {source}")
-    target = fzf_table("gra cd", PICKER_HEADERS, [(row.path, row.values()) for row in rows])
-    for row in rows:
-        if row.path == target:
-            return row
-    fail(f"invalid worktree selection '{target}'")
-
-
 def find_worktree_path(root: Path, name: str) -> Path | None:
     """The worktree directory called name, or None when there is no such name.
 
@@ -973,26 +931,12 @@ def find_worktree_path(root: Path, name: str) -> Path | None:
     return None
 
 
-def resolve_worktree_name(root: Path, name: str) -> WorktreeRow:
-    """Resolve a worktree name like 'snowwolf' to its row."""
+def resolve_worktree_name(root: Path, name: str) -> Path:
+    """Resolve a worktree name like 'snowwolf' to its directory."""
     path = find_worktree_path(root, name)
     if path is None:
         fail(f"no worktree named '{name}' under '{root}'")
-    return WorktreeRow(str(path), path.parent.name, name, worktree_ref(path))
-
-
-def pick_worktree_row(root: Path, name: str | None = None) -> WorktreeRow:
-    """Resolve a worktree by name, or select one with fzf."""
-    if name:
-        return resolve_worktree_name(root, name)
-    return select_worktree_row_from_rows(
-        local_worktree_picker_rows(root), f"under '{root}'"
-    )
-
-
-def print_cd_target(root: Path, name: str | None) -> None:
-    """Print the path of a worktree chosen by name or with fzf."""
-    print(pick_worktree_row(root, name).path)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -1808,7 +1752,7 @@ def confirm_removal(
 def done(name: str | None, root: Path, force: bool) -> None:
     """Remove a worktree once its work is safely in origin."""
     if name:
-        worktree = Path(resolve_worktree_name(root, name).path)
+        worktree = resolve_worktree_name(root, name)
         container = worktree.parent
     else:
         container, worktree = current_gra_worktree("done")
@@ -2006,14 +1950,16 @@ def parse_args() -> argparse.Namespace:
     cd_parser = subparsers.add_parser(
         "cd",
         formatter_class=argparse.RawTextHelpFormatter,
-        help="print a worktree path, by name or with fzf",
+        help="print a worktree path, by name",
         description=(
-            "Print the path of a worktree, chosen by NAME or with fzf.\n"
+            "Print the path of the worktree called NAME; Tab completes the names.\n"
             "Use 'eval \"$(gra shell bash)\"' to make 'gra cd' change directories."
         ),
     )
-    cd_parser.add_argument("name", nargs="?", help="worktree name, for example 'snowwolf'")
-    cd_parser.set_defaults(handler=lambda args: print_cd_target(args.root, args.name))
+    cd_parser.add_argument("name", help="worktree name, for example 'snowwolf'")
+    cd_parser.set_defaults(
+        handler=lambda args: print(resolve_worktree_name(args.root, args.name))
+    )
 
     shell_parser = subparsers.add_parser(
         "shell",

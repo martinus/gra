@@ -63,7 +63,7 @@ your shell afterwards.
 
 > [!NOTE]
 > Needs **Git** and **Python 3.10+**. [`fzf`](https://github.com/junegunn/fzf)
-> powers the worktree and branch pickers, [`gh`](https://cli.github.com/) lets
+> powers the branch picker of `gra work`, [`gh`](https://cli.github.com/) lets
 > `gra` spot that a clone is a fork, and `tmux` - when you work inside it -
 > gets a window per worktree.
 
@@ -87,8 +87,7 @@ When there is no `~/.bashrc` (`gra shell` only speaks bash) nothing is written
 and the lines to add are printed instead.
 
 That one `eval` is what makes `gra cd` change directories, `gra done` leave
-the removed directory, and `<TAB>` complete worktrees, repositories and
-branches.
+the removed directory, and `<TAB>` complete worktree names and branches.
 
 </details>
 
@@ -112,7 +111,7 @@ git config --global gra.root ~/develop
 | [`gra clone <url>`](#gra-clone) | Clone into `~/gra/<repo>` as a bare checkout, with a worktree ready to use |
 | [`gra work [target]`](#gra-work) | Create a worktree for a branch - or open a worktree's tmux window |
 | [`gra done [name]`](#gra-done) | Remove a worktree once its work is in origin |
-| [`gra cd [name]`](#gra-cd) | Jump to a worktree, by name or with `fzf` |
+| [`gra cd <name>`](#gra-cd) | Jump to a worktree by name |
 | [`gra ls [--fetch]`](#gra-ls) | One table of every repository and worktree |
 | [`gra install`](#gra-install) | Install or upgrade `gra` itself |
 
@@ -405,12 +404,14 @@ scripts, where an unanswered question counts as no.
 ## `gra cd`
 
 ```sh
-gra cd            # pick with fzf
-gra cd snowwolf   # jump straight to the worktree named snowwolf
+gra cd snowwolf   # jump to the worktree named snowwolf
 ```
 
-The command prints the selected path; the shell integration is what turns that
-into an actual `cd`. `gra install` adds it for you, or add it yourself:
+Because a name identifies one worktree on the whole machine, that is all `gra`
+needs - and `<TAB>` completes the names, so `gra ls` followed by `gra cd` and
+Tab is the whole navigation. The command prints the worktree's path; the shell
+integration is what turns that into an actual `cd`. `gra install` adds it for
+you, or add it yourself:
 
 ```sh
 eval "$(gra shell bash)"

@@ -1385,25 +1385,18 @@ def test_cd_with_unknown_name_fails(tmp_path: Path) -> None:
     assert "no worktree named 'zzzz'" in result.stderr
 
 
-def test_cd_prints_selected_worktree_path_from_fzf(tmp_path: Path) -> None:
+def test_cd_requires_a_name(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    source = make_repo(tmp_path, "project")
-    container = clone_repo(home, source)
-    worktree = work_worktree(home, container, "main")
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    work_worktree(home, container, "main")
 
-    fzf_env, fzf_input, fzf_args = write_fzf_mock(tmp_path)
+    result = run_cli(["cd"], home, cwd=tmp_path)
 
-    result = run_cli(["cd"], home, cwd=tmp_path, env_extra=fzf_env)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{worktree}\n"
-    args = fzf_args.read_text().splitlines()
-    assert "--tiebreak=begin,index" in args
-    assert "--with-nth=2" in args
-    assert fzf_input.read_text().splitlines() == [
-        f"{worktree}\tproject  {worktree.name}  main",
-    ]
+    # There is no picker any more: Tab completion offers the names, and a
+    # bare 'gra cd' is a usage error rather than a prompt.
+    assert result.returncode == 2
+    assert "name" in result.stderr
 
 
 def complete(home: Path, words: list[str], cwd: Path) -> list[str]:
