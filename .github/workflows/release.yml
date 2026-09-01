@@ -1,0 +1,20 @@
+name: release
+
+# Pushing an annotated tag like v8.2.0 publishes a GitHub release for it,
+# with the tag's own message as the release notes. Write the notes into the
+# tag (git tag -a --cleanup=verbatim -F notes.md vX.Y.Z) and push it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --notes-from-tag --title "gra ${TAG#v}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
