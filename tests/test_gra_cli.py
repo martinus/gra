@@ -964,6 +964,46 @@ def test_work_with_a_name_attaches_to_the_session_holding_the_window(
     assert not any(call.startswith("new-window") for call in calls)
 
 
+def test_work_path_prints_only_the_new_worktree(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    add_feature_branch(source)
+    container = clone_repo(home, source)
+    env, log = write_tmux_mock(tmp_path)
+
+    result = run_cli(["work", "--path", "feature"], home, cwd=container, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    created = worktree_dirs(container)[0]
+    # One line, the path, and nothing else: what 'cd "$(gra work --path x)"'
+    # and a Claude Code WorktreeCreate hook both need.
+    assert result.stdout == f"{created}\n"
+    assert git_output(["branch", "--show-current"], cwd=created) == "feature"
+    # A script has no terminal to put a window in.
+    assert tmux_calls(log) == []
+
+
+def test_work_path_prints_an_existing_worktree_without_attaching(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path, attached=False, sessions="main", session="main")
+
+    result = run_cli(
+        ["work", "--path", worktree.name], home, cwd=tmp_path, env_extra=env
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{worktree}\n"
+    # Naming a worktree normally attaches; a script must not have its
+    # terminal taken over.
+    assert tmux_calls(log) == []
+
+
 def test_work_starts_tmux_when_no_server_is_running(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -1690,8 +1730,7 @@ def test_completion_offers_worktree_names_for_work_outside_a_repository(
     # even outside a repository - unlike branches, and unlike repository
     # names, which are no longer arguments.
     assert complete(home, ["gra", "work", ""], tmp_path) == [worktree.name]
-    # 'gra work' has no flags.
-    assert complete(home, ["gra", "work", "-"], tmp_path) == []
+    assert complete(home, ["gra", "work", "-"], tmp_path) == ["--path"]
 
 
 def test_completion_offers_worktree_names_and_branches_for_work(

@@ -110,6 +110,7 @@ git config --global gra.root ~/develop
 | ------- | ------------ |
 | [`gra clone <url>`](#gra-clone) | Clone into `~/gra/<repo>` as a bare checkout, with a worktree ready to use |
 | [`gra work [target]`](#gra-work) | Create a worktree for a branch - or open a worktree's tmux window |
+| [`gra work --path`](#a-path-for-scripts) | The same, printing only the new worktree's path |
 | [`gra done [name]`](#gra-done) | Remove a worktree once its work is in origin |
 | [`gra cd <name>`](#gra-cd) | Jump to a worktree by name |
 | [`gra ls [--fetch]`](#gra-ls) | One table of every repository and worktree |
@@ -230,6 +231,7 @@ gra work warmhare         # go to that worktree's tmux window, from anywhere
 gra work feature/search   # a new worktree with that branch checked out
 gra work OA-2345          # part of a branch name is enough
 gra work                  # pick a branch with fzf
+gra work --path feature   # print only the path, and open no window
 ```
 
 A **worktree name** is looked up first, because a name identifies one worktree
@@ -269,6 +271,20 @@ worktree instead of leaving you with Git's message:
 ```text
 ERROR: 'main' is already checked out in 'calmpuma'; work there with 'gra cd calmpuma'
 ```
+
+### A path for scripts
+
+`--path` makes the command something a script can use: the worktree's path is
+all that reaches stdout, everything else goes to stderr, and no window is
+opened.
+
+```sh
+cd "$(gra work --path feature/search)"
+```
+
+It works for a worktree that already exists too, where it prints the path
+instead of attaching. This is what lets [Claude Code](#claude-code) make its
+worktrees through gra.
 
 Submodules are initialized in the new worktree unless the repository has
 `gra.submodules = false`. Then, inside tmux, the worktree gets a [window
@@ -666,22 +682,88 @@ every time.
 
 # Recipes
 
-<details>
-<summary><b>Working with Claude</b></summary>
+<details id="claude-code">
+<summary><b>Claude Code</b></summary>
 
 <br>
 
-The layout is designed so that a coding agent can manage branches itself. A
-useful convention for a repository's `CLAUDE.md`:
+A worktree per task is what [Claude Code](https://claude.com/claude-code) does
+for parallel sessions, and what `gra` is for. Two things join them up.
 
-* to work on another branch: `gra work <branch>` gives it a worktree of its
-  own, and creates a missing branch (from origin's default branch, pushed and
-  tracking) after asking for confirmation,
-* to reuse the worktree you are in: commit or stash, then plain
-  `git switch <branch>`.
+**Teach it the workflow.** The repository carries a skill at
+[`.claude/skills/gra/SKILL.md`](.claude/skills/gra/SKILL.md): `gra work` for a
+branch, `git switch` to reuse the worktree you are in, `gra done` to finish.
+It costs nothing until a session needs it. Put it where every repository sees
+it:
 
-For parallel agents, give each its own worktree with `gra work` - one branch
-can only be checked out in one worktree at a time.
+```sh
+mkdir -p ~/.claude/skills/gra
+curl -fsSL https://raw.githubusercontent.com/martinus/gra/main/.claude/skills/gra/SKILL.md \
+    -o ~/.claude/skills/gra/SKILL.md
+```
+
+**Let it make gra worktrees.** By default `claude --worktree`, "work in a
+worktree", and subagents with `isolation: worktree` put their checkouts in
+`.claude/worktrees/` inside your repository. A `WorktreeCreate` hook replaces
+that: Claude Code hands the hook a name and takes the directory the hook
+prints. Save this as `~/.claude/hooks/gra-worktree-create.sh`:
+
+```sh
+#!/bin/sh
+# Claude Code wants a worktree; gra makes it, in the gra layout.
+set -e
+input=$(cat)
+cd "$(printf '%s' "$input" | jq -r .cwd)"
+branch="claude/$(printf '%s' "$input" | jq -r .name)"
+
+# gra offers to create a missing branch, and a hook cannot answer, so make it
+# here - from origin's default branch, as Claude Code's own worktrees do.
+if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+    base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD) || base=HEAD
+    git branch "$branch" "$base" >&2
+fi
+
+gra work --path "$branch"
+```
+
+And `~/.claude/hooks/gra-worktree-remove.sh`, which hands the decision to
+`gra done` rather than deleting anything itself:
+
+```sh
+#!/bin/sh
+# The session is over; let gra decide whether the worktree can go.
+path=$(cat | jq -r .path)
+[ -d "$path" ] || exit 0
+gra done "$(basename "$path")" >&2
+```
+
+Make both executable, and name them in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "WorktreeCreate": [
+      { "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/gra-worktree-create.sh" }] }
+    ],
+    "WorktreeRemove": [
+      { "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/gra-worktree-remove.sh" }] }
+    ]
+  }
+}
+```
+
+Now `claude --worktree search` gets a worktree next to the bare checkout, with
+a gra name and a `claude/search` branch, and `gra ls` shows it beside
+everything else. Worth knowing before you turn it on:
+
+* the worktree gets **gra's name**, not the one you passed - that name becomes
+  the branch instead,
+* removal goes through `gra done`, so an unfinished worktree is **kept**
+  rather than deleted, and it fetches first, which takes a moment at session
+  exit; remove it yourself later with `gra done <name>`,
+* a hook replaces Claude Code's own creation, so `.worktreeinclude` is not
+  copied for you - copy `.env` and friends in the hook if you need them,
+* `jq` is needed for both hooks.
 
 </details>
 
