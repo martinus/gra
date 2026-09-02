@@ -740,14 +740,20 @@ def test_ls_survives_a_worktree_whose_directory_is_gone(tmp_path: Path) -> None:
 
 
 def write_tmux_mock(
-    tmp_path: Path, windows: str = "", *, attached: bool = True
+    tmp_path: Path,
+    windows: str = "",
+    *,
+    attached: bool = True,
+    sessions: str = "",
+    session: str = "",
 ) -> tuple[dict[str, str], Path]:
     """Put a recording tmux on the PATH; returns (env for gra, log file).
 
-    It answers the two queries gra makes - the window list and the pane's own
-    window - and logs every call instead of touching a real tmux. Without
-    attached it stands for a plain terminal, where gra opens no windows but
-    still closes the ones it finds.
+    It answers what gra asks - the window list, the sessions, and which
+    session a window or pane is in - and logs every call instead of touching a
+    real tmux. Without attached it stands for a plain terminal, where gra
+    attaches rather than switching, and still closes the windows it finds.
+    An empty sessions means no tmux server is running at all.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -757,7 +763,14 @@ def write_tmux_mock(
         'printf \'%s\\n\' "$*" >> "$TMUX_LOG"\n'
         'case "$1" in\n'
         '    list-windows) printf \'%s\\n\' "$TMUX_WINDOWS" ;;\n'
-        '    display-message) printf \'%s\\n\' "$TMUX_HERE" ;;\n'
+        # No server running is a failure, the way the real tmux reports it.
+        '    list-sessions) [ -n "$TMUX_SESSIONS" ] || exit 1\n'
+        '                   printf \'%s\\n\' "$TMUX_SESSIONS" ;;\n'
+        '    display-message) case "$*" in\n'
+        '                         *session_name*) printf \'%s\\n\' "$TMUX_SESSION" ;;\n'
+        '                         *) printf \'%s\\n\' "$TMUX_HERE" ;;\n'
+        '                     esac ;;\n'
+        '    new-window) printf \'%s\\n\' "$TMUX_SESSION" ;;\n'
         "esac\n"
     )
     tmux.chmod(0o755)
@@ -767,6 +780,8 @@ def write_tmux_mock(
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "TMUX_LOG": str(log),
         "TMUX_WINDOWS": windows,
+        "TMUX_SESSIONS": sessions,
+        "TMUX_SESSION": session,
     }
     if attached:
         env["TMUX"] = "/tmp/tmux-test,1,0"
@@ -903,19 +918,66 @@ def test_work_inside_a_worktree_opens_its_window(tmp_path: Path) -> None:
     assert worktree_dirs(container) == [worktree]
 
 
-def test_work_inside_a_worktree_says_so_outside_tmux(tmp_path: Path) -> None:
-    """Opening the window is the whole command here, so silence would lie."""
+def test_work_inside_a_worktree_attaches_from_a_plain_terminal(tmp_path: Path) -> None:
+    """Outside tmux there is no window to switch to, so gra makes one and attaches."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(tmp_path, attached=False, sessions="main", session="main")
+
+    result = run_cli(["work"], home, cwd=worktree, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    calls = tmux_calls(log)
+    # -P -F names the session the window went to, which is the one to attach to.
+    assert (
+        f"new-window -P -F #{{session_name}} -n project/{worktree.name} -c {worktree}"
+        in calls
+    )
+    assert "attach-session -t main" in calls
+
+
+def test_work_with_a_name_attaches_to_the_session_holding_the_window(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    container = clone_repo(home, make_repo(tmp_path, "project"))
+    worktree = work_worktree(home, container, "main")
+    env, log = write_tmux_mock(
+        tmp_path,
+        f"@1 project/{worktree.name}",
+        attached=False,
+        sessions="work",
+        session="work",
+    )
+
+    result = run_cli(["work", worktree.name], home, cwd=tmp_path, env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    calls = tmux_calls(log)
+    # Attaching lands on the session's current window, so the window it holds
+    # is selected first - and no second window of that name is opened.
+    assert "select-window -t @1" in calls
+    assert "attach-session -t work" in calls
+    assert not any(call.startswith("new-window") for call in calls)
+
+
+def test_work_starts_tmux_when_no_server_is_running(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     container = clone_repo(home, make_repo(tmp_path, "project"))
     worktree = work_worktree(home, container, "main")
     env, log = write_tmux_mock(tmp_path, attached=False)
 
-    result = run_cli(["work"], home, cwd=worktree, env_extra=env)
+    result = run_cli(["work", worktree.name], home, cwd=tmp_path, env_extra=env)
 
     assert result.returncode == 0, result.stderr
-    assert "not inside tmux" in result.stdout + result.stderr
-    assert tmux_calls(log) == []
+    calls = tmux_calls(log)
+    # One command makes the session, the window, and the attach.
+    assert f"new-session -n project/{worktree.name} -c {worktree}" in calls
+    assert not any(call.startswith("attach-session") for call in calls)
 
 
 def test_done_closes_a_window_it_is_not_running_in(tmp_path: Path) -> None:

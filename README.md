@@ -22,7 +22,7 @@ config, no lock-in.
 gra clone git@github.com:martinus/oans.git   # into ~/gra/oans, with a worktree ready
 gra cd warmhare                              # jump into that worktree, from anywhere
 gra work OA-2345                             # another worktree, on that branch
-gra work warmhare                            # back to that worktree's tmux window
+gra work warmhare                            # back to that worktree's tmux window, attaching if needed
 gra done                                     # throw it away once the work is merged
 gra ls                                       # what do I have, and where is it?
 ```
@@ -64,8 +64,8 @@ your shell afterwards.
 > [!NOTE]
 > Needs **Git** and **Python 3.10+**. [`fzf`](https://github.com/junegunn/fzf)
 > powers the branch picker of `gra work`, [`gh`](https://cli.github.com/) lets
-> `gra` spot that a clone is a fork, and `tmux` - when you work inside it -
-> gets a window per worktree.
+> `gra` spot that a clone is a fork, and `tmux` gets a window per worktree -
+> which `gra work <worktree>` attaches to from a plain terminal.
 
 <details>
 <summary><b>What it writes, and where</b></summary>
@@ -319,12 +319,8 @@ gra work snowwolf
 A bare `gra work` inside the worktree does the same. Either way nothing is
 created, and an open window is switched to rather than duplicated.
 
-Outside tmux there is no session a window would belong to, so this is the one
-case where `gra` says it had nothing to do rather than staying quiet:
-
-```text
-not inside tmux; nothing to set up for 'snowwolf'
-```
+From a plain terminal it [attaches](#attaching-from-a-plain-terminal) instead
+of switching, so the name takes you to the worktree wherever you type it.
 
 </details>
 
@@ -547,7 +543,7 @@ Inside tmux, a worktree gets one window, named `<repo>/<worktree>`:
 | Command | What happens to the window |
 | ------- | -------------------------- |
 | `gra clone`, `gra work <branch>` | opened for the new worktree |
-| `gra work <worktree>`, bare `gra work` inside one | opened, or switched to when already open |
+| `gra work <worktree>`, bare `gra work` inside one | opened, or switched to when already open - attached to from outside tmux |
 | `gra done` | closed |
 
 The name is the whole mechanism. There is no config file, nothing to install,
@@ -563,16 +559,36 @@ yesterday, land in the same place.
 `gra done snowwolf` closes the window even when it lives in a session you are
 not attached to, and even when you run it from a plain terminal.
 
-Outside tmux nothing is opened - there is no session the window would belong
-to - and `gra` says so only when opening the window was the whole command:
+## Attaching from a plain terminal
+
+Naming a worktree - `gra work snowwolf`, or a bare `gra work` inside one - is
+how you say "take me there", and outside tmux that means attaching:
 
 ```text
-not inside tmux; nothing to set up for 'snowwolf'
+attaching to tmux window 'oans/snowwolf'
 ```
+
+`gra` finds a session to attach to, in this order:
+
+* the session that already holds the window, whichever one that is,
+* the running server's current session, where the window is opened first,
+* a new session, when no tmux server is running at all.
+
+Then tmux takes the terminal over, and leaving it puts you back in the shell
+you started from. Creating a worktree is deliberately not part of this:
+`gra clone` and `gra work <branch>` open a window when you are in tmux and
+otherwise leave your terminal alone, because they are about making a
+workspace rather than going to one.
 
 tmux does not have to be installed. Every tmux call is best-effort: if it is
 missing, or a window went away between the lookup and the command, `gra`
-carries on and the git work still happens.
+carries on and the git work still happens. An attach that cannot happen -
+no tmux, or output that is not a terminal - is said out loud rather than
+failing the command:
+
+```text
+tmux is not installed; nothing to set up for 'snowwolf'
+```
 
 <details>
 <summary><b>Closing the window <code>gra</code> is running in</b></summary>
