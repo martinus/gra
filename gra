@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "8.2.0"
+__version__ = "8.3.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -1063,6 +1063,73 @@ def open_tmux_window(worktree: Path) -> None:
     log(f"opened tmux window '{name}'")
 
 
+def tmux_sessions() -> list[str]:
+    """The sessions of a running tmux server; empty when none is running."""
+    output = tmux(["list-sessions", "-F", "#{session_name}"])
+    return [line for line in (output or "").splitlines() if line]
+
+
+def tmux_window_session(window: str) -> str | None:
+    """The session that holds a window."""
+    output = tmux(["display-message", "-p", "-t", window, "#{session_name}"])
+    return output.strip() if output else None
+
+
+def hand_terminal_to_tmux(args: list[str]) -> bool:
+    """Run a tmux command that takes the terminal over, and wait for it.
+
+    Not tmux(), which captures output: attaching needs the real terminal.
+    This is the last thing gra does, so leaving tmux puts you back in the
+    shell you started from.
+    """
+    try:
+        return subprocess.run(["tmux", *args], check=False).returncode == 0
+    except OSError:
+        return False
+
+
+def attach_tmux_window(worktree: Path) -> None:
+    """Attach this terminal to the worktree's window, from outside tmux.
+
+    Inside tmux there is a session the window belongs to; out here gra has to
+    find one - the session already holding the window, the running server's
+    current one, or a new session when no server is running at all.
+    """
+    if not shutil.which("tmux"):
+        log(f"tmux is not installed; nothing to set up for '{worktree.name}'", YELLOW)
+        return
+
+    name = tmux_window_name(worktree)
+    window = find_tmux_window(name)
+    if window:
+        session = tmux_window_session(window)
+        # Attaching lands on the session's current window, so pick it first.
+        tmux(["select-window", "-t", window])
+    elif tmux_sessions():
+        # -P -F prints the session the window went to, which is the one to
+        # attach to; asking for it afterwards would be a second lookup.
+        created = tmux(
+            ["new-window", "-P", "-F", "#{session_name}", "-n", name, "-c", str(worktree)]
+        )
+        session = created.strip() if created else None
+        if session:
+            log(f"opened tmux window '{name}'")
+    else:
+        # No server yet, so one command makes the session and the window and
+        # hands the terminal over.
+        log(f"starting tmux with window '{name}'")
+        if not hand_terminal_to_tmux(["new-session", "-n", name, "-c", str(worktree)]):
+            log(f"could not start tmux for '{name}'", YELLOW)
+        return
+
+    if not session:
+        log(f"could not find a tmux session for '{name}'", YELLOW)
+        return
+    log(f"attaching to tmux window '{name}'")
+    if not hand_terminal_to_tmux(["attach-session", "-t", session]):
+        log(f"could not attach to tmux session '{session}'", YELLOW)
+
+
 def close_tmux_window(worktree: Path) -> None:
     """Close the worktree's window, before the worktree is removed.
 
@@ -1563,13 +1630,14 @@ def set_up_worktree(worktree: Path) -> None:
     """Set an existing worktree up again - which today means its tmux window.
 
     Setting a worktree up is not a one-shot event: the window can be closed
-    while the worktree lives on. Unlike creating a worktree, this is the whole
-    command, so outside tmux it says that it had nothing to do.
+    while the worktree lives on. Inside tmux this switches to the window; from
+    a plain terminal it attaches to the session holding it, so naming a
+    worktree takes you there either way.
     """
-    if not os.environ.get("TMUX"):
-        log(f"not inside tmux; nothing to set up for '{worktree.name}'", YELLOW)
+    if os.environ.get("TMUX"):
+        open_tmux_window(worktree)
         return
-    open_tmux_window(worktree)
+    attach_tmux_window(worktree)
 
 
 # ---------------------------------------------------------------------------
@@ -1997,7 +2065,9 @@ def parse_args() -> argparse.Namespace:
             "TARGET is a worktree name or a branch.\n"
             "A worktree name - 'gra work warmhare' - opens that worktree's tmux\n"
             "window, or switches to it when it is already open. It works from\n"
-            "anywhere, because a name identifies one worktree on the machine.\n"
+            "anywhere, because a name identifies one worktree on the machine:\n"
+            "from a plain terminal it attaches to the session holding the\n"
+            "window, starting tmux when nothing is running yet.\n"
             "Anything else is a branch, and always creates a worktree that\n"
             "checks it out (creating and pushing the branch when missing).\n"
             "BRANCH may be part of a name, so a ticket key finds the branch\n"

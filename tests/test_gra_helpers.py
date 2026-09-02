@@ -362,3 +362,14 @@ def test_source_version_matches_this_script() -> None:
     upgrading for good.
     """
     assert gra.source_version(Path(GRA).read_bytes()) == gra.__version__
+
+
+def test_attach_tmux_window_says_when_tmux_is_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """tmux is optional, so a plain terminal without it is not an error."""
+    monkeypatch.setattr(gra.shutil, "which", lambda name: None)
+
+    gra.attach_tmux_window(Path("/gra/project/warmhare"))
+
+    assert "tmux is not installed" in capsys.readouterr().out
