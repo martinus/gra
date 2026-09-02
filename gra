@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "8.4.0"
+__version__ = "8.5.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -95,6 +95,9 @@ NOUNS = (
 )
 
 _quiet = False
+# Every question gra asks is answered yes, for callers that have no one to
+# ask - a script, a hook, or an agent.
+_assume_yes = False
 # Machine-readable output takes stdout over, so everything a person reads
 # moves to stderr. Resolved per call: sys.stdout is not the same object all
 # the way through a run.
@@ -146,6 +149,11 @@ def fail(msg: str) -> NoReturn:
 
 
 def ask_yes_no(question: str) -> bool:
+    if _assume_yes:
+        # Say what was decided: --yes must leave the same record a person
+        # answering would have left.
+        print(f"{question} yes", file=sys.stderr)
+        return True
     print(f"{question} [y/N] ", end="", file=sys.stderr, flush=True)
     answer = sys.stdin.readline()
     if not answer:
@@ -1963,6 +1971,12 @@ def parse_args() -> argparse.Namespace:
         "-q", "--quiet", action="store_true", help="do not print status information"
     )
     parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="answer gra's questions with yes, for scripts and agents",
+    )
+    parser.add_argument(
         "-v", "--version", action="version", version="%(prog)s " + __version__
     )
 
@@ -2097,7 +2111,8 @@ def parse_args() -> argparse.Namespace:
             "from a plain terminal it attaches to the session holding the\n"
             "window, starting tmux when nothing is running yet.\n"
             "Anything else is a branch, and always creates a worktree that\n"
-            "checks it out (creating and pushing the branch when missing).\n"
+            "checks it out (creating and pushing the branch when missing,\n"
+            "which it asks about first - 'gra -y work BRANCH' answers yes).\n"
             "BRANCH may be part of a name, so a ticket key finds the branch\n"
             "named after it; several matches are listed rather than guessed\n"
             "between.\n"
@@ -2133,7 +2148,8 @@ def parse_args() -> argparse.Namespace:
             "that the work is merged into origin's default branch, and what\n"
             "gh says about its pull request. Anything unfinished is listed\n"
             "with what removal would cost and asked about, which --force\n"
-            "answers with yes without fetching.\n"
+            "answers with yes without fetching, and 'gra -y done' answers\n"
+            "with yes after fetching.\n"
             "The branch is deleted only when its changes are in origin."
         ),
     )
@@ -2174,10 +2190,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    global _quiet
+    global _quiet, _assume_yes
 
     args = parse_args()
     _quiet = args.quiet
+    _assume_yes = args.yes
     if getattr(args, "path", False):
         keep_stdout_for_output()
     args.handler(args)

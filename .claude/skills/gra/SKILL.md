@@ -11,6 +11,8 @@ the whole machine, so it needs no path and no repository to go with it.
   opens it. In a script or a hook use `gra work --path <branch>`, which prints
   only the new worktree's path. A branch can be checked out in one worktree at
   a time, so this is also how parallel agents stay out of each other's way.
+  A branch that does not exist yet is created only after a question, so with
+  no terminal to answer it use `gra -y work <branch>`, which also pushes it.
 - **Reuse the worktree you are in**: commit or stash, then plain
   `git switch <branch>`.
 - **Reach another worktree**: `gra cd <name>` prints its path.
