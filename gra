@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "8.3.0"
+__version__ = "8.4.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -95,6 +95,10 @@ NOUNS = (
 )
 
 _quiet = False
+# Machine-readable output takes stdout over, so everything a person reads
+# moves to stderr. Resolved per call: sys.stdout is not the same object all
+# the way through a run.
+_machine_output = False
 _use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
 if _use_color:
     BLUE, GREEN, RED, YELLOW, CYAN, BOLD, DIM = (
@@ -122,7 +126,13 @@ def expand_path(path: str) -> Path:
 
 def log(msg: str, color: str = BLUE) -> None:
     if not _quiet:
-        print(f"{color}{msg}{ENDC}")
+        print(f"{color}{msg}{ENDC}", file=sys.stderr if _machine_output else sys.stdout)
+
+
+def keep_stdout_for_output() -> None:
+    """Move everything a person reads to stderr, so stdout carries one path."""
+    global _machine_output
+    _machine_output = True
 
 
 def style(text: str, *colors: str) -> str:
@@ -146,7 +156,11 @@ def ask_yes_no(question: str) -> bool:
 
 def run_git(args: list[str | Path], *, cwd: Path | None = None) -> None:
     """Run a Git command that should own its normal terminal output."""
-    subprocess.run(["git", *args], cwd=cwd, check=True)
+    # None inherits gra's own stdout, which is where git belongs unless a
+    # caller is reading that stream.
+    subprocess.run(
+        ["git", *args], cwd=cwd, check=True, stdout=sys.stderr if _machine_output else None
+    )
 
 
 def command_output(args: list[str | Path], *, cwd: Path | None = None) -> str | None:
@@ -1372,6 +1386,7 @@ _gra() {
             clone) words='--name --no-work --no-tmux --no-submodules --no-upstream' ;;
             done) words='--force' ;;
             ls) words='--fetch' ;;
+            work) words='--path' ;;
             each) words='--wt' ;;
             install) words='--no-check' ;;
         esac
@@ -1556,11 +1571,12 @@ def init_submodules(bare: Path, worktree: Path) -> None:
 
 def create_worktree(
     container: Path, root: Path, branch: str, *, no_tmux: bool = False
-) -> None:
+) -> Path:
     """Create a worktree named after the repository next to the bare checkout.
 
     An empty branch starts the worktree detached at origin's default branch.
     Shared by 'gra clone' and 'gra work', so both produce the same workspace.
+    Returns the worktree, which is the one thing a script wants from it.
     """
     bare = bare_dir(container)
     word = pick_worktree_name(root, worktree_identity(container))
@@ -1582,6 +1598,7 @@ def create_worktree(
 
     if not no_tmux:
         open_tmux_window(target)
+    return target
 
 
 # ---------------------------------------------------------------------------
@@ -1589,7 +1606,7 @@ def create_worktree(
 # ---------------------------------------------------------------------------
 
 
-def work(target: str | None, root: Path) -> None:
+def work(target: str | None, root: Path, *, print_path: bool = False) -> None:
     """Work here, whatever that takes: a new worktree, or opening one again.
 
     A worktree name - 'gra work warmhare' - goes to that worktree's tmux
@@ -1598,10 +1615,16 @@ def work(target: str | None, root: Path) -> None:
     decides: in the repository folder it creates a worktree, for BRANCH or for
     a branch picked with fzf, and inside a worktree a bare 'gra work' opens
     that worktree's window again.
+
+    With print_path the worktree's path is all that reaches stdout and no
+    window is opened: that is the shape a script or a hook can use.
     """
     if target:
         existing = find_worktree_path(root, target)
         if existing is not None:
+            if print_path:
+                print(existing)
+                return
             set_up_worktree(existing)
             return
 
@@ -1616,6 +1639,9 @@ def work(target: str | None, root: Path) -> None:
         )
 
     if worktree and not target:
+        if print_path:
+            print(worktree)
+            return
         set_up_worktree(worktree)
         return
 
@@ -1623,7 +1649,9 @@ def work(target: str | None, root: Path) -> None:
         branch = resolve_branch(bare_dir(container), branch_name_from_input(target))
     else:
         branch = pick_branch(container, "gra work")
-    create_worktree(container, root, branch)
+    created = create_worktree(container, root, branch, no_tmux=print_path)
+    if print_path:
+        print(created)
 
 
 def set_up_worktree(worktree: Path) -> None:
@@ -2077,11 +2105,21 @@ def parse_args() -> argparse.Namespace:
             "  in the repository folder: create a worktree named after an\n"
             "    unused name for the repository, on a branch picked with fzf,\n"
             "    newest commits first - or detached at origin's default branch\n"
-            "  inside a worktree: open that worktree's window, creating nothing"
+            "  inside a worktree: open that worktree's window, creating nothing\n"
+            "--path prints the worktree's path and nothing else, and opens no\n"
+            "window: 'cd \"$(gra work --path BRANCH)\"', or a script that has to\n"
+            "know where the worktree went."
         ),
     )
     work_parser.add_argument("target", nargs="?", help="worktree name or branch")
-    work_parser.set_defaults(handler=lambda args: work(args.target, args.root))
+    work_parser.add_argument(
+        "--path",
+        action="store_true",
+        help="print only the worktree's path, and open no tmux window",
+    )
+    work_parser.set_defaults(
+        handler=lambda args: work(args.target, args.root, print_path=args.path)
+    )
 
     done_parser = subparsers.add_parser(
         "done",
@@ -2140,6 +2178,8 @@ def main() -> None:
 
     args = parse_args()
     _quiet = args.quiet
+    if getattr(args, "path", False):
+        keep_stdout_for_output()
     args.handler(args)
 
 
