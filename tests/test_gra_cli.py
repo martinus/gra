@@ -1171,6 +1171,43 @@ def test_work_lists_several_matches_instead_of_guessing(tmp_path: Path) -> None:
     assert worktree_dirs(container) == []
 
 
+def test_yes_creates_the_branch_without_asking(tmp_path: Path) -> None:
+    """A script or a hook has nobody to answer the question."""
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+
+    # No input at all: without -y this is the prompt that fails.
+    result = run_cli(["-y", "work", "OA-9999"], home, cwd=container)
+
+    assert result.returncode == 0, result.stderr
+    worktree = worktree_dirs(container)[0]
+    assert git_output(["branch", "--show-current"], cwd=worktree) == "OA-9999"
+    # Answering yes means what it always meant, including the push.
+    assert not git_fails(
+        ["show-ref", "--verify", "--quiet", "refs/heads/OA-9999"], cwd=source
+    )
+    # The record still shows what was decided.
+    assert "does not exist. Create it from" in result.stderr
+
+
+def test_yes_removes_an_unfinished_worktree_after_fetching(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = make_repo(tmp_path, "project")
+    container = clone_repo(home, source)
+    worktree = work_worktree(home, container, "main")
+    (worktree / "README.md").write_text("# uncommitted\n")
+
+    result = run_cli(["-y", "done"], home, cwd=worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert not worktree.exists()
+    # Unlike --force, the checks still ran and are on the record.
+    assert "local modification" in result.stderr
+
+
 def test_work_still_offers_to_create_an_unmatched_branch(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

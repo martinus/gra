@@ -256,7 +256,8 @@ second task never needs a `cd ..` first. If the branch only exists as
 `origin/<branch>`, a local tracking branch is created. If it does not exist at
 all, `gra` asks whether to create it from origin's default branch; on
 confirmation the new branch is pushed to `origin` and set up to track
-`origin/<branch>`.
+`origin/<branch>`. `gra -y work <branch>` answers that question with yes, for
+a script or an agent with nobody to ask.
 
 Without a branch, `gra work` opens an `fzf` picker over all branches, the ones
 with the newest commits first - the branch you are here for is almost always
@@ -411,8 +412,10 @@ A half-finished rebase, merge, cherry-pick or bisect gets a line of its own,
 since that is the one state removal cannot give back.
 
 Anything but `y` keeps the worktree, so a plain Enter is always the safe
-answer. `--force` answers yes without asking and skips the fetch - useful in
-scripts, where an unanswered question counts as no.
+answer, and an unanswered question counts as no - which is what a script
+gets. Two ways to say yes in advance: `--force` skips the fetch and the
+checks, while `gra -y done` fetches and runs them, and answers the question
+they raise with yes.
 
 ## `gra cd`
 
@@ -716,8 +719,10 @@ input=$(cat)
 cd "$(printf '%s' "$input" | jq -r .cwd)"
 branch="claude/$(printf '%s' "$input" | jq -r .name)"
 
-# gra offers to create a missing branch, and a hook cannot answer, so make it
-# here - from origin's default branch, as Claude Code's own worktrees do.
+# gra offers to create a missing branch, and a hook cannot answer. 'gra -y'
+# would answer yes, but gra's yes also pushes the branch, and a worktree per
+# session is not worth a remote branch each. So make it here, locally, from
+# origin's default branch - as Claude Code's own worktrees do.
 if ! git show-ref --verify --quiet "refs/heads/$branch"; then
     base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD) || base=HEAD
     git branch "$branch" "$base" >&2
@@ -764,6 +769,10 @@ everything else. Worth knowing before you turn it on:
 * a hook replaces Claude Code's own creation, so `.worktreeinclude` is not
   copied for you - copy `.env` and friends in the hook if you need them,
 * `jq` is needed for both hooks.
+
+A headless session is a different case: `claude -p` running `gra work <branch>`
+itself has nobody to answer the branch question, so give it `gra -y work
+<branch>`, which also pushes the branch the way a confirmed one is pushed.
 
 </details>
 
