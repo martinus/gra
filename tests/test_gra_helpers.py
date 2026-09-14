@@ -373,3 +373,24 @@ def test_attach_tmux_window_says_when_tmux_is_missing(
     gra.attach_tmux_window(Path("/gra/project/warmhare"))
 
     assert "tmux is not installed" in capsys.readouterr().out
+
+
+def test_human_size_uses_the_largest_unit_that_stays_above_one() -> None:
+    assert gra.human_size(0) == "0K"
+    assert gra.human_size(999) == "999K"
+    assert gra.human_size(1024) == "1.0M"
+    assert gra.human_size(1024 * 20) == "20M"
+    assert gra.human_size(1024 * 1024 * 3 + 1024 * 512) == "3.5G"
+    assert gra.human_size(1024**3 * 5) == "5.0T"
+
+
+def test_relative_age_counts_the_largest_whole_unit() -> None:
+    now = 1_000_000_000.0
+    assert gra.relative_age(now, now) == "just now"
+    assert gra.relative_age(now - 59, now) == "just now"
+    assert gra.relative_age(now - 60, now) == "1 minute ago"
+    assert gra.relative_age(now - 3600 * 2, now) == "2 hours ago"
+    assert gra.relative_age(now - 86400 * 45, now) == "1 month ago"
+    assert gra.relative_age(now - 86400 * 400, now) == "1 year ago"
+    # A file dated in the future is a clock skew, not a negative age.
+    assert gra.relative_age(now + 60, now) == "just now"

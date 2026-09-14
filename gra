@@ -15,7 +15,7 @@ branch they have checked out: switch branches freely inside a worktree, or
 start a new one and remove it when done.
 """
 
-__version__ = "8.5.0"
+__version__ = "8.6.0"
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +27,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple, NoReturn, TypeVar
@@ -940,18 +941,246 @@ def print_repositories(root: Path, fetch: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Strays: what sits under the gra root without being a repository
+# ---------------------------------------------------------------------------
+
+
+SIZE_UNITS = ("K", "M", "G", "T")
+
+AGE_UNITS = (
+    (365 * 24 * 3600, "year"),
+    (30 * 24 * 3600, "month"),
+    (24 * 3600, "day"),
+    (3600, "hour"),
+    (60, "minute"),
+)
+
+STRAY_HEADERS = ["NAME", "SIZE", "MODIFIED", "STATUS"]
+
+
+class Stray(NamedTuple):
+    """A root entry gra does not manage, with what it takes to judge it."""
+
+    path: Path
+    kilobytes: int | None
+    row: list[str]
+
+
+def root_strays(root: Path) -> list[Path]:
+    """Everything directly under the root that is not a gra repository.
+
+    A repository is a directory holding a '.bare', so a stray is whatever else
+    ended up in the flat root - a plain clone, a build directory, a stray file.
+    gra never creates one and no other gra command ever looks at one, which is
+    the whole reason they pile up unnoticed.
+    """
+    if not root.is_dir():
+        return []
+    return sorted(
+        (child for child in root.iterdir() if not is_container(child)),
+        key=lambda path: path.name,
+    )
+
+
+def human_size(kilobytes: int) -> str:
+    """A size in the largest unit that keeps it above 1, the way du -h says it."""
+    value = float(kilobytes)
+    unit = SIZE_UNITS[0]
+    for bigger in SIZE_UNITS[1:]:
+        if value < 1024:
+            break
+        value /= 1024
+        unit = bigger
+    decimals = 1 if value < 10 and unit != SIZE_UNITS[0] else 0
+    return f"{value:.{decimals}f}{unit}"
+
+
+def relative_age(timestamp: float, now: float) -> str:
+    """How long ago timestamp was, in the wording 'gra work' uses for commits."""
+    seconds = max(0, int(now - timestamp))
+    for size, unit in AGE_UNITS:
+        if seconds >= size:
+            return f"{plural(seconds // size, unit)} ago"
+    return "just now"
+
+
+def stray_size(path: Path) -> int | None:
+    """Disk usage of path in kilobytes, or None when du cannot measure it."""
+    first = (command_output(["du", "-sk", str(path)]) or "").split("\t", 1)[0]
+    return int(first) if first.isdigit() else None
+
+
+def stray_status(path: Path) -> str:
+    """What Git makes of a stray, in 'gra ls' wording; '-' when it is not a checkout.
+
+    The signal worth having before deleting something gra did not create: a dash
+    is a plain file or directory, and anything else is a checkout that may hold
+    the only copy of what is in it. Like 'gra ls' it reads local refs only, so an
+    arrow is as fresh as that checkout's last fetch.
+    """
+    if not (path / ".git").exists():
+        return "-"
+    parts = []
+    if worktree_status_output(path):
+        parts.append("dirty")
+    sync = worktree_sync(path)
+    if sync and sync != "-":
+        parts.append(sync)
+    return f"● {' '.join(parts)}" if parts else "✓ clean"
+
+
+def stray_name(path: Path) -> str:
+    """The entry's name marked the way ls -F marks it: '/' a directory, '@' a link.
+
+    Worth the two characters in a table people delete from: a link is one entry
+    to unlink whose size is its own, never the tree it points at.
+    """
+    if path.is_symlink():
+        return f"{path.name}@"
+    return f"{path.name}/" if path.is_dir() else path.name
+
+
+def measure_stray(path: Path, now: float) -> Stray:
+    """Describe one stray: a marked name, its size, its age, and what Git says."""
+    kilobytes = stray_size(path)
+    row = [
+        stray_name(path),
+        "?" if kilobytes is None else human_size(kilobytes),
+        # lstat, because a dangling symlink has no target to stat.
+        relative_age(path.lstat().st_mtime, now),
+        stray_status(path),
+    ]
+    return Stray(path, kilobytes, row)
+
+
+def measure_strays(root: Path) -> list[Stray]:
+    """Every stray under the root, measured several at a time.
+
+    One clock for the whole table, so two rows of the same age never disagree.
+    """
+    now = time.time()
+    return parallel_map(lambda path: measure_stray(path, now), root_strays(root))
+
+
+def stray_summary(strays: list[Stray]) -> str:
+    """How many of each kind there are, naming only the kinds that are there."""
+    marks = [stray.row[0][-1] for stray in strays]
+    counted = []
+    directories = marks.count("/")
+    if directories:
+        counted.append(f"{directories} director{'y' if directories == 1 else 'ies'}")
+    links = marks.count("@")
+    if links:
+        counted.append(plural(links, "link"))
+    files = len(strays) - directories - links
+    if files:
+        counted.append(plural(files, "file"))
+    return ", ".join(counted)
+
+
+def stray_total(strays: list[Stray]) -> str:
+    """What deleting these would free, saying 'over' when a size is unknown."""
+    total = human_size(sum(stray.kilobytes or 0 for stray in strays))
+    unknown = any(stray.kilobytes is None for stray in strays)
+    return f"over {total}" if unknown else total
+
+
+def print_strays(root: Path) -> None:
+    """Show everything under the gra root that gra does not manage."""
+    strays = measure_strays(root)
+    print(f"Root: {root}")
+    if not strays:
+        print("No strays found.")
+        return
+    print(f"Strays: {stray_summary(strays)}  {stray_total(strays)}")
+    print()
+    print_table(STRAY_HEADERS, [stray.row for stray in strays])
+    print()
+    log("'gra ls --strays --rm' picks which of these to delete")
+
+
+def delete_stray(path: Path) -> bool:
+    """Delete one stray, following no symlink out of the gra root; did it go?
+
+    A root collecting build output is exactly where a read-only file stops a
+    delete halfway, so one that cannot go is reported and the rest of the
+    selection still goes.
+    """
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+    except OSError as error:
+        log(f"{path}: {error}", YELLOW)
+        return False
+    return True
+
+
+def remove_strays(root: Path) -> None:
+    """Pick strays with fzf and delete them, after one look at what would go.
+
+    Deleting is the one thing gra does not decide on its own: the selection is
+    always a person's - Tab marks several - and what it costs is spelled out
+    before the single question that carries it out. There is no flag that
+    deletes every stray, because a flat root is exactly where a directory
+    holding the only copy of something would be sitting.
+    """
+    strays = measure_strays(root)
+    if not strays:
+        print(f"Root: {root}")
+        print("No strays found.")
+        return
+
+    by_name = {stray.row[0]: stray for stray in strays}
+    entries = [(stray.row[0], stray.row) for stray in strays]
+    picked = fzf_table("strays", STRAY_HEADERS, entries, multi=True)
+    chosen = [by_name[key] for key in picked]
+
+    header = f"Deleting {stray_summary(chosen)}, freeing {stray_total(chosen)}:"
+    print(header, file=sys.stderr)
+    for stray in chosen:
+        print(style(f"  {stray.path}  {stray.row[3]}", DIM), file=sys.stderr)
+    print(file=sys.stderr)
+    if not ask_yes_no("delete for good?"):
+        fail("deleted nothing")
+
+    failed = [stray.path for stray in chosen if not delete_stray(stray.path)]
+    log(f"deleted {plural(len(chosen) - len(failed), 'stray')}")
+    if failed:
+        fail("could not delete " + ", ".join(f"'{path}'" for path in failed))
+
+
+def ls_command(root: Path, *, fetch: bool, strays: bool, rm: bool) -> None:
+    """Route 'gra ls' to the repository table, the stray table, or the cleanup."""
+    if rm and not strays:
+        fail("'--rm' needs '--strays': gra only ever deletes what is not a repository")
+    if not strays:
+        print_repositories(root, fetch)
+    elif rm:
+        remove_strays(root)
+    else:
+        print_strays(root)
+
+
+# ---------------------------------------------------------------------------
 # Worktree name lookup, and the fzf table behind the branch picker
 # ---------------------------------------------------------------------------
 
 
 def fzf_table(
-    command: str, headers: list[str], entries: list[tuple[str, list[str]]]
-) -> str:
-    """Select from (key, columns) entries with fzf and return the chosen key.
+    command: str,
+    headers: list[str],
+    entries: list[tuple[str, list[str]]],
+    *,
+    multi: bool = False,
+) -> list[str]:
+    """Select from (key, columns) entries with fzf and return the chosen keys.
 
     Owns the whole table convention - aligned columns behind a hidden key.
     A cancelled fzf exits this process with fzf's own status, so callers
-    only ever see a selection that was actually made.
+    only ever see a selection that was actually made. Without multi that is
+    always one key, which is why callers picking a single thing take [0].
     """
     if not shutil.which("fzf"):
         fail(f"fzf is required for '{command}'")
@@ -969,6 +1198,7 @@ def fzf_table(
             "--layout=reverse",
             "--border",
             "--tiebreak=begin,index",
+            *(["--multi"] if multi else []),
             f"--prompt={command}> ",
             f"--header={header}",
             "--delimiter=\t",
@@ -985,7 +1215,7 @@ def fzf_table(
     selected = result.stdout.rstrip("\n")
     if not selected:
         sys.exit(1)
-    return selected.split("\t", 1)[0]
+    return [line.split("\t", 1)[0] for line in selected.splitlines()]
 
 
 def find_worktree_path(root: Path, name: str) -> Path | None:
@@ -1393,7 +1623,7 @@ _gra() {
         case $cmd in
             clone) words='--name --no-work --no-tmux --no-submodules --no-upstream' ;;
             done) words='--force' ;;
-            ls) words='--fetch' ;;
+            ls) words='--fetch --strays --rm' ;;
             work) words='--path' ;;
             each) words='--wt' ;;
             install) words='--no-check' ;;
@@ -1516,7 +1746,7 @@ def pick_branch(container: Path, command: str) -> str:
             f"every branch of '{container.name}' is already checked out; "
             "'gra cd' reaches their worktrees"
         )
-    return fzf_table(command, BRANCH_PICKER_HEADERS, entries)
+    return fzf_table(command, BRANCH_PICKER_HEADERS, entries)[0]
 
 
 def resolve_branch(bare: Path, branch: str) -> str:
@@ -2059,13 +2289,33 @@ def parse_args() -> argparse.Namespace:
             "Use --fetch to run 'git fetch --prune --all' in every repository\n"
             "first, several at a time. Only remote-tracking refs move: no\n"
             "worktree, branch or uncommitted change is touched. A repository\n"
-            "that cannot be reached is reported and the rest are still fetched."
+            "that cannot be reached is reported and the rest are still fetched.\n"
+            "--strays lists what is under the root without being a repository\n"
+            "instead - a plain clone, a build directory, a leftover file - with\n"
+            "its size, its age and what Git makes of it. --strays --rm picks\n"
+            "from that list with fzf, Tab marking several, and deletes what was\n"
+            "picked after showing it and asking once."
         ),
     )
-    ls_parser.add_argument(
+    ls_mode = ls_parser.add_mutually_exclusive_group()
+    ls_mode.add_argument(
         "--fetch", action="store_true", help="fetch every repository before listing"
     )
-    ls_parser.set_defaults(handler=lambda args: print_repositories(args.root, args.fetch))
+    ls_mode.add_argument(
+        "--strays",
+        action="store_true",
+        help="list what under the root is not a gra repository",
+    )
+    ls_parser.add_argument(
+        "--rm",
+        action="store_true",
+        help="with --strays, pick strays with fzf and delete them",
+    )
+    ls_parser.set_defaults(
+        handler=lambda args: ls_command(
+            args.root, fetch=args.fetch, strays=args.strays, rm=args.rm
+        )
+    )
 
     each_parser = subparsers.add_parser(
         "each",
