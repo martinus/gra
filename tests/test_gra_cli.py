@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from conftest import GRA, load_gra
 
 
@@ -152,9 +154,13 @@ def work_worktree(
 
 
 def write_fzf_mock(
-    tmp_path: Path, *, select_line: int = 1
+    tmp_path: Path, *, select_line: int = 1, select_expr: str | None = None
 ) -> tuple[dict[str, str], Path, Path]:
-    """Put a selecting-fzf on the PATH; returns (env for run_cli, input, args)."""
+    """Put a selecting-fzf on the PATH; returns (env for run_cli, input, args).
+
+    select_expr is a sed line list for the pickers that take several, such as
+    '1p;3p' for the first and third row.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     fzf = bin_dir / "fzf"
@@ -164,7 +170,7 @@ def write_fzf_mock(
         "#!/bin/sh\n"
         "printf '%s\n' \"$@\" > \"$FZF_ARGS\"\n"
         "cat > \"$FZF_INPUT\"\n"
-        f"sed -n '{select_line}p' \"$FZF_INPUT\"\n"
+        f"sed -n '{select_expr or f'{select_line}p'}' \"$FZF_INPUT\"\n"
     )
     fzf.chmod(0o755)
     env = {
@@ -1926,3 +1932,187 @@ def test_unknown_command_is_rejected(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "invalid choice: 'unknown'" in result.stderr
+
+
+def stray_table(output: str) -> dict[str, str]:
+    """Map each NAME in a 'gra ls --strays' table to the rest of its row."""
+    rows = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) > 1 and parts[0] not in {"NAME", "Root:", "Strays:"}:
+            rows[parts[0]] = " ".join(parts[1:])
+    return rows
+
+
+def stray_root(tmp_path: Path, home: Path) -> Path:
+    """A gra root holding one repository, so strays are everything else."""
+    return clone_repo(home, make_repo(tmp_path, "oans")).parent
+
+
+def test_ls_strays_lists_only_what_is_not_a_repository(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    (root / "build").mkdir()
+    (root / "notes.md").write_text("notes\n")
+    (root / "link").symlink_to(root / "build")
+
+    result = run_cli(["ls", "--strays"], home)
+
+    assert result.returncode == 0, result.stderr
+    # Marked the way ls -F marks them, because '/' and '@' delete differently.
+    assert set(stray_table(result.stdout)) >= {"build/", "link@", "notes.md"}
+    assert "oans" not in result.stdout
+    assert "1 directory, 1 link, 1 file" in result.stdout
+
+
+def test_ls_strays_reports_a_root_without_strays(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    stray_root(tmp_path, home)
+
+    result = run_cli(["ls", "--strays"], home)
+
+    assert result.returncode == 0, result.stderr
+    assert "No strays found." in result.stdout
+
+
+def test_ls_strays_says_over_when_a_size_cannot_be_measured(tmp_path: Path) -> None:
+    """A directory du cannot read must not quietly count as freeing nothing."""
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    (root / "build").mkdir()
+    (root / "notes.md").write_text("notes\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    du = bin_dir / "du"
+    du.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in *build*) exit 1 ;; esac\n"
+        "printf '%s\\t%s\\n' 2048 \"$2\"\n"
+    )
+    du.chmod(0o755)
+
+    result = run_cli(
+        ["ls", "--strays"], home, env_extra={"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = stray_table(result.stdout)
+    assert rows["build/"].startswith("?")
+    assert rows["notes.md"].startswith("2.0M")
+    # The measurable part still counts, and the total says it is only a floor.
+    assert "over 2.0M" in result.stdout
+
+
+def test_ls_strays_says_what_git_makes_of_each_stray(tmp_path: Path) -> None:
+    """The signal that decides whether a directory is safe to delete."""
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    (root / "plain").mkdir()
+    make_repo(root, "aclean")
+    dirty = make_repo(root, "bdirty")
+    (dirty / "README.md").write_text("uncommitted\n")
+
+    result = run_cli(["ls", "--strays"], home)
+
+    assert result.returncode == 0, result.stderr
+    rows = stray_table(result.stdout)
+    assert rows["aclean/"].endswith("✓ clean")
+    assert rows["bdirty/"].endswith("● dirty")
+    assert rows["plain/"].endswith("-")
+
+
+def test_ls_strays_rm_deletes_only_what_was_picked(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    for name in ("adrop", "bkeep", "cdrop"):
+        (root / name).mkdir()
+        (root / name / "file.txt").write_text(name)
+
+    env, _fzf_input, fzf_args = write_fzf_mock(tmp_path, select_expr="1p;3p")
+    result = run_cli(["ls", "--strays", "--rm"], home, input_text="y\n", env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "--multi" in fzf_args.read_text().splitlines()
+    assert not (root / "adrop").exists()
+    assert not (root / "cdrop").exists()
+    assert (root / "bkeep" / "file.txt").is_file()
+    assert (root / "oans" / BARE_DIR).is_dir()
+
+
+def test_ls_strays_rm_keeps_everything_when_declined(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    (root / "build").mkdir()
+
+    env, _fzf_input, _fzf_args = write_fzf_mock(tmp_path)
+    result = run_cli(["ls", "--strays", "--rm"], home, input_text="n\n", env_extra=env)
+
+    assert result.returncode == 1
+    assert "deleted nothing" in result.stderr
+    assert (root / "build").is_dir()
+
+
+def test_ls_strays_rm_deletes_a_symlink_without_its_target(tmp_path: Path) -> None:
+    """A link in the root is one entry to remove, not a way out of the root."""
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep\n")
+    (root / "link").symlink_to(target)
+
+    env, _fzf_input, _fzf_args = write_fzf_mock(tmp_path)
+    result = run_cli(["ls", "--strays", "--rm"], home, input_text="y\n", env_extra=env)
+
+    assert result.returncode == 0, result.stderr
+    assert not (root / "link").is_symlink()
+    assert (target / "keep.txt").is_file()
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root deletes through the read-only directory this test relies on",
+)
+def test_ls_strays_rm_reports_one_it_cannot_delete_and_deletes_the_rest(
+    tmp_path: Path,
+) -> None:
+    """A root that collects build output collects unwritable files with it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    blocked = root / "ablocked"
+    (blocked / "sub").mkdir(parents=True)
+    (blocked / "sub" / "file.txt").write_text("stuck\n")
+    (blocked / "sub").chmod(0o555)
+    (root / "bplain").mkdir()
+
+    env, _fzf_input, _fzf_args = write_fzf_mock(tmp_path, select_expr="1p;2p")
+    result = run_cli(["ls", "--strays", "--rm"], home, input_text="y\n", env_extra=env)
+
+    (blocked / "sub").chmod(0o755)
+    assert result.returncode == 1
+    assert "ablocked" in result.stderr
+    assert "deleted 1 stray" in result.stdout
+    assert (blocked / "sub" / "file.txt").is_file()
+    assert not (root / "bplain").exists()
+
+
+def test_ls_rm_without_strays_deletes_nothing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    root = stray_root(tmp_path, home)
+    (root / "build").mkdir()
+
+    result = run_cli(["ls", "--rm"], home)
+
+    assert result.returncode == 1
+    assert "--strays" in result.stderr
+    assert (root / "build").is_dir()

@@ -114,6 +114,7 @@ git config --global gra.root ~/develop
 | [`gra done [name]`](#gra-done) | Remove a worktree once its work is in origin |
 | [`gra cd <name>`](#gra-cd) | Jump to a worktree by name |
 | [`gra ls [--fetch]`](#gra-ls) | One table of every repository and worktree |
+| [`gra ls --strays [--rm]`](#gra-ls---strays) | List what is under the root without being a repository, and delete it |
 | [`gra each [--wt] <command>`](#gra-each) | Run a command once in every repository or worktree |
 | [`gra install`](#gra-install) | Install or upgrade `gra` itself |
 
@@ -476,6 +477,62 @@ oans: fatal: could not read from remote repository.
 fetched 11 of 12 repositories
 ```
 
+## `gra ls --strays`
+
+The gra root is flat, so anything can end up sitting in it: a plain `git
+clone`, a build directory, a file you saved in the wrong terminal. gra never
+touches those, which is why they go unnoticed for months. `--strays` is the
+one command that looks at them:
+
+```sh
+gra ls --strays
+```
+
+```text
+Root: /home/me/gra
+Strays: 3 directories, 1 file  1.2G
+
+NAME             SIZE   MODIFIED       STATUS
+abseil-build/    1.1G   6 months ago   -
+notes.md         8K     2 days ago     -
+scratch/         95M    3 days ago     ● dirty ↑2
+vendored/        4.2M   1 year ago     ✓ clean
+```
+
+A stray is any entry directly under the root that is not a repository - gra
+calls a directory a repository when it holds a `.bare`. Names carry the `ls
+-F` markers: `/` is a directory, `@` is a symlink whose `SIZE` is the link's
+own, not the tree it points at.
+
+`STATUS` is the column that decides whether something is safe to delete. `-`
+means Git has never heard of it. Anything else is a checkout, `dirty` when
+something is uncommitted and `↑2` when two commits have not been pushed -
+read from local refs only, like the rest of `gra ls`, so it is as fresh as
+that checkout's last fetch. A checkout with no remote at all reads as `✓
+clean`, and may still hold the only copy of its commits.
+
+Add `--rm` to clean up:
+
+```sh
+gra ls --strays --rm
+```
+
+That opens the same table in `fzf`, where `Tab` marks as many entries as you
+want. What you picked is listed back with what it costs, and one question
+carries it out:
+
+```text
+Deleting 2 directories, freeing 1.1G:
+  /home/me/gra/abseil-build  -
+  /home/me/gra/scratch  ● dirty ↑2
+
+delete for good? [y/N]
+```
+
+Nothing is deleted without a selection you made yourself, and there is no
+flag that removes every stray at once. A flat root is exactly the place where
+the only copy of something ends up, so the picking stays manual.
+
 ## `gra each`
 
 Runs a command of your own once in every repository under the gra root:
@@ -673,6 +730,7 @@ gra work <TAB>         worktree names, plus branches inside a repository
 gra each <TAB>         commands on your PATH
 gra done -<TAB>        --force
 gra each -<TAB>        --wt
+gra ls -<TAB>          --fetch --strays --rm
 ```
 
 What it offers follows the same rule the commands do, so the completion and
